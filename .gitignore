@@ -1,0 +1,20 @@
+# Python environment
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# Project artifacts
+droidbot_out/
+temp_apks/
+*.zip
+*.log
+
+# Sensitive/Local Config
+.env
+config.yaml
+
+# IDE files
+.vscode/
+.idea/
+.DS_Store
