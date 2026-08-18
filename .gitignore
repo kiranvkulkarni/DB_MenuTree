@@ -7,12 +7,21 @@ __pycache__/
 # Project artifacts
 droidbot_out/
 temp_apks/
+logs/
+out/
+reports/
+tests/fixture_out/
+tests/fixture_regressed/
+tests/out/
+tests/reports/
 *.zip
 *.log
 
 # Sensitive/Local Config
 .env
 config.yaml
+config.*.yaml
+*.bak
 
 # IDE files
 .vscode/
