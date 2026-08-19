@@ -398,6 +398,28 @@ reached but cannot generate a reproducible path to is not covered.
 
 Honest list, roughly by importance.
 
+0. **Apps with variable launch state defeat replay exploration.** The Samsung
+   camera restores its last-used mode, so four launches produced four
+   different root states (127, 136, 145, 145 views). Replays then land
+   somewhere other than where the path was recorded and are discarded:
+   **89% drift, 2 states, 4 tests from a 900s budget** — against 22 states
+   and 77 tests for the Phone app in the same budget.
+
+   `clear_between_paths` is the fix, but on the camera `pm clear` is itself
+   imperfect (first-run tips then vary: 2 distinct states across 3 clears)
+   and it destroys the user's camera preferences, so it is unusable on a
+   personal device.
+
+   Compounding it, the camera needs ~30s to settle per launch against the
+   dialer's ~2s, so each frontier item costs 40-60s. Replay exploration
+   trades speed for determinism and **the exchange rate is set by app
+   startup cost**; for a camera it is a poor trade.
+
+   Options, in order of preference: run on a test device with clearing on and
+   a 30-60 minute budget; or a hybrid that backtracks within a screen and
+   only replays when a branch genuinely needs restoring; or simply keep
+   DroidBot for this app, since its backtracking pays no restart cost.
+
 1. **State-abstraction tuning is unfinished.** The editable-field fix has not
    been measured on a completed run — the emulator died mid-run. Until that
    number exists, treat explorer state counts as provisional.
