@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.analysis.coverage import CoverageAnalyzer  # noqa: E402
+from src.crawler.action_guard import DEFAULT_PRESETS, GUARD_PRESETS  # noqa: E402
 from src.crawler.replay_explorer import ReplayExplorer  # noqa: E402
 from src.generator.path_emitter import PathEmitter  # noqa: E402
 from src.logging_setup import setup_logging  # noqa: E402
@@ -48,6 +49,22 @@ def parse_args() -> argparse.Namespace:
              "71/74 replays drifted without clearing.",
     )
     p.add_argument("--ready-timeout", type=float, default=12.0)
+    p.add_argument(
+        "--no-guard", action="store_true",
+        help="Disable the destructive-action guard. The crawler may then "
+             "delete data or send it off the device. Never use on a device "
+             "holding real data.",
+    )
+    p.add_argument(
+        "--guard-presets", default=",".join(DEFAULT_PRESETS),
+        help="Comma-separated guard presets to apply "
+             f"(available: {', '.join(sorted(GUARD_PRESETS))}).",
+    )
+    p.add_argument(
+        "--guard-extra", default="",
+        help="Comma-separated extra regex patterns to block, matched "
+             "case-insensitively on word boundaries against the control label.",
+    )
     p.add_argument(
         "--compare", default=None,
         help="A droidbot_out directory to compare discovery against",
@@ -87,6 +104,9 @@ def main() -> int:
         "driver": args.driver,
         "clear_between_paths": not args.no_clear_between_paths,
         "ready_timeout": args.ready_timeout,
+        "guard_enabled": not args.no_guard,
+        "guard_presets": [p for p in args.guard_presets.split(",") if p],
+        "guard_extra_patterns": [p for p in args.guard_extra.split(",") if p],
     }
 
     if not args.skip_explore:
@@ -131,6 +151,13 @@ def main() -> int:
         if r["extra"]:
             print(f"    {r['label']}: {r['extra']}")
     print("=" * 78)
+    guard = tree.meta.get("guard") or {}
+    if guard.get("blocked_attempts"):
+        print(f"  Guard blocked {guard['blocked_attempts']} attempt(s) on "
+              f"{len(guard.get('blocked_controls', []))} control(s) "
+              "-- KNOWN coverage gap:")
+        for control in guard.get("blocked_controls", [])[:15]:
+            print(f"      - {control}")
     print(f"  Testcases emitted from the u2 graph: {len(cases)}")
     if emitter.skipped:
         print(f"  Skipped: {len(emitter.skipped)}")

@@ -32,9 +32,11 @@ from typing import Dict, List, Optional, Tuple
 
 from ..parser.menu_tree import Selector
 from ..parser.selectors import SelectorResolver
+from .action_guard import DEFAULT_PRESETS, ActionGuard
 from .device_driver import DeviceDriver, DriverError, make_driver
 from .hierarchy import (
     EMPTY_STATE,
+    looks_like_dialog,
     center_of,
     interactive_views,
     parse_hierarchy,
@@ -139,9 +141,16 @@ class ReplayExplorer:
         self.clear_between_paths = config.get("clear_between_paths", True)
         self.capture_screenshots = config.get("capture_screenshots", True)
         self.backend = config.get("driver", "auto")
-        self.ready_timeout = float(config.get("ready_timeout", 12.0))
+        self.ready_timeout = float(config.get("ready_timeout", 25.0))
         self.stable_interval = float(config.get("stable_interval", 0.4))
         self.checkpoint_every = int(config.get("checkpoint_every", 5))
+        self.root_attempts = int(config.get("root_attempts", 3))
+
+        self.guard = ActionGuard.from_config(
+            enabled=config.get("guard_enabled", True),
+            presets=config.get("guard_presets", DEFAULT_PRESETS),
+            extra=config.get("guard_extra_patterns") or [],
+        )
 
         self.resolver = SelectorResolver(
             priority=config.get(
@@ -163,6 +172,9 @@ class ReplayExplorer:
         self._unsettled = 0
         self._drifted = 0
         self._forward_steps = 0
+        self._last_capture_settled = True
+        self._dialogs: Dict[str, Dict] = {}
+        self._dialogs: Dict[str, Dict] = {}
 
     # -- capture ---------------------------------------------------------
     def _capture(self) -> Tuple[Optional[str], List[Dict], str]:
@@ -203,6 +215,7 @@ class ReplayExplorer:
 
             if usable:
                 if settled_since == previous_key:
+                    self._last_capture_settled = True
                     return previous_key, views, current
                 settled_since = previous_key
 
@@ -210,10 +223,33 @@ class ReplayExplorer:
             previous_key, views, current = self._capture()
 
         self._unsettled += 1
+        self._last_capture_settled = False
         return previous_key, views, current
 
     def _await_app(self) -> Tuple[Optional[str], List[Dict], str]:
         return self._await_stable(require_app=True)
+
+    def _note_dialog(self, key: str, views: List[Dict], steps: List[Step]) -> None:
+        """Record a modal as a decision point.
+
+        A dialog usually appears once per app lifetime. Whichever branch is
+        taken first, the others may become permanently unreachable -- the
+        crawler will queue them, fail to replay back here, and discard them
+        as drift. That silently loses coverage of exactly the branches a
+        release gate cares about ("Turn on" vs "Cancel").
+
+        Recorded so the report can name the untaken options instead of
+        omitting them. Restoring app state between replays
+        (`clear_between_paths`) is what actually makes them reachable.
+        """
+        if not looks_like_dialog(views, self.package):
+            return
+        entry = self._dialogs.setdefault(
+            key, {"options": [s.selector_value for s in steps], "taken": []}
+        )
+        for step in steps:
+            if step.selector_value not in entry["options"]:
+                entry["options"].append(step.selector_value)
 
     def _record_state(
         self, key: str, views: List[Dict], path: List[Step], activity_pkg: str
@@ -330,6 +366,13 @@ class ReplayExplorer:
             if dedupe in seen:
                 continue
             seen.add(dedupe)
+            blocked = self.guard.blocks(selector.strategy, selector.value)
+            if blocked:
+                logger.info(
+                    "Guard blocked %s \"%s\" (pattern %s)",
+                    selector.strategy, selector.value, blocked,
+                )
+                continue
             steps.append(
                 Step(action, selector.strategy, selector.value, centre[0], centre[1])
             )
@@ -351,14 +394,40 @@ class ReplayExplorer:
         self._started = time.time()
 
         # Root: the app's state immediately after a clean launch.
-        root_key = self._replay([])
+        #
+        # This one capture must settle. If it does not, the root is a
+        # mid-initialisation frame that the app never returns to, so every
+        # later replay lands somewhere else and is discarded as drift -- the
+        # whole crawl silently collapses. Observed on the Samsung camera: the
+        # root was recorded at 145 views during init, while the settled screen
+        # has 127, and 15 of 16 replays drifted.
+        root_key = None
+        for attempt in range(1, self.root_attempts + 1):
+            root_key = self._replay([])
+            if root_key is not None and self._last_capture_settled:
+                break
+            logger.warning(
+                "Launch state did not settle within %.0fs (attempt %d/%d). "
+                "Heavy apps such as a camera need a longer ready_timeout.",
+                self.ready_timeout, attempt, self.root_attempts,
+            )
         if root_key is None:
             raise DriverError(
                 f"Could not capture a launch state for {self.package}. "
                 "The app may not have come to the foreground."
             )
+        if not self._last_capture_settled:
+            raise DriverError(
+                f"The launch state of {self.package} never settled within "
+                f"{self.ready_timeout:.0f}s over {self.root_attempts} attempts. "
+                "Refusing to explore from an unsettled root: it would be a "
+                "mid-initialisation frame the app never returns to, so every "
+                "replay would drift and the crawl would silently find nothing. "
+                "Raise ready_timeout (--ready-timeout) and retry."
+            )
         _, views, current = self._await_app()
         self._record_state(root_key, views, [], current)
+        self._note_dialog(root_key, views, self._enumerate_actions(views))
         self.result.root = root_key
         logger.info("Root state %s (%d views)", root_key[:12], len(views))
 
@@ -426,8 +495,15 @@ class ReplayExplorer:
                                  len(self.result.edges) + 1)
                 )
 
+                taken = self._dialogs.get(current_key)
+                if taken is not None:
+                    taken["taken"].append(current_step.selector_value)
+
                 if new_key not in self.result.states:
                     self._record_state(new_key, new_views, new_path, current)
+                    self._note_dialog(
+                        new_key, new_views, self._enumerate_actions(new_views)
+                    )
                     logger.info(
                         "State %2d: %s depth=%d via %s \"%s\"",
                         len(self.result.states), new_key[:12], len(new_path),
@@ -465,6 +541,9 @@ class ReplayExplorer:
 
         self._finalise_stats(stop_reason, len(frontier))
         self._warn_on_drift()
+        self._warn_on_dialogs()
+        if self.guard.hits:
+            logger.warning(self.guard.report())
         logger.info("Exploration finished: %s", self.result.stats)
         return self.result
 
@@ -500,6 +579,36 @@ class ReplayExplorer:
                 "records as dismissed makes the recorded root unreachable."
             )
 
+    def _dialog_summary(self) -> Dict:
+        unexplored = {}
+        for key, entry in self._dialogs.items():
+            missing = [o for o in entry["options"] if o not in entry["taken"]]
+            if missing:
+                unexplored[key[:12]] = missing
+        return {
+            "dialogs_seen": len(self._dialogs),
+            "with_unexplored_branches": len(unexplored),
+            "unexplored_branches": unexplored,
+        }
+
+    def _warn_on_dialogs(self) -> None:
+        summary = self._dialog_summary()
+        if not summary["with_unexplored_branches"]:
+            return
+        logger.warning(
+            "%d dialog(s) have branches that were never taken. A dialog "
+            "usually appears once, so these are likely unreachable now and "
+            "are a KNOWN coverage gap:",
+            summary["with_unexplored_branches"],
+        )
+        for key, missing in list(summary["unexplored_branches"].items())[:10]:
+            logger.warning("    %s -> never pressed: %s", key, ", ".join(missing))
+        if not self.clear_between_paths:
+            logger.warning(
+                "    Enable clear_between_paths to make one-shot dialogs "
+                "reappear on each replay so both branches become reachable."
+            )
+
     def _checkpoint(self) -> None:
         """Persist the graph mid-crawl.
 
@@ -530,6 +639,8 @@ class ReplayExplorer:
             "state_key_mode": self.state_mode,
             "driver": getattr(self.driver, "name", "?"),
             "descendant_selectors": self.resolver.descendant_hits,
+            "guard": self.guard.summary(),
+            "dialogs": self._dialog_summary(),
         }
 
     def write(self, path: Optional[Path] = None) -> Path:

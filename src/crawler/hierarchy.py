@@ -183,6 +183,38 @@ def interactive_views(
     return found
 
 
+# Classes Android uses for modal surfaces. A dialog is a decision point: it
+# usually appears once, so branches not taken while it is on screen may never
+# become reachable again.
+_DIALOG_CLASS_HINTS = ("alertdialog", "dialog", "popupwindow", "bottomsheet")
+
+
+def looks_like_dialog(views: Sequence[Dict], package: Optional[str] = None) -> bool:
+    """Heuristic: is this screen a modal decision point?
+
+    Detected structurally, not semantically -- no model needed. Two signals:
+    an explicit dialog class anywhere in the tree, or a small in-app view
+    count (a modal shows far less than a full screen).
+    """
+    in_app = [
+        v for v in views
+        if not package or not v.get("package") or v.get("package") == package
+    ]
+    if not in_app:
+        return False
+
+    for view in in_app:
+        cls = (view.get("class") or "").lower()
+        rid = (view.get("resource_id") or "").lower()
+        if any(hint in cls or hint in rid for hint in _DIALOG_CLASS_HINTS):
+            return True
+
+    # A modal is small. Full app screens observed here run 80-150 views;
+    # the Samsung location-tags dialog was 35.
+    clickable = sum(1 for v in in_app if v.get("clickable"))
+    return len(in_app) <= 45 and 1 < clickable <= 6
+
+
 def center_of(view: Dict) -> Optional[tuple]:
     """Parse a `[x1,y1][x2,y2]` bounds string into a centre point."""
     bounds = view.get("bounds") or ""

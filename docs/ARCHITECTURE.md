@@ -180,6 +180,38 @@ the crawl.
 `_warn_on_drift()` therefore logs loudly above a 30% drift rate and names the
 fix. **A tool that discards 96% of its work must say so.**
 
+### 5.2.1 One-shot dialogs are the costliest case
+
+A modal like Samsung's "Turn on Location tags?" (Cancel / Turn on / Learn
+more) is a decision point, and a release gate needs **both** branches.
+
+The explorer already enumerates all three buttons and queues all three. The
+mechanism is not the problem. The problem is that the dialog appears **once**:
+answer it either way and it never returns, so replaying back to it fails and
+the untaken branches are discarded as drift, permanently.
+
+**This is not a job for an LLM.** Nothing about it is semantic — the crawler
+knows exactly which buttons exist and wants to press both. It cannot get back
+to the screen. The fix is state restoration (`clear_between_paths`), which
+makes the dialog reappear on every replay.
+
+Where a model *does* help, and is not yet implemented:
+
+- Risk-classifying unfamiliar buttons. The guard is a regex list; it knows
+  `Delete` and `Share` but not `Erase and continue` or vendor-specific
+  phrasing. A model reading the dialog title plus button label generalises
+  where patterns cannot.
+- Choosing which branch to take when state cannot be restored, since only one
+  is possible and they are not equally valuable.
+
+In both the model advises; it never decides structure. See §2.
+
+`looks_like_dialog()` detects modals structurally (dialog class hints, or a
+small in-app view count with few clickables — the location-tags dialog was 35
+views). Dialog states are recorded as decision points and any branch never
+taken is reported as a **known** coverage gap. A silently lost branch is the
+worst outcome for a gate; a named one is actionable.
+
 ### 5.3 `--clear-between-paths`
 
 If the app persists UI state across launches (this one remembers a card's
