@@ -145,6 +145,8 @@ class ReplayExplorer:
         self.stable_interval = float(config.get("stable_interval", 0.4))
         self.checkpoint_every = int(config.get("checkpoint_every", 5))
         self.root_attempts = int(config.get("root_attempts", 3))
+        self.recovery_backs = int(config.get("recovery_backs", 3))
+        self.out_of_app_patience = int(config.get("out_of_app_patience", 3))
 
         self.guard = ActionGuard.from_config(
             enabled=config.get("guard_enabled", True),
@@ -174,7 +176,7 @@ class ReplayExplorer:
         self._forward_steps = 0
         self._last_capture_settled = True
         self._dialogs: Dict[str, Dict] = {}
-        self._dialogs: Dict[str, Dict] = {}
+        self._recoveries = 0
 
     # -- capture ---------------------------------------------------------
     def _capture(self) -> Tuple[Optional[str], List[Dict], str]:
@@ -207,10 +209,21 @@ class ReplayExplorer:
         deadline = time.time() + self.ready_timeout
         previous_key, views, current = self._capture()
         settled_since = None
+        foreign = 0
 
         while time.time() < deadline:
             usable = bool(previous_key) and previous_key != EMPTY_STATE
-            if usable and require_app and current != self.package:
+            if current and current != self.package:
+                # Another app is in front. Waiting for *it* to quiesce is
+                # pointless and expensive -- a loading web page never does.
+                # Observed: "Learn more" opened Chrome and the crawl stalled
+                # for six minutes burning full timeouts.
+                foreign += 1
+                if foreign >= self.out_of_app_patience:
+                    self._last_capture_settled = False
+                    return previous_key, views, current
+                usable = False
+            elif require_app and current != self.package:
                 usable = False
 
             if usable:
@@ -250,6 +263,39 @@ class ReplayExplorer:
         for step in steps:
             if step.selector_value not in entry["options"]:
                 entry["options"].append(step.selector_value)
+
+    def _recover_to_app(self) -> bool:
+        """Bring the target app back to the front after wandering out.
+
+        Crawling reaches outbound links -- the camera's "Learn more" opens a
+        browser. Passively waiting to return does not work, so navigate back
+        deliberately: BACK a few times, then relaunch.
+
+        Deliberately does NOT force-stop the app we landed in. That is
+        somebody else's application on somebody's real phone; pressing BACK
+        and relaunching our own target is enough.
+        """
+        assert self.driver is not None
+        for _ in range(self.recovery_backs):
+            if self.driver.current_package() == self.package:
+                return True
+            try:
+                self.driver.press_back()
+            except DriverError:
+                break
+
+        if self.driver.current_package() != self.package:
+            logger.info("Relaunching %s to recover from an outbound screen",
+                        self.package)
+            try:
+                self.driver.start_app(self.package, clear=False)
+            except DriverError as exc:
+                logger.warning("Recovery relaunch failed: %s", exc)
+                return False
+        recovered = self.driver.current_package() == self.package
+        if recovered:
+            self._recoveries += 1
+        return recovered
 
     def _record_state(
         self, key: str, views: List[Dict], path: List[Step], activity_pkg: str
@@ -295,6 +341,8 @@ class ReplayExplorer:
             if not key or key == EMPTY_STATE:
                 return None
             if current and current != self.package:
+                self._left_app += 1
+                self._recover_to_app()
                 return None
         return key
 
@@ -629,6 +677,7 @@ class ReplayExplorer:
             "actions_taken": self._actions_taken,
             "replays": self._replays,
             "left_app": self._left_app,
+            "recoveries": self._recoveries,
             "empty_dumps": self._empty_dumps,
             "unsettled_captures": self._unsettled,
             "replay_drift": self._drifted,
