@@ -41,10 +41,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--driver", default="auto", choices=("auto", "u2", "adb"))
     p.add_argument("--no-screenshots", action="store_true")
     p.add_argument(
-        "--clear-between-paths", action="store_true",
-        help="pm clear before every replay. Required when the app persists UI "
-             "state across launches, otherwise replays land in the wrong "
-             "screen and get discarded as drift.",
+        "--no-clear-between-paths", action="store_true",
+        help="Skip `pm clear` before each replay. Faster, but any one-time UI "
+             "the app records as dismissed makes the recorded root unreachable "
+             "and the crawl silently collapses. Measured on the Phone app: "
+             "71/74 replays drifted without clearing.",
     )
     p.add_argument("--ready-timeout", type=float, default=12.0)
     p.add_argument(
@@ -84,7 +85,7 @@ def main() -> int:
         "state_key_mode": args.state_mode,
         "capture_screenshots": not args.no_screenshots,
         "driver": args.driver,
-        "clear_between_paths": args.clear_between_paths,
+        "clear_between_paths": not args.no_clear_between_paths,
         "ready_timeout": args.ready_timeout,
     }
 

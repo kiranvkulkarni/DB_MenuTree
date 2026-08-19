@@ -154,16 +154,45 @@ from wherever each action lands instead of restarting for the next one.
 Ordering stays fixed, so determinism is preserved — only the restart frequency
 changes. Measured after: **45 states in 901 seconds**, replays 78 → 35.
 
-### 5.2 `--clear-between-paths`
+### 5.2 Replay drift — the dominant failure mode
+
+A replay that does not land where the path was recorded is discarded, and
+that branch is **never revisited**. Nothing else in the output makes this
+obvious: a badly incomplete graph just looks like a small app.
+
+Measured on the Phone app (`com.google.android.dialer`), without clearing:
+**71 of 74 replays drifted.** Result: 9 states, 16 edges. With clearing:
+**3 of 38**, giving 22 states and 77 edges from the same budget.
+
+The cause is worth understanding, because the obvious guess is wrong. It was
+*not* launch-state variance — measured directly, the dialer's launch state is
+stable across `app_start(stop=True)`, `am start` with `CLEAR_TASK`, and
+`pm clear` alike. What actually happened: the dialer shows a one-time
+dismissible banner. The explorer recorded its root *with* the banner, then
+dismissed it during exploration, and the app persisted "dismissed". The
+recorded root became **permanently unreachable**, so everything after it
+drifted.
+
+This generalises to any one-time UI the app records as seen — onboarding, a
+first-run tip, "don't show again". It poisons the root and silently collapses
+the crawl.
+
+`_warn_on_drift()` therefore logs loudly above a 30% drift rate and names the
+fix. **A tool that discards 96% of its work must say so.**
+
+### 5.3 `--clear-between-paths`
 
 If the app persists UI state across launches (this one remembers a card's
 expand/collapse), a replay from a fresh launch lands somewhere different from
 where the path was recorded. The item is discarded as drift and that branch is
 **lost permanently**.
 
-With `pm clear` before each replay: `replay_drift: 0`.
+With `pm clear` before each replay, drift effectively vanishes (0 on the
+sample app, 3/38 on the dialer).
 
-Slower, and it re-triggers first-run flows, but correct. For a gate, use it.
+Slower, and it re-triggers first-run flows, but correct. **Treat this as a
+correctness requirement, not a tuning option** — without it results are
+silently wrong rather than merely slower.
 
 ---
 
@@ -307,6 +336,32 @@ The target app declares 3 activities, one of which is real; the other two are
 
 ---
 
+### 9.2 Measured comparison: DroidBot vs the replay explorer
+
+Same app (`com.google.android.dialer`), same device, same 900s budget.
+
+| | states | edges | **usable tests** | unreachable |
+|---|---|---|---|---|
+| DroidBot `dfs_greedy` | 68 | 66 | **12** | 66 |
+| replay explorer | 22 | 77 | **77** | 0 |
+
+DroidBot *explored more screens* and still produced far fewer tests. Two
+reasons, both instructive:
+
+1. **Its two output artifacts disagree.** 55 of 95 UTG edge events had no
+   corresponding record in `events/`, so those edges can never be given a
+   selector and can never become a test. This is inherent to reconstructing a
+   graph from two files written separately. The explorer captures state and
+   selector together at the moment of acting, so there is nothing to
+   reconcile.
+2. **55 of its 68 states were `InCallActivity`** — it dialled numbers and
+   explored the in-call screen (see §11 safety note).
+
+The headline number is *usable tests*, not states discovered. A screen you
+reached but cannot generate a reproducible path to is not covered.
+
+---
+
 ## 10. Open problems
 
 Honest list, roughly by importance.
@@ -334,7 +389,29 @@ Honest list, roughly by importance.
 
 ---
 
-## 11. Environment traps
+## 11. Safety: crawling can perform real actions
+
+An exhaustive crawler presses every button it finds. On the Phone app it
+**dialled numbers** — 55 of DroidBot's 68 discovered states were
+`InCallActivity`. On an emulator the modem is simulated and this is harmless.
+**On a physical device it would place real calls.**
+
+Before crawling on real hardware, consider what the app can do irreversibly:
+place calls or send messages, spend money, send email, delete user data,
+change system settings, or post to a network service. Mitigations:
+
+- Prefer an emulator for apps with outbound side effects.
+- Use a device with no SIM, in aeroplane mode, or on a test account.
+- Bound the crawl with `max_depth` and keep out-of-app detection strict.
+- Review the discovered activity list after a first short run before
+  committing to a long one.
+
+This is not hypothetical — it happened during development, on the first
+system app tried.
+
+---
+
+## 12. Environment traps
 
 Real time was lost to these.
 
@@ -354,13 +431,17 @@ Real time was lost to these.
 - **A uiautomator2 NPE on `registerUiTestAutomationService` usually means
   `system_server` is dead**, not that your Android version is unsupported.
   uiautomator2 works fine on Android 17 / SDK 37.
-- **This emulator crashed twice under crawl load.** Prefer physical hardware
+- **Use software rendering for emulator gate runs.** This emulator hung three
+  times under hardware GPU and has been stable since
+  `-gpu swiftshader_indirect`. If you gate on emulators rather than physical
+  devices, this is the difference between a usable and an unusable pipeline.
+- **This emulator crashed three times under crawl load.** Prefer physical hardware
   for gate runs. The explorer now checkpoints every 5 states so a crash costs
   minutes, not the whole run.
 
 ---
 
-## 12. Extending it
+## 13. Extending it
 
 **Adding a crawler back-end.** Produce a `MenuTree` (or write
 `menutree.json`, format `menutree/1`, and use `MenuTreeLoader`). Everything

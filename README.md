@@ -14,10 +14,12 @@ gating a product release.
 | **[docs/MODULES.md](docs/MODULES.md)** | "Where do I go to change X?" Code map and common tasks. |
 | This file | Setup, running, reading the report. |
 
-There are two crawler back-ends. **DroidBot is the working default and what
-the gate currently uses.** A `uiautomator2` replay explorer exists as a
-prototype with a better architecture (deterministic, self-verifying) but its
-state abstraction is not yet fully tuned — see ARCHITECTURE §10.
+There are two crawler back-ends. **DroidBot is what `main.py` and the gate
+currently use.** A `uiautomator2` replay explorer (`tools/explore_u2.py`) is
+deterministic and self-verifying, and on a head-to-head against the Phone app
+it produced **77 usable test cases to DroidBot's 12** from the same 900s
+budget — see ARCHITECTURE §9.2. It is not yet wired into `main.py`;
+remaining work is in ARCHITECTURE §10.
 
 ---
 
@@ -241,12 +243,17 @@ python main.py --skip-crawl
 ### The experimental replay explorer
 
 ```bash
-python tools/explore_u2.py --package <pkg> --serial <serial> --time-budget 900 --clear-between-paths --compare ./droidbot_out/<run>
+python tools/explore_u2.py --package <pkg> --serial <serial> --time-budget 900 --compare ./droidbot_out/<run>
 ```
 
-`--clear-between-paths` is required whenever the app persists UI state across
-launches, otherwise replays land in the wrong screen and are discarded as
-drift. It prints a side-by-side comparison against a DroidBot run.
+`pm clear` before each replay is **on by default** — without it, any one-time
+UI the app records as dismissed makes the recorded root unreachable and the
+crawl silently collapses (measured: 71 of 74 replays discarded). Disable with
+`--no-clear-between-paths` only if you understand that risk.
+
+> **Safety:** an exhaustive crawler presses every button it finds. On the Phone
+> app it dialled numbers. On a physical device that means *real calls*. Read
+> [ARCHITECTURE §11](docs/ARCHITECTURE.md) before crawling on real hardware.
 
 **Comparing crawlers:** never compare raw state counts between back-ends —
 they use different state abstractions. Re-hash one crawler's saved hierarchies

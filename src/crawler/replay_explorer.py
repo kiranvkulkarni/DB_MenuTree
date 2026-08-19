@@ -132,7 +132,11 @@ class ReplayExplorer:
         self.time_budget = float(config.get("time_budget", 900))
         self.settle = float(config.get("settle_seconds", 1.0))
         self.state_mode = config.get("state_key_mode", "affordance")
-        self.clear_between_paths = config.get("clear_between_paths", False)
+        # Defaults ON: without it any one-time UI the app records as
+        # dismissed makes the recorded root unreachable and the crawl
+        # silently collapses. Measured on the Phone app: 71/74 replays
+        # drifted without it, 3/38 with it (9 states -> 22).
+        self.clear_between_paths = config.get("clear_between_paths", True)
         self.capture_screenshots = config.get("capture_screenshots", True)
         self.backend = config.get("driver", "auto")
         self.ready_timeout = float(config.get("ready_timeout", 12.0))
@@ -460,8 +464,41 @@ class ReplayExplorer:
                 current_key, current_path, current_step = new_key, new_path, onward
 
         self._finalise_stats(stop_reason, len(frontier))
+        self._warn_on_drift()
         logger.info("Exploration finished: %s", self.result.stats)
         return self.result
+
+    def _warn_on_drift(self) -> None:
+        """Drift silently discards branches, so say so loudly.
+
+        A replay that does not land where the path was recorded is thrown
+        away, and that branch is never revisited. A high rate means the graph
+        is badly incomplete, but nothing else in the output makes that
+        obvious -- it just looks like a small app.
+
+        The usual cause is the app changing irreversibly during the crawl: a
+        one-time banner dismissed, onboarding completed, a "don't show again"
+        checked. The recorded root then becomes unreachable and *everything*
+        drifts. `clear_between_paths` restores the app to a fixed starting
+        point and fixes it.
+        """
+        if not self._replays:
+            return
+        rate = self._drifted / self._replays
+        if rate < 0.3:
+            return
+        logger.warning(
+            "%.0f%% of replays drifted (%d/%d): they did not land where the "
+            "path was recorded, so those branches were discarded and the "
+            "graph is incomplete.",
+            rate * 100, self._drifted, self._replays,
+        )
+        if not self.clear_between_paths:
+            logger.warning(
+                "Re-run with clear_between_paths enabled "
+                "(--clear-between-paths). Without it, any one-time UI the app "
+                "records as dismissed makes the recorded root unreachable."
+            )
 
     def _checkpoint(self) -> None:
         """Persist the graph mid-crawl.
