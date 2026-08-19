@@ -84,6 +84,15 @@ class MenuState:
     screenshot: Optional[str] = None
     label: str = ""
 
+    def __post_init__(self) -> None:
+        # Android reports a relative activity name (".MainActivity") while the
+        # manifest declares it fully qualified. Left unnormalised, the coverage
+        # diff never matches and the app's own main screen is reported as
+        # unreached. Normalise once, here, so every consumer compares like
+        # with like.
+        if self.activity.startswith(".") and self.package:
+            self.activity = f"{self.package}{self.activity}"
+
     @property
     def short_activity(self) -> str:
         return self.activity.split(".")[-1] if self.activity else "UNKNOWN"
