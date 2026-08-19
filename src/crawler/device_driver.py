@@ -32,6 +32,7 @@ class DeviceDriver(Protocol):
     def start_app(self, package: str, clear: bool = False) -> None: ...
     def stop_app(self, package: str) -> None: ...
     def current_package(self) -> Optional[str]: ...
+    def current_activity(self) -> Optional[str]: ...
     def screenshot(self, path: str) -> bool: ...
 
 
@@ -99,6 +100,19 @@ class AdbDriver:
                         return token.split("/")[0].split("{")[-1]
         return None
 
+    def current_activity(self) -> Optional[str]:
+        try:
+            out = _adb(self.serial, "shell", "dumpsys", "activity", "activities")
+        except DriverError:
+            return None
+        for line in out.splitlines():
+            if "mResumedActivity" in line or "topResumedActivity" in line:
+                for token in line.split():
+                    if "/" in token and "." in token:
+                        pkg, _, act = token.split("{")[-1].partition("/")
+                        return f"{pkg}{act}" if act.startswith(".") else act
+        return None
+
     def screenshot(self, path: str) -> bool:
         try:
             remote = "/sdcard/menutree_shot.png"
@@ -154,6 +168,16 @@ class U2Driver:
             return self.device.app_current().get("package")
         except Exception:
             return None
+
+    def current_activity(self) -> Optional[str]:
+        try:
+            info = self.device.app_current()
+        except Exception:
+            return None
+        pkg, act = info.get("package") or "", info.get("activity") or ""
+        if act.startswith("."):
+            return f"{pkg}{act}"
+        return act or None
 
     def screenshot(self, path: str) -> bool:
         try:

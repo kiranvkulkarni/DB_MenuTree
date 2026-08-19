@@ -7,6 +7,8 @@ __pycache__/
 # Project artifacts
 droidbot_out/
 u2_out/
+u2_out_*/
+u2_run*.log
 temp_apks/
 logs/
 out/

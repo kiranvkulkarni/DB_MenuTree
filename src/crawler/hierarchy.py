@@ -33,6 +33,9 @@ _BOOL_ATTRS = (
 
 STATE_KEY_MODES = ("affordance", "structure", "content")
 
+# Returned when a dump contains no views belonging to the target app.
+EMPTY_STATE = "EMPTY"
+
 
 def _as_bool(value: Optional[str]) -> bool:
     return str(value).lower() == "true"
@@ -136,9 +139,24 @@ def state_key(
         if mode == "content":
             fields.append(view.get("text") or "")
         elif mode == "affordance" and index in affordances:
-            fields.append(view.get("text") or "")
+            # An editable field's text is user data, not a label. Including it
+            # mints a new state for every keystroke or recomputed value: on the
+            # target app, clicking fields holding "10.0" / "2.0" / a live rate
+            # produced 8 spurious states. What identifies the screen is that
+            # the field exists and is focused, not what it currently holds.
+            if view.get("editable"):
+                fields.append("<editable>")
+            else:
+                fields.append(view.get("text") or "")
 
         parts.append("|".join(fields))
+
+    if not parts:
+        # Every view was filtered out, so this dump shows none of the app -- a
+        # launch-transition frame, a system dialog, or a screen captured before
+        # the app rendered. Hashing it gives sha256("") for *every* such dump,
+        # silently merging them into one bogus state, so report it as unusable.
+        return EMPTY_STATE
 
     digest = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
     return digest[:32]

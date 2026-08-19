@@ -41,6 +41,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--driver", default="auto", choices=("auto", "u2", "adb"))
     p.add_argument("--no-screenshots", action="store_true")
     p.add_argument(
+        "--clear-between-paths", action="store_true",
+        help="pm clear before every replay. Required when the app persists UI "
+             "state across launches, otherwise replays land in the wrong "
+             "screen and get discarded as drift.",
+    )
+    p.add_argument("--ready-timeout", type=float, default=12.0)
+    p.add_argument(
         "--compare", default=None,
         help="A droidbot_out directory to compare discovery against",
     )
@@ -77,11 +84,21 @@ def main() -> int:
         "state_key_mode": args.state_mode,
         "capture_screenshots": not args.no_screenshots,
         "driver": args.driver,
+        "clear_between_paths": args.clear_between_paths,
+        "ready_timeout": args.ready_timeout,
     }
 
     if not args.skip_explore:
         explorer = ReplayExplorer(args.package, args.serial, config)
-        explorer.explore()
+        try:
+            explorer.explore()
+        except (KeyboardInterrupt, Exception) as exc:
+            # The device can die mid-crawl. Keep whatever was discovered and
+            # report on it rather than discarding a long run.
+            logger.error("Exploration ended early: %s", exc)
+            if not explorer.result.states:
+                raise
+            explorer._finalise_stats(f"aborted: {type(exc).__name__}", 0)
         explorer.write()
 
     tree = MenuTreeLoader({"output_dir": str(output_dir)}).load()

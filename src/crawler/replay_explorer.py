@@ -34,6 +34,7 @@ from ..parser.menu_tree import Selector
 from ..parser.selectors import SelectorResolver
 from .device_driver import DeviceDriver, DriverError, make_driver
 from .hierarchy import (
+    EMPTY_STATE,
     center_of,
     interactive_views,
     parse_hierarchy,
@@ -134,6 +135,9 @@ class ReplayExplorer:
         self.clear_between_paths = config.get("clear_between_paths", False)
         self.capture_screenshots = config.get("capture_screenshots", True)
         self.backend = config.get("driver", "auto")
+        self.ready_timeout = float(config.get("ready_timeout", 12.0))
+        self.stable_interval = float(config.get("stable_interval", 0.4))
+        self.checkpoint_every = int(config.get("checkpoint_every", 5))
 
         self.resolver = SelectorResolver(
             priority=config.get(
@@ -151,6 +155,10 @@ class ReplayExplorer:
         self._replays = 0
         self._started = 0.0
         self._left_app = 0
+        self._empty_dumps = 0
+        self._unsettled = 0
+        self._drifted = 0
+        self._forward_steps = 0
 
     # -- capture ---------------------------------------------------------
     def _capture(self) -> Tuple[Optional[str], List[Dict], str]:
@@ -164,12 +172,54 @@ class ReplayExplorer:
         key = state_key(views, self.state_mode, self.package)
         return key, views, current
 
+    def _await_stable(self, require_app: bool = True) -> Tuple[Optional[str], List[Dict], str]:
+        """Capture once the screen has stopped changing.
+
+        Two things make a naive capture wrong, and both produce a *different
+        state key on every run*, which destroys reproducibility:
+
+          * A dump during the launch animation holds only launcher views and
+            hashes to EMPTY_STATE.
+          * Compose lays out asynchronously, so an early dump catches a
+            partially built tree -- observed here as 57 views against the 80
+            the settled screen has.
+
+        So poll until two consecutive dumps agree on the key (quiescence)
+        rather than until the screen merely looks non-empty. Applied after
+        every action, not just at launch, since transitions animate too.
+        """
+        deadline = time.time() + self.ready_timeout
+        previous_key, views, current = self._capture()
+        settled_since = None
+
+        while time.time() < deadline:
+            usable = bool(previous_key) and previous_key != EMPTY_STATE
+            if usable and require_app and current != self.package:
+                usable = False
+
+            if usable:
+                if settled_since == previous_key:
+                    return previous_key, views, current
+                settled_since = previous_key
+
+            time.sleep(self.stable_interval)
+            previous_key, views, current = self._capture()
+
+        self._unsettled += 1
+        return previous_key, views, current
+
+    def _await_app(self) -> Tuple[Optional[str], List[Dict], str]:
+        return self._await_stable(require_app=True)
+
     def _record_state(
         self, key: str, views: List[Dict], path: List[Step], activity_pkg: str
     ) -> ExploredState:
+        activity = None
+        if self.driver is not None:
+            activity = self.driver.current_activity()
         state = ExploredState(
             key=key,
-            activity=activity_pkg or self.package,
+            activity=activity or activity_pkg or self.package,
             package=self.package,
             path=list(path),
             view_count=len(views),
@@ -193,16 +243,16 @@ class ReplayExplorer:
         self.driver.start_app(self.package, clear=self.clear_between_paths)
         self._replays += 1
 
-        key, views, _ = self._capture()
-        if key is None:
+        key, views, _ = self._await_app()
+        if not key or key == EMPTY_STATE:
             return None
 
         for step in path:
             if not self._perform(step, views):
                 return None
             self._actions_taken += 1
-            key, views, current = self._capture()
-            if key is None:
+            key, views, current = self._await_stable(require_app=False)
+            if not key or key == EMPTY_STATE:
                 return None
             if current and current != self.package:
                 return None
@@ -303,7 +353,7 @@ class ReplayExplorer:
                 f"Could not capture a launch state for {self.package}. "
                 "The app may not have come to the foreground."
             )
-        _, views, current = self._capture()
+        _, views, current = self._await_app()
         self._record_state(root_key, views, [], current)
         self.result.root = root_key
         logger.info("Root state %s (%d views)", root_key[:12], len(views))
@@ -315,6 +365,7 @@ class ReplayExplorer:
         queued = {(root_key, s.selector_strategy, s.selector_value) for s in
                   self._enumerate_actions(views)}
 
+        explored: set = set()
         stop_reason = "frontier exhausted"
         while frontier:
             reason = self._budget_exhausted()
@@ -326,64 +377,123 @@ class ReplayExplorer:
             from_key, path, step = frontier.popleft()
             if len(path) + 1 > self.max_depth:
                 continue
+            if (from_key, step.selector_strategy, step.selector_value) in explored:
+                continue
 
             reached = self._replay(path)
             if reached != from_key:
+                self._drifted += 1
                 logger.debug(
                     "replay drift: expected %s got %s", from_key[:8],
                     (reached or "none")[:8],
                 )
                 continue
 
-            _, views, _ = self._capture()
-            if not self._perform(step, views):
-                continue
-            self._actions_taken += 1
+            # Having paid for the replay, keep walking forward from wherever
+            # each action lands instead of restarting for the next one. The
+            # prefix is what costs time, so amortise it. Order stays fixed
+            # (document order, first unexplored action), so this remains
+            # deterministic -- it only changes how often we pay to restart.
+            current_key, current_path, current_step = from_key, path, step
+            while True:
+                if self._budget_exhausted():
+                    break
 
-            new_key, new_views, current = self._capture()
-            if new_key is None:
-                continue
-            if current and current != self.package:
-                self._left_app += 1
-                continue
+                _, views, _ = self._await_stable(require_app=False)
+                explored.add(
+                    (current_key, current_step.selector_strategy,
+                     current_step.selector_value)
+                )
+                if not self._perform(current_step, views):
+                    break
+                self._actions_taken += 1
 
-            new_path = path + [step]
-            self.result.edges.append(
-                ExploredEdge(from_key, new_key, step, len(self.result.edges) + 1)
-            )
+                new_key, new_views, current = self._await_stable(require_app=False)
+                if not new_key or new_key == EMPTY_STATE:
+                    self._empty_dumps += 1
+                    break
+                if current and current != self.package:
+                    self._left_app += 1
+                    break
 
-            if new_key in self.result.states:
-                continue
+                new_path = current_path + [current_step]
+                self.result.edges.append(
+                    ExploredEdge(current_key, new_key, current_step,
+                                 len(self.result.edges) + 1)
+                )
 
-            self._record_state(new_key, new_views, new_path, current)
-            logger.info(
-                "State %2d: %s depth=%d via %s \"%s\"",
-                len(self.result.states), new_key[:12], len(new_path),
-                step.selector_strategy, step.selector_value,
-            )
+                if new_key not in self.result.states:
+                    self._record_state(new_key, new_views, new_path, current)
+                    logger.info(
+                        "State %2d: %s depth=%d via %s \"%s\"",
+                        len(self.result.states), new_key[:12], len(new_path),
+                        current_step.selector_strategy, current_step.selector_value,
+                    )
+                    if (
+                        self.checkpoint_every
+                        and len(self.result.states) % self.checkpoint_every == 0
+                    ):
+                        self._checkpoint()
 
-            for next_step in self._enumerate_actions(new_views):
-                token = (new_key, next_step.selector_strategy, next_step.selector_value)
-                if token in queued:
-                    continue
-                queued.add(token)
-                frontier.append((new_key, new_path, next_step))
+                next_actions = self._enumerate_actions(new_views)
+                for next_step in next_actions:
+                    token = (new_key, next_step.selector_strategy,
+                             next_step.selector_value)
+                    if token in queued or token in explored:
+                        continue
+                    queued.add(token)
+                    frontier.append((new_key, new_path, next_step))
 
+                if len(new_path) >= self.max_depth:
+                    break
+                onward = next(
+                    (
+                        s for s in next_actions
+                        if (new_key, s.selector_strategy, s.selector_value)
+                        not in explored
+                    ),
+                    None,
+                )
+                if onward is None:
+                    break
+                self._forward_steps += 1
+                current_key, current_path, current_step = new_key, new_path, onward
+
+        self._finalise_stats(stop_reason, len(frontier))
+        logger.info("Exploration finished: %s", self.result.stats)
+        return self.result
+
+    def _checkpoint(self) -> None:
+        """Persist the graph mid-crawl.
+
+        A crawl is long and the device can die under it -- this emulator did,
+        twice. Writing only at the end means one crash discards the entire
+        run, so snapshot as we go.
+        """
+        try:
+            self._finalise_stats("checkpoint", 0)
+            self.write()
+        except OSError as exc:
+            logger.warning("Checkpoint failed: %s", exc)
+
+    def _finalise_stats(self, stop_reason: str, frontier_remaining: int) -> None:
         self.result.stats = {
             "states": len(self.result.states),
             "edges": len(self.result.edges),
             "actions_taken": self._actions_taken,
             "replays": self._replays,
             "left_app": self._left_app,
-            "frontier_remaining": len(frontier),
+            "empty_dumps": self._empty_dumps,
+            "unsettled_captures": self._unsettled,
+            "replay_drift": self._drifted,
+            "forward_steps": self._forward_steps,
+            "frontier_remaining": frontier_remaining,
             "elapsed_seconds": round(time.time() - self._started, 1),
             "stop_reason": stop_reason,
             "state_key_mode": self.state_mode,
             "driver": getattr(self.driver, "name", "?"),
             "descendant_selectors": self.resolver.descendant_hits,
         }
-        logger.info("Exploration finished: %s", self.result.stats)
-        return self.result
 
     def write(self, path: Optional[Path] = None) -> Path:
         target = path or (self.output_dir / "menutree.json")
