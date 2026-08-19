@@ -1,0 +1,177 @@
+"""Parse a uiautomator hierarchy dump into normalised views and a state key.
+
+Views are normalised to the same dict shape DroidBot produces (`text`,
+`content_description`, `resource_id`, `class`, `children`), so selector
+resolution is shared between both crawler back-ends.
+
+State abstraction
+-----------------
+The state key decides what counts as "the same screen", and it is the single
+most consequential knob in the whole crawler:
+
+  too coarse -> distinct screens merge and coverage silently under-reports
+  too fine   -> volatile content explodes the graph and runs stop being
+                reproducible
+
+The default (`affordance`) hashes the tree's *structure* plus the text of
+elements that participate in an affordance -- anything clickable/checkable,
+or within `AFFORDANCE_TEXT_DEPTH` levels below one. Free-floating display
+text is excluded, because values like a live gold rate or "Updated just now"
+change between runs and would make every crawl discover a different graph.
+"""
+import hashlib
+import xml.etree.ElementTree as ET
+from typing import Dict, List, Optional, Sequence
+
+# How far below a clickable ancestor text still counts as part of the affordance.
+AFFORDANCE_TEXT_DEPTH = 3
+
+_BOOL_ATTRS = (
+    "checkable", "checked", "clickable", "enabled", "focusable",
+    "scrollable", "selected", "password",
+)
+
+STATE_KEY_MODES = ("affordance", "structure", "content")
+
+
+def _as_bool(value: Optional[str]) -> bool:
+    return str(value).lower() == "true"
+
+
+def parse_hierarchy(xml_text: str) -> List[Dict]:
+    """Flatten a uiautomator XML dump into an indexed list of view dicts."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+
+    views: List[Dict] = []
+
+    def walk(element, parent_index: Optional[int]) -> Optional[int]:
+        if element.tag != "node":
+            index = None
+        else:
+            attrib = element.attrib
+            cls = attrib.get("class", "")
+            view = {
+                "text": attrib.get("text") or None,
+                "content_description": attrib.get("content-desc") or None,
+                "resource_id": attrib.get("resource-id") or None,
+                "class": cls,
+                "package": attrib.get("package") or None,
+                "long_clickable": _as_bool(attrib.get("long-clickable")),
+                "editable": "EditText" in cls,
+                "bounds": attrib.get("bounds", ""),
+                "children": [],
+                "parent": parent_index,
+            }
+            for name in _BOOL_ATTRS:
+                view[name] = _as_bool(attrib.get(name))
+            index = len(views)
+            view["temp_id"] = index
+            views.append(view)
+            if parent_index is not None:
+                views[parent_index]["children"].append(index)
+
+        next_parent = index if index is not None else parent_index
+        for child in element:
+            walk(child, next_parent)
+        return index
+
+    walk(root, None)
+    return views
+
+
+def _affordance_depths(views: Sequence[Dict]) -> Dict[int, int]:
+    """Distance from each view up to its nearest interactive ancestor."""
+    depths: Dict[int, int] = {}
+    for index, view in enumerate(views):
+        depth = None
+        current: Optional[int] = index
+        hops = 0
+        while current is not None and hops <= AFFORDANCE_TEXT_DEPTH:
+            candidate = views[current]
+            if (
+                candidate.get("clickable")
+                or candidate.get("checkable")
+                or candidate.get("long_clickable")
+                or candidate.get("editable")
+            ):
+                depth = hops
+                break
+            current = candidate.get("parent")
+            hops += 1
+        if depth is not None:
+            depths[index] = depth
+    return depths
+
+
+def state_key(
+    views: Sequence[Dict], mode: str = "affordance", package: Optional[str] = None
+) -> str:
+    """Stable hash identifying a screen."""
+    if mode not in STATE_KEY_MODES:
+        raise ValueError(f"unknown state key mode '{mode}'")
+
+    affordances = _affordance_depths(views) if mode == "affordance" else {}
+    parts: List[str] = []
+
+    for index, view in enumerate(views):
+        if package and view.get("package") and view["package"] != package:
+            # Status bar / navigation bar / IME decorations are not the app.
+            continue
+
+        fields = [
+            view.get("class") or "",
+            view.get("resource_id") or "",
+            view.get("content_description") or "",
+            "1" if view.get("clickable") else "0",
+            "1" if view.get("checkable") else "0",
+            "1" if view.get("checked") else "0",
+            "1" if view.get("scrollable") else "0",
+            "1" if view.get("editable") else "0",
+            "1" if view.get("selected") else "0",
+        ]
+
+        if mode == "content":
+            fields.append(view.get("text") or "")
+        elif mode == "affordance" and index in affordances:
+            fields.append(view.get("text") or "")
+
+        parts.append("|".join(fields))
+
+    digest = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+    return digest[:32]
+
+
+def interactive_views(
+    views: Sequence[Dict], package: Optional[str] = None
+) -> List[int]:
+    """Indices of views worth acting on, in deterministic document order."""
+    found: List[int] = []
+    for index, view in enumerate(views):
+        if package and view.get("package") and view["package"] != package:
+            continue
+        if not view.get("enabled", True):
+            continue
+        if (
+            view.get("clickable")
+            or view.get("checkable")
+            or view.get("long_clickable")
+            or view.get("editable")
+            or view.get("scrollable")
+        ):
+            found.append(index)
+    return found
+
+
+def center_of(view: Dict) -> Optional[tuple]:
+    """Parse a `[x1,y1][x2,y2]` bounds string into a centre point."""
+    bounds = view.get("bounds") or ""
+    try:
+        first, second = bounds.split("][")
+        x1, y1 = (int(v) for v in first.lstrip("[").split(","))
+        x2, y2 = (int(v) for v in second.rstrip("]").split(","))
+    except (ValueError, AttributeError):
+        return None
+    return ((x1 + x2) // 2, (y1 + y2) // 2)

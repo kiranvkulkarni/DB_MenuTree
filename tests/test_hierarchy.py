@@ -1,0 +1,122 @@
+"""Offline checks for hierarchy parsing, state keys and selector resolution.
+
+Uses a Compose-shaped dump: a bare clickable `android.view.View` wrapper whose
+label lives on a child, which is the case that breaks naive selector logic.
+
+    python tests/test_hierarchy.py
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.crawler.hierarchy import (  # noqa: E402
+    center_of,
+    interactive_views,
+    parse_hierarchy,
+    state_key,
+)
+from src.parser.selectors import SelectorResolver  # noqa: E402
+
+PKG = "com.jewelestimate.app"
+
+
+def dump(rate_text: str, purity: str = "22K") -> str:
+    return f"""<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+ <node index="0" text="" resource-id="" class="android.widget.FrameLayout"
+   package="{PKG}" content-desc="" checkable="false" checked="false"
+   clickable="false" enabled="true" focusable="false" scrollable="false"
+   long-clickable="false" password="false" selected="false"
+   bounds="[0,0][1080,2400]">
+  <node index="0" text="{rate_text}" resource-id="" class="android.widget.TextView"
+    package="{PKG}" content-desc="" checkable="false" checked="false"
+    clickable="false" enabled="true" focusable="false" scrollable="false"
+    long-clickable="false" password="false" selected="false"
+    bounds="[40,300][600,380]" />
+  <node index="1" text="" resource-id="" class="android.view.View"
+    package="{PKG}" content-desc="" checkable="false" checked="false"
+    clickable="true" enabled="true" focusable="true" scrollable="false"
+    long-clickable="false" password="false" selected="false"
+    bounds="[984,387][1128,531]">
+   <node index="0" text="" resource-id="" class="android.view.View"
+     package="{PKG}" content-desc="Refresh GOLD rate" checkable="false"
+     checked="false" clickable="false" enabled="true" focusable="false"
+     scrollable="false" long-clickable="false" password="false"
+     selected="false" bounds="[984,387][1128,531]" />
+  </node>
+  <node index="2" text="{purity}" resource-id="{PKG}:id/purity_field"
+    class="android.widget.Button" package="{PKG}" content-desc=""
+    checkable="false" checked="false" clickable="true" enabled="true"
+    focusable="true" scrollable="false" long-clickable="false"
+    password="false" selected="false" bounds="[48,830][608,950]" />
+  <node index="3" text="12:04" resource-id="" class="android.widget.TextView"
+    package="com.android.systemui" content-desc="" checkable="false"
+    checked="false" clickable="false" enabled="true" focusable="false"
+    scrollable="false" long-clickable="false" password="false"
+    selected="false" bounds="[0,0][120,60]" />
+ </node>
+</hierarchy>"""
+
+
+def check(name, condition, detail=""):
+    status = "PASS" if condition else "FAIL"
+    print(f"  [{status}] {name}" + (f"  -- {detail}" if detail else ""))
+    return condition
+
+
+def main() -> int:
+    ok = True
+    views = parse_hierarchy(dump("Rs 15589 / g"))
+
+    print("parse_hierarchy")
+    ok &= check("all nodes parsed", len(views) == 6, f"{len(views)} views")
+    wrapper = next(v for v in views if v["clickable"] and v["class"].endswith("View"))
+    ok &= check("clickable wrapper has no own label",
+                not (wrapper["text"] or wrapper["content_description"]))
+    ok &= check("wrapper has a child", len(wrapper["children"]) == 1)
+
+    print("\nselector resolution (the Compose case)")
+    resolver = SelectorResolver()
+    sel = resolver.resolve(wrapper, views)
+    ok &= check("label recovered from descendant",
+                sel is not None and sel.strategy == "desc"
+                and sel.value == "Refresh GOLD rate",
+                str(sel))
+    ok &= check("counted as a descendant hit", resolver.descendant_hits == 1)
+
+    naive = SelectorResolver(resolve_descendants=False).resolve(wrapper, views)
+    ok &= check("without it, collapses to className",
+                naive is not None and naive.is_ambiguous, str(naive))
+
+    print("\ninteractive views")
+    idx = interactive_views(views, PKG)
+    ok &= check("systemui clock excluded", len(idx) == 2, f"indices {idx}")
+
+    print("\nstate key stability")
+    a = state_key(parse_hierarchy(dump("Rs 15589 / g")), "affordance", PKG)
+    b = state_key(parse_hierarchy(dump("Rs 15612 / g")), "affordance", PKG)
+    ok &= check("volatile display text does NOT change the key", a == b,
+                f"{a[:10]} vs {b[:10]}")
+
+    c = state_key(parse_hierarchy(dump("Rs 15589 / g", purity="18K")),
+                  "affordance", PKG)
+    ok &= check("affordance text DOES change the key", a != c,
+                f"{a[:10]} vs {c[:10]}")
+
+    d = state_key(parse_hierarchy(dump("Rs 15589 / g")), "content", PKG)
+    e = state_key(parse_hierarchy(dump("Rs 15612 / g")), "content", PKG)
+    ok &= check("content mode is sensitive to display text", d != e,
+                "this is why it is not the default")
+
+    print("\nbounds")
+    ok &= check("centre computed", center_of(wrapper) == (1056, 459),
+                str(center_of(wrapper)))
+
+    print()
+    print("ALL PASS" if ok else "FAILURES PRESENT")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

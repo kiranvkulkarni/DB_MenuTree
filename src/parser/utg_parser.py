@@ -19,19 +19,12 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .menu_tree import MenuState, MenuTree, Selector, Transition
+from .selectors import DEFAULT_SELECTOR_PRIORITY, SelectorResolver
 
 logger = logging.getLogger(__name__)
 
 # utg.js is a JS assignment, not JSON: `var utg = \n{...}`
 _UTG_PREFIX = re.compile(r"^\s*var\s+utg\s*=\s*", re.IGNORECASE)
-
-DEFAULT_SELECTOR_PRIORITY = ("text", "content_description", "resource_id")
-
-_STRATEGY_BY_KEY = {
-    "text": "text",
-    "content_description": "desc",
-    "resource_id": "resourceId",
-}
 
 _UNMATCHED_HINT = (
     "Most likely cause: DroidBot names event files with second-resolution "
@@ -49,17 +42,18 @@ class UTGParser:
         self.utg_file = self.output_dir / config.get("utg_file", "utg.js")
         self.events_dir = self.output_dir / config.get("events_subdir", "events")
         self.states_dir = self.output_dir / config.get("states_subdir", "states")
-        self.fallback_to_class = config.get("fallback_to_class", True)
-        self.selector_priority = tuple(
-            config.get("selector_priority", DEFAULT_SELECTOR_PRIORITY)
-        )
         self.strict = config.get("strict", True)
-        # Jetpack Compose renders clickable wrappers with no text/desc/id of
-        # their own; the label sits on a descendant node. Resolve through it.
-        self.resolve_descendant_labels = config.get("resolve_descendant_labels", True)
-        self.max_descendant_depth = int(config.get("max_descendant_depth", 4))
+        # Shared with the uiautomator2 back-end so the two crawlers can never
+        # drift on how a view becomes a selector. Jetpack Compose renders
+        # clickable wrappers with no text/desc/id of their own; the label sits
+        # on a descendant node, and the resolver walks through to it.
+        self.resolver = SelectorResolver(
+            priority=config.get("selector_priority", DEFAULT_SELECTOR_PRIORITY),
+            fallback_to_class=config.get("fallback_to_class", True),
+            resolve_descendants=config.get("resolve_descendant_labels", True),
+            max_descendant_depth=int(config.get("max_descendant_depth", 4)),
+        )
         self._state_views: Dict[str, List[dict]] = {}
-        self._descendant_resolved = 0
 
     # -- public ----------------------------------------------------------
     def parse(self) -> MenuTree:
@@ -78,11 +72,11 @@ class UTGParser:
         if tree.root is None:
             self._fail("Could not determine the root state of the UTG.")
 
-        if self._descendant_resolved:
+        if self.resolver.descendant_hits:
             logger.info(
                 "Resolved %d selector(s) from a descendant node (Compose-style "
                 "clickable wrappers with the label on a child).",
-                self._descendant_resolved,
+                self.resolver.descendant_hits,
             )
         ambiguous = tree.ambiguous_transitions()
         if ambiguous:
@@ -373,64 +367,10 @@ class UTGParser:
         return index
 
     # -- selectors -------------------------------------------------------
-    def _direct_identifier(self, view: dict) -> Optional[Selector]:
-        for key in self.selector_priority:
-            value = view.get(key)
-            if value and str(value).strip():
-                value = str(value).strip()
-                if key == "resource_id" and "/" in value:
-                    value = value.split("/")[-1]
-                return Selector(_STRATEGY_BY_KEY.get(key, key), value)
-        return None
-
-    def _descendant_identifier(
-        self, view: dict, state_str: Optional[str]
-    ) -> Optional[Selector]:
-        """Breadth-first search the touched view's subtree for a label.
-
-        Jetpack Compose emits a bare clickable `android.view.View` whose
-        content-description sits on a child node. Without this, every Compose
-        control collapses to the useless selector `className "View"`.
-        """
-        views = self._state_views.get(state_str or "")
-        if not views:
-            return None
-
-        queue: List[Tuple[int, int]] = [
-            (child, 1) for child in view.get("children", []) or []
-        ]
-        while queue:
-            index, depth = queue.pop(0)
-            if not isinstance(index, int) or not 0 <= index < len(views):
-                continue
-            if depth > self.max_descendant_depth:
-                continue
-            child = views[index]
-            found = self._direct_identifier(child)
-            if found:
-                return found
-            queue.extend((c, depth + 1) for c in child.get("children", []) or [])
-        return None
-
     def _selector_from_view(
         self, view: Optional[dict], state_str: Optional[str] = None
     ) -> Optional[Selector]:
-        if not view:
-            return None
-
-        direct = self._direct_identifier(view)
-        if direct:
-            return direct
-
-        if self.resolve_descendant_labels:
-            inherited = self._descendant_identifier(view, state_str)
-            if inherited:
-                self._descendant_resolved += 1
-                return inherited
-
-        if self.fallback_to_class and view.get("class"):
-            return Selector("className", str(view["class"]).split(".")[-1])
-        return None
+        return self.resolver.resolve(view, self._state_views.get(state_str or ""))
 
     # -- diagnostics -----------------------------------------------------
     def _warn(self, message: str) -> None:

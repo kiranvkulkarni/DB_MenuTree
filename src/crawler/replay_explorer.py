@@ -1,0 +1,396 @@
+"""Deterministic replay-based explorer.
+
+Instead of walking forward and pressing BACK to backtrack, this explores by
+replaying a known path from a clean launch every time:
+
+    frontier = [(path_to_state, unexplored_action), ...]
+    for each item:  launch -> replay path -> perform action -> capture state
+
+Costs O(depth) actions per state discovered rather than O(1), and buys three
+things a backtracking crawler cannot give:
+
+  * Reproducibility. No dependence on BACK landing where you assume, and no
+    accumulated state drift, so the same build yields the same graph. A gate
+    built on baseline diffing needs this: otherwise a coverage drop is
+    ambiguous between an app regression and the crawler wandering elsewhere.
+  * Every path is verified executable, because it was just executed. The
+    crawl *is* the replay pass, so emitted tests are known-good by
+    construction.
+  * Full control of the state abstraction and selector resolution at capture
+    time rather than reconstructed afterwards.
+
+Exploration order is a deterministic BFS: the frontier is FIFO and actions
+within a state are taken in document order.
+"""
+import json
+import logging
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from ..parser.menu_tree import Selector
+from ..parser.selectors import SelectorResolver
+from .device_driver import DeviceDriver, DriverError, make_driver
+from .hierarchy import (
+    center_of,
+    interactive_views,
+    parse_hierarchy,
+    state_key,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Step:
+    """One replayable action."""
+    action: str  # click | long_click
+    selector_strategy: str
+    selector_value: str
+    x: int
+    y: int
+
+    def to_dict(self) -> dict:
+        return {
+            "action": self.action,
+            "selector_strategy": self.selector_strategy,
+            "selector_value": self.selector_value,
+            "x": self.x,
+            "y": self.y,
+        }
+
+
+@dataclass
+class ExploredState:
+    key: str
+    activity: str
+    package: str
+    path: List[Step]
+    screenshot: Optional[str] = None
+    view_count: int = 0
+
+
+@dataclass
+class ExploredEdge:
+    from_state: str
+    to_state: str
+    step: Step
+    order: int
+
+
+@dataclass
+class ExplorationResult:
+    package: str
+    root: Optional[str] = None
+    states: Dict[str, ExploredState] = field(default_factory=dict)
+    edges: List[ExploredEdge] = field(default_factory=list)
+    stats: Dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "format": "menutree/1",
+            "app_package": self.package,
+            "root": self.root,
+            "states": [
+                {
+                    "key": s.key,
+                    "activity": s.activity,
+                    "package": s.package,
+                    "depth": len(s.path),
+                    "screenshot": s.screenshot,
+                    "view_count": s.view_count,
+                    "path": [step.to_dict() for step in s.path],
+                }
+                for s in self.states.values()
+            ],
+            "edges": [
+                {
+                    "from": e.from_state,
+                    "to": e.to_state,
+                    "order": e.order,
+                    **e.step.to_dict(),
+                }
+                for e in self.edges
+            ],
+            "stats": self.stats,
+        }
+
+
+class ReplayExplorer:
+    def __init__(self, package: str, serial: Optional[str], config: dict):
+        self.package = package
+        self.serial = serial
+        self.config = config
+
+        self.output_dir = Path(config.get("output_dir", "./u2_out"))
+        self.max_states = int(config.get("max_states", 300))
+        self.max_actions = int(config.get("max_actions", 3000))
+        self.max_depth = int(config.get("max_depth", 8))
+        self.time_budget = float(config.get("time_budget", 900))
+        self.settle = float(config.get("settle_seconds", 1.0))
+        self.state_mode = config.get("state_key_mode", "affordance")
+        self.clear_between_paths = config.get("clear_between_paths", False)
+        self.capture_screenshots = config.get("capture_screenshots", True)
+        self.backend = config.get("driver", "auto")
+
+        self.resolver = SelectorResolver(
+            priority=config.get(
+                "selector_priority",
+                ("text", "content_description", "resource_id"),
+            ),
+            fallback_to_class=config.get("fallback_to_class", True),
+            resolve_descendants=config.get("resolve_descendant_labels", True),
+            max_descendant_depth=int(config.get("max_descendant_depth", 4)),
+        )
+
+        self.driver: Optional[DeviceDriver] = None
+        self.result = ExplorationResult(package=package)
+        self._actions_taken = 0
+        self._replays = 0
+        self._started = 0.0
+        self._left_app = 0
+
+    # -- capture ---------------------------------------------------------
+    def _capture(self) -> Tuple[Optional[str], List[Dict], str]:
+        """Return (state_key, views, activity_package) for the current screen."""
+        assert self.driver is not None
+        xml = self.driver.dump_hierarchy()
+        views = parse_hierarchy(xml)
+        if not views:
+            return None, [], ""
+        current = self.driver.current_package() or ""
+        key = state_key(views, self.state_mode, self.package)
+        return key, views, current
+
+    def _record_state(
+        self, key: str, views: List[Dict], path: List[Step], activity_pkg: str
+    ) -> ExploredState:
+        state = ExploredState(
+            key=key,
+            activity=activity_pkg or self.package,
+            package=self.package,
+            path=list(path),
+            view_count=len(views),
+        )
+        if self.capture_screenshots:
+            shots = self.output_dir / "states"
+            shots.mkdir(parents=True, exist_ok=True)
+            target = shots / f"{key}.png"
+            if not target.exists() and self.driver is not None:
+                if self.driver.screenshot(str(target)):
+                    state.screenshot = f"states/{key}.png"
+            else:
+                state.screenshot = f"states/{key}.png"
+        self.result.states[key] = state
+        return state
+
+    # -- replay ----------------------------------------------------------
+    def _replay(self, path: List[Step]) -> Optional[str]:
+        """Launch clean and replay `path`. Returns the resulting state key."""
+        assert self.driver is not None
+        self.driver.start_app(self.package, clear=self.clear_between_paths)
+        self._replays += 1
+
+        key, views, _ = self._capture()
+        if key is None:
+            return None
+
+        for step in path:
+            if not self._perform(step, views):
+                return None
+            self._actions_taken += 1
+            key, views, current = self._capture()
+            if key is None:
+                return None
+            if current and current != self.package:
+                return None
+        return key
+
+    def _perform(self, step: Step, views: List[Dict]) -> bool:
+        """Re-locate the step's target in the current screen, then act.
+
+        Prefers matching by selector so replay survives minor layout shifts;
+        falls back to the recorded coordinates.
+        """
+        assert self.driver is not None
+        x, y = step.x, step.y
+
+        match = self._find_by_selector(
+            views, step.selector_strategy, step.selector_value
+        )
+        if match is not None:
+            centre = center_of(views[match])
+            if centre:
+                x, y = centre
+
+        try:
+            if step.action == "long_click":
+                self.driver.long_tap(x, y)
+            else:
+                self.driver.tap(x, y)
+        except DriverError as exc:
+            logger.debug("action failed: %s", exc)
+            return False
+        return True
+
+    @staticmethod
+    def _find_by_selector(
+        views: List[Dict], strategy: str, value: str
+    ) -> Optional[int]:
+        key = {
+            "text": "text",
+            "desc": "content_description",
+            "resourceId": "resource_id",
+        }.get(strategy)
+        if key is None:
+            return None
+        for index, view in enumerate(views):
+            candidate = view.get(key)
+            if not candidate:
+                continue
+            candidate = str(candidate)
+            if key == "resource_id" and "/" in candidate:
+                candidate = candidate.split("/")[-1]
+            if candidate.strip() == value:
+                return index
+        return None
+
+    # -- explore ---------------------------------------------------------
+    def _enumerate_actions(self, views: List[Dict]) -> List[Step]:
+        steps: List[Step] = []
+        seen = set()
+        for index in interactive_views(views, self.package):
+            view = views[index]
+            centre = center_of(view)
+            if centre is None:
+                continue
+            selector = self.resolver.resolve(view, views)
+            if selector is None:
+                continue
+            action = "long_click" if (
+                view.get("long_clickable") and not view.get("clickable")
+            ) else "click"
+            dedupe = (action, selector.strategy, selector.value)
+            if dedupe in seen:
+                continue
+            seen.add(dedupe)
+            steps.append(
+                Step(action, selector.strategy, selector.value, centre[0], centre[1])
+            )
+        return steps
+
+    def _budget_exhausted(self) -> Optional[str]:
+        if len(self.result.states) >= self.max_states:
+            return f"max_states ({self.max_states}) reached"
+        if self._actions_taken >= self.max_actions:
+            return f"max_actions ({self.max_actions}) reached"
+        elapsed = time.time() - self._started
+        if elapsed >= self.time_budget:
+            return f"time_budget ({self.time_budget:.0f}s) reached"
+        return None
+
+    def explore(self) -> ExplorationResult:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.driver = make_driver(self.serial, self.backend, self.settle)
+        self._started = time.time()
+
+        # Root: the app's state immediately after a clean launch.
+        root_key = self._replay([])
+        if root_key is None:
+            raise DriverError(
+                f"Could not capture a launch state for {self.package}. "
+                "The app may not have come to the foreground."
+            )
+        _, views, current = self._capture()
+        self._record_state(root_key, views, [], current)
+        self.result.root = root_key
+        logger.info("Root state %s (%d views)", root_key[:12], len(views))
+
+        # FIFO frontier -> deterministic breadth-first exploration.
+        frontier = deque(
+            (root_key, [], step) for step in self._enumerate_actions(views)
+        )
+        queued = {(root_key, s.selector_strategy, s.selector_value) for s in
+                  self._enumerate_actions(views)}
+
+        stop_reason = "frontier exhausted"
+        while frontier:
+            reason = self._budget_exhausted()
+            if reason:
+                stop_reason = reason
+                logger.info("Stopping: %s", reason)
+                break
+
+            from_key, path, step = frontier.popleft()
+            if len(path) + 1 > self.max_depth:
+                continue
+
+            reached = self._replay(path)
+            if reached != from_key:
+                logger.debug(
+                    "replay drift: expected %s got %s", from_key[:8],
+                    (reached or "none")[:8],
+                )
+                continue
+
+            _, views, _ = self._capture()
+            if not self._perform(step, views):
+                continue
+            self._actions_taken += 1
+
+            new_key, new_views, current = self._capture()
+            if new_key is None:
+                continue
+            if current and current != self.package:
+                self._left_app += 1
+                continue
+
+            new_path = path + [step]
+            self.result.edges.append(
+                ExploredEdge(from_key, new_key, step, len(self.result.edges) + 1)
+            )
+
+            if new_key in self.result.states:
+                continue
+
+            self._record_state(new_key, new_views, new_path, current)
+            logger.info(
+                "State %2d: %s depth=%d via %s \"%s\"",
+                len(self.result.states), new_key[:12], len(new_path),
+                step.selector_strategy, step.selector_value,
+            )
+
+            for next_step in self._enumerate_actions(new_views):
+                token = (new_key, next_step.selector_strategy, next_step.selector_value)
+                if token in queued:
+                    continue
+                queued.add(token)
+                frontier.append((new_key, new_path, next_step))
+
+        self.result.stats = {
+            "states": len(self.result.states),
+            "edges": len(self.result.edges),
+            "actions_taken": self._actions_taken,
+            "replays": self._replays,
+            "left_app": self._left_app,
+            "frontier_remaining": len(frontier),
+            "elapsed_seconds": round(time.time() - self._started, 1),
+            "stop_reason": stop_reason,
+            "state_key_mode": self.state_mode,
+            "driver": getattr(self.driver, "name", "?"),
+            "descendant_selectors": self.resolver.descendant_hits,
+        }
+        logger.info("Exploration finished: %s", self.result.stats)
+        return self.result
+
+    def write(self, path: Optional[Path] = None) -> Path:
+        target = path or (self.output_dir / "menutree.json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(self.result.to_dict(), indent=2, sort_keys=False),
+            encoding="utf-8",
+        )
+        logger.info("Graph written: %s", target.resolve())
+        return target
