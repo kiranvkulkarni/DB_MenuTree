@@ -495,6 +495,76 @@ Real time was lost to these.
 
 ---
 
+## 12.5 The element-tree walker (current MenuTree path)
+
+`src/crawler/element_tree.py`, driven by `tools/build_menutree.py`.
+
+The deliverable is a tree of **elements by depth**, not a graph of screens.
+A state graph collapses a filter list into one node; the sheet wants one row
+per filter. See `elements.py` for enumeration and the `[Title]` / `(On/Off)`
+annotations.
+
+### Navigation: tap, don't only go BACK
+
+BACK is the wrong verb for tab-based UIs. Leaving the dialer's Keypad tab
+lands on the call log; BACK again exits to the launcher. Tabs are re-entered
+by **tapping them**. Recovery order is therefore:
+
+1. BACK once, verify by element overlap.
+2. Still in-app but wrong screen → **re-click** the element we descended
+   through. Must be tried here, before pressing BACK again: repeated BACKs
+   walk further away, and an earlier attempt placed this check after the
+   loop, where the launcher was already in front and it never fired.
+3. Only then relaunch and replay (~30s).
+
+Measured effect of adding step 2: BACK ok/failed 8/8 → 24/2, relaunches
+8 → 2, descents 2 → 8, rows 69 → 107.
+
+### Read `lost_returns`, not `back_failed`
+
+`back_failed` counts "BACK didn't work, a fallback ran" — a **cost** metric.
+`lost_returns` counts "the walk lost its place" — the **health** metric, and
+it has been 0 throughout. Four debugging rounds were spent treating the cost
+metric as a failure metric. Depth was limited by relaunch time, never by
+correctness.
+
+### Safety findings from real runs
+
+- **The walker executed USSD/MMI codes.** It pressed dialpad keys until
+  Android auto-ran a code, leaving the app in `com.android.phone`. Keypad
+  keys (`^[0-9*#+]{1,3}$`) are now recorded as rows but never pressed. Some
+  vendor codes are destructive — `*2767*3855#` is a factory reset on Samsung.
+  The danger is not in any single label but in the **accumulated sequence**,
+  which a label-pattern guard cannot see.
+- **The guard was bypassed by identifier labels.** Underscores are word
+  characters, so `call` never matched `end_call_fab_test_tag`. Labels
+  are now split on separators and camelCase before matching.
+- **ANR and crash dialogs** are detected and recorded as incidents. An ANR
+  found during a crawl is a defect the run surfaced, not noise to swallow.
+- **The keyboard was being enumerated** — one tap into a search field added a
+  row per key. The active IME is resolved from the device and excluded.
+
+### Known limits
+
+- Depth reached so far is 4, against an expected 18.
+- Data-heavy screens contribute records as rows (call log entries). Fixed
+  option lists — filters, resolutions — come out correctly, which is what the
+  camera sheet needs, but user data and fixed options are not distinguished.
+- Specification knowledge is unreachable by crawling: `on 3rd entry of
+  camera`, `[When location Permission is OFF in DUT]`, `[Rear Camera]`.
+  A crawler can draft structure and types; those annotations cannot be
+  observed on a screen.
+
+### The alternative worth considering
+
+Discovery must solve preconditions, data-vs-menu discrimination, and
+depth-18 traversal. **Diffing against the existing sheet** needs none of
+them: load the expected rows, walk the build, report what is missing, new, or
+moved. That is also what the workbook actually reports — 4 fails in 1896 —
+so it fits the deliverable more closely than regeneration does.
+
+---
+
 ## 13. Extending it
 
 **Adding a crawler back-end.** Produce a `MenuTree` (or write
