@@ -86,7 +86,8 @@ class ElementTreeWalker:
         self.include_static_text = config.get("include_static_text", True)
         self.include_foreign = config.get("include_foreign", True)
         self.similarity_threshold = float(config.get("similarity_threshold", 0.6))
-        self.back_attempts = int(config.get("back_attempts", 2))
+        self.back_attempts = int(config.get("back_attempts", 4))
+        self.return_similarity = float(config.get("return_similarity", 0.75))
         self.checkpoint_every = int(config.get("checkpoint_every", 25))
 
         self.guard = ActionGuard.from_config(
@@ -106,6 +107,7 @@ class ElementTreeWalker:
         self._relaunches = 0
         self._left_app = 0
         self._exclude = list(CHROME_PACKAGES)
+        self._lost = 0
 
     # -- capture ---------------------------------------------------------
     def _capture(self) -> Tuple[Optional[str], List[Dict], str]:
@@ -138,7 +140,23 @@ class ElementTreeWalker:
         )
 
     # -- navigation ------------------------------------------------------
-    def _return_to(self, target_key: str, path: List[str]) -> bool:
+    def _is_same_screen(
+        self, views: Sequence[Dict], target: Sequence[Element]
+    ) -> bool:
+        """Are we back on the screen we left?
+
+        Compared by element overlap, not by state key. The key includes
+        affordance text, and a screen can legitimately change between visits
+        without becoming a different screen -- the dialer's call log carries
+        timestamps inside clickable rows, so an exact-key test scored 11 of 19
+        successful BACKs as failures and paid for a relaunch each time.
+        """
+        return screen_similarity(target, self._elements(views)) >= self.return_similarity
+
+    def _return_to(
+        self, target_key: str, path: List[str],
+        target_elements: Optional[Sequence[Element]] = None,
+    ) -> bool:
         """Get back to the screen we descended from.
 
         BACK first, because it is cheap and keeps the session. Relaunch and
@@ -150,8 +168,12 @@ class ElementTreeWalker:
                 self.driver.press_back()
             except DriverError:
                 break
-            key, _, current = self._await_stable()
-            if key == target_key:
+            key, views, current = self._await_stable()
+            if key == target_key or (
+                target_elements is not None
+                and views
+                and self._is_same_screen(views, target_elements)
+            ):
                 self._back_ok += 1
                 return True
             if current and current != self.package:
@@ -242,10 +264,25 @@ class ElementTreeWalker:
                 continue
 
             # Re-read the screen: an earlier click may have shifted indices.
+            #
+            # Compare by element overlap, never by exact key. A screen's key
+            # drifts on its own -- the dialer shows call timestamps inside
+            # clickable rows, so affordance text changes while the screen does
+            # not. An exact test concluded we had left a screen we were still
+            # on, pressed BACK, and navigated away from it: 14 relaunches from
+            # 38 clicks, and the walk never got past depth 3.
             current_key, current_views, _ = self._await_stable()
-            if current_key != screen_key:
-                if not self._return_to(screen_key, path):
-                    return
+            if not current_views or not self._is_same_screen(current_views, elements):
+                if not self._return_to(screen_key, path, elements):
+                    # Could not get back. Abandoning the whole screen would
+                    # discard every sibling still unvisited, so skip just this
+                    # element and re-check on the next one.
+                    self._lost += 1
+                    logger.warning(
+                        "Could not return to depth %d screen; skipping %r",
+                        depth, element.label,
+                    )
+                    continue
                 current_key, current_views, _ = self._await_stable()
             live = next(
                 (e for e in self._elements(current_views)
@@ -257,23 +294,24 @@ class ElementTreeWalker:
 
             after_key, after_views, after_pkg = self._await_stable()
             if not after_key or after_key == EMPTY_STATE:
-                self._return_to(screen_key, path)
+                self._return_to(screen_key, path, elements)
                 continue
 
             after_elements = self._elements(after_views)
             similarity = screen_similarity(elements, after_elements)
 
-            if after_key != screen_key and similarity < self.similarity_threshold:
+            if similarity < self.similarity_threshold:
                 row.descended = True
                 self._descents += 1
                 if after_pkg and after_pkg != self.package:
                     row.note = f"leaves app -> {after_pkg}"
                 self._walk(depth + 1, path + [element.label])
-                self._return_to(screen_key, path)
+                self._return_to(screen_key, path, elements)
             elif after_key != screen_key:
-                # Same items, different key: a selection or toggle, not a menu.
+                # Same items, different key: a selection or toggle, not a menu
+                # -- choosing a filter or flipping a switch.
                 row.note = "selection"
-                self._return_to(screen_key, path)
+                self._return_to(screen_key, path, elements)
 
     # -- public ----------------------------------------------------------
     def walk(self) -> List[TreeNode]:
@@ -307,6 +345,7 @@ class ElementTreeWalker:
             "back_failed": self._back_failed,
             "relaunches": self._relaunches,
             "left_app": self._left_app,
+            "lost_returns": self._lost,
             "elapsed_seconds": round(time.time() - self._started, 1),
             "guard": self.guard.summary(),
         }
