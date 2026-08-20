@@ -93,14 +93,28 @@ class ActionGuard:
             )
         return guard
 
+    @staticmethod
+    def _normalise(value: str) -> str:
+        """Make identifier-style labels matchable.
+
+        Unlabelled controls fall back to their resource-id, which is
+        underscore- or hyphen-separated. Underscores are word characters, so
+        `call` does NOT match `end_call_fab_test_tag` -- the guard was
+        silently bypassed by exactly the controls whose intent is hardest to
+        read. Split on those separators and on camelCase before matching.
+        """
+        spaced = re.sub(r"[_\-.]+", " ", value)
+        return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", spaced)
+
     def blocks(
         self, strategy: str, value: str, state: str = ""
     ) -> Optional[str]:
         """Return the matching pattern if this action must not be performed."""
         if not self.enabled or not value:
             return None
+        candidates = (value, self._normalise(value))
         for pattern in self.patterns:
-            if pattern.search(value):
+            if any(pattern.search(c) for c in candidates):
                 self.hits.append(
                     GuardHit(strategy, value, pattern.pattern, state)
                 )

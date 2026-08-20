@@ -33,6 +33,7 @@ class DeviceDriver(Protocol):
     def stop_app(self, package: str) -> None: ...
     def current_package(self) -> Optional[str]: ...
     def current_activity(self) -> Optional[str]: ...
+    def current_ime_package(self) -> Optional[str]: ...
     def screenshot(self, path: str) -> bool: ...
 
 
@@ -113,6 +114,17 @@ class AdbDriver:
                         return f"{pkg}{act}" if act.startswith(".") else act
         return None
 
+
+    def current_ime_package(self) -> Optional[str]:
+        """Active keyboard package, so its keys can be excluded from the tree."""
+        try:
+            out = _adb(self.serial, "shell", "settings", "get", "secure",
+                       "default_input_method")
+        except DriverError:
+            return None
+        value = out.strip()
+        return value.split("/")[0] if "/" in value else (value or None)
+
     def screenshot(self, path: str) -> bool:
         try:
             remote = "/sdcard/menutree_shot.png"
@@ -178,6 +190,17 @@ class U2Driver:
         if act.startswith("."):
             return f"{pkg}{act}"
         return act or None
+
+
+    def current_ime_package(self) -> Optional[str]:
+        """Active keyboard package, so its keys can be excluded from the tree."""
+        try:
+            out = _adb(self.serial, "shell", "settings", "get", "secure",
+                       "default_input_method")
+        except DriverError:
+            return None
+        value = out.strip()
+        return value.split("/")[0] if "/" in value else (value or None)
 
     def screenshot(self, path: str) -> bool:
         try:
