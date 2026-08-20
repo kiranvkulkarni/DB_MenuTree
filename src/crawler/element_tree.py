@@ -27,6 +27,7 @@ two, so options are recorded as leaves rather than recursed into.
 """
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +44,27 @@ from .elements import (
 from .hierarchy import EMPTY_STATE, center_of, parse_hierarchy, state_key
 
 logger = logging.getLogger(__name__)
+
+# Keypad keys: digits, star, hash, plus. Enumerated as rows, never pressed.
+#
+# Pressing them is data entry, not menu navigation, and it is unsafe: the
+# walker typed dialpad keys until Android auto-executed a USSD/MMI code and
+# left the app sitting in com.android.phone ("USSD code running..."). Some
+# vendor MMI codes are destructive -- *2767*3855# is a factory reset on
+# Samsung handsets. It also produced a screen BACK cannot return to, which
+# is what made navigation look broken for three debugging rounds.
+KEYPAD_KEY = re.compile(r"^[0-9*#+]{1,3}$")
+
+# System dialogs that interrupt a walk. An ANR or crash is a real defect the
+# run has surfaced, so it is recorded as an incident rather than silently
+# dismissed -- "the crawl caused 3 ANRs" is a finding a gate should report.
+SYSTEM_DIALOGS = (
+    ("anr", ("isn't responding", "is not responding")),
+    ("crash", ("has stopped", "keeps stopping", "unfortunately")),
+    ("ussd", ("ussd code running", "mmi code")),
+)
+# Preferred dismissal, in order: keep the app alive where possible.
+_DISMISS_LABELS = ("Wait", "OK", "Close app", "Cancel", "Dismiss")
 
 
 @dataclass
@@ -108,6 +130,10 @@ class ElementTreeWalker:
         self._left_app = 0
         self._exclude = list(CHROME_PACKAGES)
         self._lost = 0
+        self._back_trace: List[Dict] = []
+        self._keypad_skipped = 0
+        self._incidents: List[Dict] = []
+        self._reclicks = 0
 
     # -- capture ---------------------------------------------------------
     def _capture(self) -> Tuple[Optional[str], List[Dict], str]:
@@ -163,26 +189,89 @@ class ElementTreeWalker:
         replay only when BACK fails to land us where we started.
         """
         assert self.driver is not None
-        for _ in range(self.back_attempts):
+        for attempt in range(1, self.back_attempts + 1):
             try:
                 self.driver.press_back()
             except DriverError:
                 break
             key, views, current = self._await_stable()
+            landed = self._elements(views) if views else []
+            dialog = self._detect_system_dialog(landed)
+            if dialog:
+                self._dismiss_system_dialog(landed, views, dialog)
+                continue
+            overlap = (
+                screen_similarity(target_elements, landed)
+                if target_elements is not None else -1.0
+            )
             if key == target_key or (
                 target_elements is not None
                 and views
-                and self._is_same_screen(views, target_elements)
+                and overlap >= self.return_similarity
             ):
                 self._back_ok += 1
                 return True
+
+            # Instrumented: guessing at this twice was wasted effort. Record
+            # what BACK actually landed on so the failure mode is readable.
+            self._back_trace.append({
+                "attempt": attempt,
+                "depth": len(path),
+                "expected": target_key[:10] if target_key else None,
+                "got": key[:10] if key else None,
+                "overlap": round(overlap, 3),
+                "package": current,
+                "landed_labels": [e.label for e in landed[:6]],
+                "expected_labels": [e.label for e in (target_elements or [])[:6]],
+            })
             if current and current != self.package:
                 # BACK walked us out of the app entirely.
                 self._left_app += 1
                 break
 
+            # Still in the app but on the wrong screen. Pressing BACK again
+            # walks further away -- from the Keypad tab it reaches the call
+            # log, then the launcher. Try re-entering by tapping instead,
+            # while we are still inside the app.
+            if self._reclick_back(target_key, path, target_elements):
+                self._back_ok += 1
+                return True
+
         self._back_failed += 1
+
         return self._relaunch_and_replay(target_key, path)
+
+    def _reclick_back(
+        self, target_key: str, path: List[str],
+        target_elements: Optional[Sequence[Element]],
+    ) -> bool:
+        """Re-enter the screen by tapping the element we descended through.
+
+        BACK is the wrong verb for tab-based navigation: leaving the Keypad
+        tab lands on the call log, and BACK again exits the app. Tabs are
+        re-entered by tapping. Tried while still inside the app, before
+        paying for a relaunch (~30s; eight of them consumed most of one run).
+        """
+        if not path or self.driver is None:
+            return False
+        key, views, current = self._await_stable()
+        if current != self.package or not views:
+            return False
+        live = next(
+            (e for e in self._elements(views)
+             if e.label == path[-1] and e.interactive),
+            None,
+        )
+        if live is None or not self._click(live, views):
+            return False
+        key, views, _ = self._await_stable()
+        if key == target_key or (
+            target_elements is not None and views
+            and self._is_same_screen(views, target_elements)
+        ):
+            self._reclicks += 1
+            return True
+        return False
 
     def _relaunch_and_replay(self, target_key: str, path: List[str]) -> bool:
         """Fallback: restart the app and re-walk the labels that got us here."""
@@ -207,6 +296,34 @@ class ElementTreeWalker:
                 return False
             key, views, _ = self._await_stable()
         return key == target_key
+
+    def _detect_system_dialog(self, elements: Sequence[Element]) -> Optional[str]:
+        blob = " ".join(e.label.lower() for e in elements)
+        for kind, needles in SYSTEM_DIALOGS:
+            if any(n in blob for n in needles):
+                return kind
+        return None
+
+    def _dismiss_system_dialog(self, elements: Sequence[Element],
+                               views: Sequence[Dict], kind: str) -> bool:
+        """Clear an ANR/crash/USSD dialog so the walk can continue."""
+        self._incidents.append({"kind": kind,
+                                "labels": [e.label for e in elements[:6]]})
+        logger.warning(
+            "%s dialog encountered: %s -- recorded as an incident",
+            kind.upper(), [e.label for e in elements[:4]],
+        )
+        for wanted in _DISMISS_LABELS:
+            for element in elements:
+                if element.label.strip().lower() == wanted.lower():
+                    if self._click(element, views):
+                        time.sleep(self.settle)
+                        return True
+        try:
+            self.driver.press_back()  # type: ignore[union-attr]
+            return True
+        except DriverError:
+            return False
 
     def _click(self, element: Element, views: Sequence[Dict]) -> bool:
         assert self.driver is not None
@@ -260,6 +377,11 @@ class ElementTreeWalker:
             if len(self.rows) % self.checkpoint_every == 0:
                 self._checkpoint()
 
+            if KEYPAD_KEY.fullmatch(element.label.strip()):
+                row.note = "keypad key -- recorded, not pressed"
+                self._keypad_skipped += 1
+                continue
+
             if not element.interactive or blocked or element.kind == "back":
                 continue
 
@@ -293,6 +415,12 @@ class ElementTreeWalker:
                 continue
 
             after_key, after_views, after_pkg = self._await_stable()
+            after_probe = self._elements(after_views) if after_views else []
+            dialog = self._detect_system_dialog(after_probe)
+            if dialog:
+                self._dismiss_system_dialog(after_probe, after_views, dialog)
+                self._return_to(screen_key, path, elements)
+                continue
             if not after_key or after_key == EMPTY_STATE:
                 self._return_to(screen_key, path, elements)
                 continue
@@ -344,8 +472,12 @@ class ElementTreeWalker:
             "back_ok": self._back_ok,
             "back_failed": self._back_failed,
             "relaunches": self._relaunches,
+            "reclick_recoveries": self._reclicks,
             "left_app": self._left_app,
             "lost_returns": self._lost,
+            "keypad_keys_skipped": self._keypad_skipped,
+            "incidents": self._incidents,
+            "back_trace": self._back_trace[:40],
             "elapsed_seconds": round(time.time() - self._started, 1),
             "guard": self.guard.summary(),
         }
