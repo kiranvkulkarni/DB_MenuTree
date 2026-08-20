@@ -70,10 +70,11 @@ _DISMISS_LABELS = ("Wait", "OK", "Close app", "Cancel", "Dismiss")
 @dataclass
 class TreeNode:
     """One row of the MenuTree."""
-    label: str
+    label: str          # annotated, for the sheet: "Photo format [Title]"
     kind: str
     depth: int
     path: List[str] = field(default_factory=list)
+    raw_label: str = ""   # the on-screen text, usable as a selector
     interactive: bool = False
     descended: bool = False
     blocked: Optional[str] = None
@@ -82,6 +83,7 @@ class TreeNode:
     def to_dict(self) -> dict:
         return {
             "label": self.label,
+            "raw_label": self.raw_label or self.label,
             "kind": self.kind,
             "depth": self.depth,
             "path": self.path,
@@ -367,6 +369,7 @@ class ElementTreeWalker:
             blocked = self.guard.blocks("text", element.label) if element.interactive else None
             row = TreeNode(
                 label=element.annotated(),
+                raw_label=element.label,
                 kind=element.kind,
                 depth=depth,
                 path=list(path),
@@ -452,7 +455,8 @@ class ElementTreeWalker:
         self._started = time.time()
 
         self.driver.start_app(self.package, clear=False)
-        self.rows.append(TreeNode(label=self.package, kind="root", depth=1, path=[]))
+        self.rows.append(TreeNode(label=self.package, raw_label=self.package,
+                                  kind="root", depth=1, path=[]))
         self._walk(2, [])
 
         logger.info("Walk finished: %s", self.stats())

@@ -380,7 +380,8 @@ class ReplayExplorer:
         key = {
             "text": "text",
             "desc": "content_description",
-            "resourceId": "resource_id",
+            "id": "resource_id",
+            "class": "class",
         }.get(strategy)
         if key is None:
             return None

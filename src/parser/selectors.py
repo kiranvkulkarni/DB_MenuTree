@@ -15,10 +15,13 @@ DEFAULT_SELECTOR_PRIORITY: Tuple[str, ...] = (
     "resource_id",
 )
 
+# Keys are view-dict fields; values are UVTA selector keywords, per the
+# DSL cheat sheet ("Selector Types"). These strings go straight into emitted
+# commands, so they must match the DSL exactly.
 STRATEGY_BY_KEY = {
     "text": "text",
     "content_description": "desc",
-    "resource_id": "resourceId",
+    "resource_id": "id",
 }
 
 
@@ -53,7 +56,7 @@ class SelectorResolver:
 
         Jetpack Compose emits a bare clickable `android.view.View` whose
         content-description sits on a child node. Without this, every Compose
-        control collapses to the useless selector `className "View"`.
+        control collapses to the useless selector `class "View"`.
         """
         if not views:
             return None
@@ -91,5 +94,5 @@ class SelectorResolver:
                 return found
 
         if self.fallback_to_class and view.get("class"):
-            return Selector("className", str(view["class"]).split(".")[-1])
+            return Selector("class", str(view["class"]).split(".")[-1])
         return None

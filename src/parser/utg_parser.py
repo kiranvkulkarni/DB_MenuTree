@@ -81,7 +81,7 @@ class UTGParser:
         ambiguous = tree.ambiguous_transitions()
         if ambiguous:
             self._warn(
-                f"{len(ambiguous)} transition(s) resolved only to a className "
+                f"{len(ambiguous)} transition(s) resolved only to a class "
                 "selector, which cannot uniquely identify a control. They are "
                 "reported as coverage gaps rather than emitted as tests."
             )

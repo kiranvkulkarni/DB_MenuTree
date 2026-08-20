@@ -17,16 +17,16 @@ NAVIGATION_EVENT_TYPES = {"key", "intent", "spawn", "kill"}
 RESTART_EVENT_TYPES = {"intent", "spawn", "kill"}
 
 
-# A className-only selector cannot uniquely identify a control: a Compose
+# A class-only selector cannot uniquely identify a control: a Compose
 # screen contains dozens of bare `android.view.View` nodes. Tests built on one
 # would click an arbitrary match, so they are reported, not emitted.
-AMBIGUOUS_STRATEGIES = {"className"}
+AMBIGUOUS_STRATEGIES = {"class"}
 
 
 @dataclass(frozen=True)
 class Selector:
     """How a test should locate a view. `strategy` matches the UVTA keyword."""
-    strategy: str  # text | desc | resourceId | className
+    strategy: str  # UVTA keyword: text | textContains | desc | id | class | pkg
     value: str
 
     @property

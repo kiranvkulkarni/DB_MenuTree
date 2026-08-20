@@ -4,6 +4,9 @@ python-dotenv==1.0.0
 pyyaml==6.0.1
 pydantic==2.5.3
 
+# MenuTree workbook export
+openpyxl==3.1.5
+
 # Manifest parsing -- supplies the activity-coverage denominator
 androguard==4.1.2
 

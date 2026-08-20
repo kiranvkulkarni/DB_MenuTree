@@ -231,7 +231,7 @@ class CoverageAnalyzer:
             f"  States discovered      : {report.states_discovered}",
             f"  Transitions discovered : {report.transitions_discovered}",
             f"  Actionable transitions : {report.actionable_transitions}",
-            f"  Ambiguous (className)  : {report.ambiguous_transitions}"
+            f"  Ambiguous (class)      : {report.ambiguous_transitions}"
             "   <-- found but not addressable",
             f"  Unidentified controls  : {report.unidentified_transitions}",
             f"  Unreachable states     : {report.unreachable_states}",

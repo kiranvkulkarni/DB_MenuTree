@@ -27,6 +27,14 @@ _SET_TEXT_TYPES = {"set_text", "settext"}
 _SCROLL_TYPES = {"scroll"}
 _KEY_TYPES = {"key"}
 
+# The DSL accepts only home/back/recents.
+_PRESSABLE = {"back": "back", "home": "home", "recents": "recents",
+              "appswitch": "recents", "menu": "recents"}
+
+
+def _press_key_for(name: Optional[str]) -> str:
+    return _PRESSABLE.get((name or "back").strip().lower(), "back")
+
 
 @dataclass
 class TestCase:
@@ -47,9 +55,6 @@ class UnsupportedEventType(Exception):
 class PathEmitter:
     def __init__(self, config: dict, package: str):
         self.package = package
-        self.verify_timeout = float(
-            config.get("verify_timeout", uvta.DEFAULT_VERIFY_TIMEOUT)
-        )
         self.verify_after_each_step = config.get("verify_after_each_step", True)
         self.max_depth = int(config.get("max_path_depth", 0)) or None
         self.skipped: List[str] = []
@@ -116,7 +121,7 @@ class PathEmitter:
         event_type = t.event_type
 
         if event_type in _KEY_TYPES:
-            return [uvta.press_key(t.key_name or "BACK")]
+            return [uvta.press(_press_key_for(t.key_name))]
 
         if t.selector is None:
             raise UnsupportedEventType(
@@ -130,14 +135,15 @@ class PathEmitter:
         if event_type in _SET_TEXT_TYPES:
             return [uvta.set_text(t.selector, t.input_text or "")]
         if event_type in _SCROLL_TYPES:
-            return [uvta.scroll(t.selector, "down")]
+            # The DSL has no standalone scroll; scrolling is a click modifier.
+            return [uvta.scroll_click(t.selector)]
 
         raise UnsupportedEventType(f"unsupported event type '{event_type}'")
 
     def _with_verify(self, action: str, selector: Selector) -> List[str]:
         if not self.verify_after_each_step:
             return [action]
-        return [action, uvta.verify_exists(selector, self.verify_timeout)]
+        return [action, uvta.verify_exists(selector)]
 
     # -- naming ----------------------------------------------------------
     def _name_for(self, tree: MenuTree, edge: Transition) -> str:
