@@ -382,6 +382,8 @@ class ReplayExplorer:
             "desc": "content_description",
             "id": "resource_id",
             "class": "class",
+            # xpath is structural: not resolvable by attribute match, so
+            # replay falls back to the recorded coordinates for these.
         }.get(strategy)
         if key is None:
             return None

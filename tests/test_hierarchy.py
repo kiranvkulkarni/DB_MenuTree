@@ -86,12 +86,29 @@ def main() -> int:
     ok &= check("counted as a descendant hit", resolver.descendant_hits == 1)
 
     naive = SelectorResolver(resolve_descendants=False).resolve(wrapper, views)
-    ok &= check("without it, collapses to className",
-                naive is not None and naive.is_ambiguous, str(naive))
+    ok &= check("without it, falls back to xpath -- unique but fragile",
+                naive is not None and naive.strategy == "xpath"
+                and naive.is_fragile and not naive.is_ambiguous,
+                str(naive))
 
     print("\ninteractive views")
     idx = interactive_views(views, PKG)
     ok &= check("systemui clock excluded", len(idx) == 2, f"indices {idx}")
+
+    print("\nselector priority: text > desc > id > xpath")
+    priority_resolver = SelectorResolver()
+    by_strategy = {}
+    for v in views:
+        s = priority_resolver.resolve(v, views)
+        if s:
+            by_strategy.setdefault(s.strategy, []).append(s.value)
+    ok &= check("desc used when there is no text",
+                "Refresh GOLD rate" in by_strategy.get("desc", []))
+    ok &= check("xpath used only as a last resort",
+                all(v.startswith("/") for v in by_strategy.get("xpath", [])),
+                f"{len(by_strategy.get('xpath', []))} xpath selector(s)")
+    ok &= check("no ambiguous class selectors emitted",
+                "class" not in by_strategy, str(sorted(by_strategy)))
 
     print("\nstate key stability")
     a = state_key(parse_hierarchy(dump("Rs 15589 / g")), "affordance", PKG)

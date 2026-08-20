@@ -19,7 +19,14 @@ from ..parser.menu_tree import Selector
 
 # Selector keywords the DSL accepts. `description`, `resourceid` and
 # `className` are listed as accepted aliases; the short forms are used here.
-SELECTOR_KEYWORDS = ("text", "textContains", "desc", "id", "class", "pkg")
+SELECTOR_KEYWORDS = (
+    "text", "textContains", "desc", "id", "class", "pkg", "xpath",
+)
+
+# Confirmed preference when a view offers several: text, then description,
+# then resource id, then xpath. `class` remains only as a degenerate case and
+# should not normally be emitted -- see SelectorResolver.
+SELECTOR_PREFERENCE = ("text", "desc", "id", "xpath")
 
 PRESS_KEYS = ("home", "back", "recents")
 CAMERA_TARGETS = ("front", "rear")
@@ -135,19 +142,15 @@ def testcase_header(name: str) -> str:
     return f"TESTCASE: {name}"
 
 
-# -- NOT on the cheat sheet --------------------------------------------------
-# Kept because the generator needs them, but treat as unconfirmed.
+# -- app lifecycle -----------------------------------------------------------
 
 def launch(package: str) -> str:
-    """`launch "<package>"`
-
-    UNCONFIRMED. The cheat sheet has no app-lifecycle section, yet every
-    generated test case opens with this. If the DSL spells it differently --
-    `start`, `open`, `launch_app` -- or if the runner launches the app itself
-    and no command is needed, this one function is the only thing to change.
-    """
+    """`launch "<package>"` -- confirmed, though absent from the cheat sheet."""
     return f'launch "{package}"'
 
+
+# -- NOT on the cheat sheet --------------------------------------------------
+# Kept because the generator needs them, but treat as unconfirmed.
 
 def long_click(selector: Selector) -> str:
     """UNCONFIRMED: no long-press variant appears on the cheat sheet."""

@@ -22,6 +22,11 @@ RESTART_EVENT_TYPES = {"intent", "spawn", "kill"}
 # would click an arbitrary match, so they are reported, not emitted.
 AMBIGUOUS_STRATEGIES = {"class"}
 
+# Unique, but encodes layout: an xpath breaks when the layout shifts even if
+# the control itself is unchanged. Tracked so a gate can see how much of its
+# coverage rests on the most build-fragile selector.
+FRAGILE_STRATEGIES = {"xpath"}
+
 
 @dataclass(frozen=True)
 class Selector:
@@ -32,6 +37,10 @@ class Selector:
     @property
     def is_ambiguous(self) -> bool:
         return self.strategy in AMBIGUOUS_STRATEGIES
+
+    @property
+    def is_fragile(self) -> bool:
+        return self.strategy in FRAGILE_STRATEGIES
 
     def __str__(self) -> str:
         return f'{self.strategy} "{self.value}"'
