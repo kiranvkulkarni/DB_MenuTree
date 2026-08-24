@@ -10,6 +10,7 @@ import argparse
 import json
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -29,7 +30,14 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="MenuTree element-tree walker")
     p.add_argument("--package", required=True)
     p.add_argument("--serial", default=None)
-    p.add_argument("--output-dir", default="./tree_out")
+    p.add_argument("--output-root", default="./output",
+                   help="Parent folder. Each run gets its own subfolder "
+                        "named <package>_<YYYYMMDD_HHMMSS_mmm>, so runs "
+                        "never overwrite each other.")
+    p.add_argument("--output-dir", default=None,
+                   help="Write straight into this folder instead of "
+                        "creating a per-run one. Required with --skip-walk "
+                        "to point at an existing run.")
     p.add_argument("--time-budget", type=float, default=3600)
     p.add_argument("--max-depth", type=int, default=18)
     p.add_argument("--ready-timeout", type=float, default=25.0)
@@ -52,6 +60,9 @@ def parse_args() -> argparse.Namespace:
              "permission controller and appears in the expected sheet, so "
              "this loses real coverage.",
     )
+    p.add_argument("--no-reset", action="store_true",
+                   help="Do NOT pm clear the app before exploring. By default each run starts from a fresh app state, which also brings back "
+                        "first-run pop-ups a previous run dismissed.")
     p.add_argument("--no-guard", action="store_true")
     p.add_argument("--guard-presets", default=",".join(DEFAULT_PRESETS),
                    help=f"available: {', '.join(sorted(GUARD_PRESETS))}")
@@ -79,8 +90,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    setup_logging(log_dir="./logs", level="INFO", run_id="menutree")
-    output_dir = Path(args.output_dir)
+
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    else:
+        now = datetime.now()
+        stamp = f"{now:%Y%m%d_%H%M%S}_{now.microsecond // 1000:03d}"
+        output_dir = Path(args.output_root) / f"{args.package}_{stamp}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    run_id = output_dir.name
+    setup_logging(log_dir=str(output_dir), level="INFO", run_id=run_id)
+    logger.info("Run folder: %s", output_dir.resolve())
     rows_file = output_dir / "menutree_rows.json"
 
     if not args.skip_walk:
@@ -98,6 +119,7 @@ def main() -> int:
             "guard_presets": [g for g in args.guard_presets.split(",") if g],
             "guard_extra_patterns": [g for g in args.guard_extra.split(",") if g],
             "clear_between_paths": args.clear_between_paths,
+            "reset_before_start": not args.no_reset,
         })
         try:
             walker.walk()
@@ -130,6 +152,13 @@ def main() -> int:
         print(f"  dialog recoveries: {stats.get('dialog_recoveries')} "
               f"(clear_between_paths={stats.get('clear_between_paths')})")
         print(f"  elapsed         : {stats.get('elapsed_seconds')}s")
+        print("-" * 60)
+        print(f"  COVERAGE        : {stats.get('coverage_percent')}%  "
+              f"({stats.get('worklist_by_status', {}).get('done', 0)}"
+              f"/{stats.get('worklist_actionable')} actionable elements)")
+        print(f"  still pending   : {stats.get('elements_pending')}")
+        print(f"  unreachable     : {stats.get('elements_unreachable')}")
+        print(f"  worklist status : {stats.get('worklist_by_status')}")
         guard = stats.get("guard") or {}
         if guard.get("blocked_attempts"):
             print(f"  guard blocked   : {guard['blocked_attempts']} on "

@@ -74,6 +74,44 @@ _DISMISS_LABELS = ("Wait", "OK", "Close app", "Cancel", "Dismiss")
 
 
 @dataclass
+class WorkItem:
+    """One unit of work: "click this element on this screen".
+
+    The worklist is what makes coverage measurable. Recursion knows where it
+    is but never what it has left to do, so it can report rows discovered and
+    nothing else -- there is no denominator, and "is it 100%?" has no answer.
+    An explicit item per (screen, element) gives:
+
+        done / (done + pending + unreachable) = a real coverage figure
+
+    and makes a run resumable, since the queue is serialisable state rather
+    than a Python call stack.
+    """
+    screen_key: str
+    label: str
+    kind: str
+    path: List[str]
+    depth: int
+    status: str = "pending"   # pending | done | unreachable | blocked | recorded
+    reason: str = ""
+
+    @property
+    def key(self) -> tuple:
+        return (self.screen_key, self.label, self.kind)
+
+    def to_dict(self) -> dict:
+        return {
+            "screen": self.screen_key[:12],
+            "label": self.label,
+            "kind": self.kind,
+            "depth": self.depth,
+            "path": self.path,
+            "status": self.status,
+            "reason": self.reason,
+        }
+
+
+@dataclass
 class TreeNode:
     """One row of the MenuTree."""
     label: str          # annotated, for the sheet: "Photo format [Title]"
@@ -126,6 +164,10 @@ class ElementTreeWalker:
         # reached -- without it that branch is lost the moment the first
         # option is clicked, with no way back.
         self.clear_between_paths = bool(config.get("clear_between_paths", False))
+        # Start every run from a fresh install state. Makes runs
+        # comparable, and brings back first-run pop-ups that a previous
+        # run would otherwise have permanently dismissed.
+        self.reset_before_start = bool(config.get("reset_before_start", True))
 
         self.guard = ActionGuard.from_config(
             enabled=config.get("guard_enabled", True),
@@ -151,6 +193,11 @@ class ElementTreeWalker:
         self._keypad_skipped = 0
         self._incidents: List[Dict] = []
         self._reclicks = 0
+        self._processed = 0
+        self._worklist: Dict[tuple, WorkItem] = {}
+        self._screen_elements: Dict[str, List[Element]] = {}
+        self._screen_paths: Dict[str, List[str]] = {}
+        self._row_for: Dict[tuple, TreeNode] = {}
 
     # -- capture ---------------------------------------------------------
     def _capture(self) -> Tuple[Optional[str], List[Dict], str]:
@@ -362,51 +409,37 @@ class ElementTreeWalker:
     def _budget_left(self) -> bool:
         return (time.time() - self._started) < self.time_budget
 
-    def _walk(self, depth: int, path: List[str]) -> None:
-        if depth > self.max_depth or not self._budget_left():
-            return
+    # -- worklist --------------------------------------------------------
+    def _register_screen(
+        self, screen_key: str, views: Sequence[Dict], path: List[str], depth: int
+    ) -> int:
+        """Record every element on a screen; queue the actionable ones.
 
-        screen_key, views, current = self._await_stable()
-        if not screen_key or screen_key == EMPTY_STATE:
-            return
+        This is the "list all UI elements of that screen" step. Every element
+        becomes a row immediately (that is the breadth, and the sheet wants
+        titles and static text too). Only the ones worth pressing become
+        pending work.
+        """
         if screen_key in self._visited_screens:
-            return
-
-        if current and current != self.package:
-            # state_key no longer collapses a foreign-owned screen to
-            # EMPTY_STATE (a runtime permission prompt is entirely owned by
-            # com.google.android.permissioncontroller and is real, addressable
-            # content). But that means every foreign screen is now a
-            # candidate to walk, including ones that are NOT a pop-up over
-            # the app -- a browser opened via "Learn more", the launcher
-            # mid-transition, an unrelated app entirely. Only descend when it
-            # structurally looks like a dialog; otherwise this screen was
-            # already recorded as a "leaves app" note on the row that led
-            # here, and walking it further would enumerate a whole other
-            # app's menu as if it were this app's.
-            if not looks_like_dialog(views, self.package):
-                self._foreign_skipped += 1
-                logger.info(
-                    "depth %-2d  not a dialog, foreign package %s -- not walked",
-                    depth, current,
-                )
-                return
-            logger.info("depth %-2d  system dialog over the app (%s)",
-                        depth, current)
-
+            return 0
         self._visited_screens.add(screen_key)
 
         elements = self._elements(views)
+        self._screen_elements[screen_key] = list(elements)
+        self._screen_paths[screen_key] = list(path)
+
         logger.info(
-            "depth %-2d  %-45s  %d element(s)",
-            depth, " > ".join(path[-2:]) or "<root>", len(elements),
+            "screen %-12s depth %-2d  %-38s  %d element(s)",
+            screen_key[:12], depth, " > ".join(path[-2:]) or "<root>",
+            len(elements),
         )
 
+        queued = 0
         for element in elements:
-            if not self._budget_left():
-                return
-
-            blocked = self.guard.blocks("text", element.label) if element.interactive else None
+            blocked = (
+                self.guard.blocks("text", element.label)
+                if element.interactive else None
+            )
             row = TreeNode(
                 label=element.annotated(),
                 raw_label=element.label,
@@ -417,99 +450,156 @@ class ElementTreeWalker:
                 blocked=blocked,
             )
             self.rows.append(row)
+            self._row_for[(screen_key, element.label, element.kind)] = row
             if len(self.rows) % self.checkpoint_every == 0:
                 self._checkpoint()
 
+            item = WorkItem(
+                screen_key=screen_key,
+                label=element.label,
+                kind=element.kind,
+                path=list(path),
+                depth=depth,
+            )
+
             if KEYPAD_KEY.fullmatch(element.label.strip()):
+                item.status, item.reason = "recorded", "keypad key -- not pressed"
                 row.note = "keypad key -- recorded, not pressed"
                 self._keypad_skipped += 1
-                continue
+            elif blocked:
+                item.status, item.reason = "blocked", f"action guard: {blocked}"
+            elif not element.interactive or element.kind == "back":
+                item.status = "recorded"
+                item.reason = "not interactive" if not element.interactive else "back"
+            elif depth >= self.max_depth:
+                item.status, item.reason = "recorded", f"at max_depth {self.max_depth}"
+            else:
+                queued += 1
 
-            if not element.interactive or blocked or element.kind == "back":
-                continue
+            self._worklist[item.key] = item
 
-            # Re-read the screen: an earlier click may have shifted indices.
-            #
-            # Compare by element overlap, never by exact key. A screen's key
-            # drifts on its own -- the dialer shows call timestamps inside
-            # clickable rows, so affordance text changes while the screen does
-            # not. An exact test concluded we had left a screen we were still
-            # on, pressed BACK, and navigated away from it: 14 relaunches from
-            # 38 clicks, and the walk never got past depth 3.
-            current_key, current_views, _ = self._await_stable()
-            if not current_views or not self._is_same_screen(current_views, elements):
-                if not self._return_to(screen_key, path, elements):
-                    # Could not get back. Abandoning the whole screen would
-                    # discard every sibling still unvisited, so skip just this
-                    # element and re-check on the next one.
-                    #
-                    # The row for this element was already appended above
-                    # with no note, which is indistinguishable in the sheet
-                    # from a genuinely-tested leaf with nothing behind it --
-                    # a real transparency gap for a coverage deliverable.
-                    # Tag it so "recorded" and "actually clicked" are never
-                    # confused when reading the workbook.
-                    self._lost += 1
-                    row.note = "NOT TESTED -- could not return to parent screen"
-                    logger.warning(
-                        "Could not return to depth %d screen; skipping %r",
-                        depth, element.label,
-                    )
-                    continue
-                current_key, current_views, _ = self._await_stable()
-            live = next(
-                (e for e in self._elements(current_views)
-                 if e.label == element.label and e.interactive),
-                None,
-            )
-            if live is None and self.clear_between_paths:
-                # The element that was on this screen a moment ago is gone.
-                # The likely cause is a one-shot dialog: an earlier sibling
-                # (e.g. "Cancel") already dismissed it, so "Turn on" no
-                # longer exists to click. Clearing and replaying the path
-                # restores the app to first-run state, which makes the
-                # dialog reappear so this branch is not silently lost.
-                if self._relaunch_and_replay(screen_key, path, clear=True):
-                    _, current_views, _ = self._await_stable()
-                    live = next(
-                        (e for e in self._elements(current_views)
-                         if e.label == element.label and e.interactive),
-                        None,
-                    )
-                    if live is not None:
-                        self._dialog_recoveries += 1
+        return queued
+
+    def _pending_items(self) -> List[WorkItem]:
+        return [i for i in self._worklist.values() if i.status == "pending"]
+
+    def _next_item(self, current_screen: Optional[str]) -> Optional[WorkItem]:
+        """Cheapest pending item.
+
+        Prefer one on the screen already in front of us -- navigation is the
+        dominant cost (a relaunch is ~30s), so exhausting the current screen
+        before moving is worth far more than any traversal-order purity.
+        Otherwise take the shallowest, which keeps replay paths short.
+        """
+        pending = self._pending_items()
+        if not pending:
+            return None
+        if current_screen:
+            here = [i for i in pending if i.screen_key == current_screen]
+            if here:
+                return here[0]
+        return min(pending, key=lambda i: i.depth)
+
+    def _navigate_to(self, item: WorkItem) -> Tuple[bool, List[Dict]]:
+        """Get to the screen this item lives on."""
+        target = self._screen_elements.get(item.screen_key)
+        key, views, _ = self._await_stable()
+
+        if views and target and self._is_same_screen(views, target):
+            return True, views
+        if key == item.screen_key and views:
+            return True, views
+
+        if self._return_to(item.screen_key, item.path, target):
+            _, views, _ = self._await_stable()
+            return bool(views), views
+        return False, []
+
+    def _process(self, item: WorkItem) -> None:
+        """Navigate to the item's screen, click it, record what happened."""
+        row = self._row_for.get((item.screen_key, item.label, item.kind))
+        reached, views = self._navigate_to(item)
+        if not reached or not views:
+            item.status = "unreachable"
+            item.reason = "could not navigate to the parent screen"
+            self._lost += 1
+            if row is not None:
+                row.note = "NOT TESTED -- could not return to parent screen"
+            logger.warning("unreachable: %r on %s",
+                           item.label, item.screen_key[:12])
+            return
+
+        live = next(
+            (e for e in self._elements(views)
+             if e.label == item.label and e.interactive),
+            None,
+        )
+        if live is None and self.clear_between_paths:
+            # The element was here a moment ago and is gone. Usually a
+            # one-shot dialog: a sibling ("Cancel") already dismissed it, so
+            # the other branch ("Turn on") no longer exists. Clearing and
+            # replaying restores first-run state, making it reappear.
+            if self._relaunch_and_replay(item.screen_key, item.path, clear=True):
+                _, views, _ = self._await_stable()
+                live = next(
+                    (e for e in self._elements(views)
+                     if e.label == item.label and e.interactive),
+                    None,
+                )
+                if live is not None:
+                    self._dialog_recoveries += 1
+                    if row is not None:
                         row.note = "recovered via clear+relaunch (one-shot dialog)"
-            if live is None or not self._click(live, current_views):
-                if live is None:
-                    row.note = row.note or "element vanished before click (one-shot?)"
-                continue
 
-            after_key, after_views, after_pkg = self._await_stable()
-            after_probe = self._elements(after_views) if after_views else []
-            dialog = self._detect_system_dialog(after_probe)
-            if dialog:
-                self._dismiss_system_dialog(after_probe, after_views, dialog)
-                self._return_to(screen_key, path, elements)
-                continue
-            if not after_key or after_key == EMPTY_STATE:
-                self._return_to(screen_key, path, elements)
-                continue
+        if live is None or not self._click(live, views):
+            item.status = "unreachable"
+            item.reason = "element vanished before it could be clicked"
+            if row is not None and not row.note:
+                row.note = "element vanished before click (one-shot?)"
+            return
 
-            after_elements = self._elements(after_views)
-            similarity = screen_similarity(elements, after_elements)
+        after_key, after_views, after_pkg = self._await_stable()
+        after_probe = self._elements(after_views) if after_views else []
 
-            if similarity < self.similarity_threshold:
+        dialog = self._detect_system_dialog(after_probe)
+        if dialog:
+            self._dismiss_system_dialog(after_probe, after_views, dialog)
+            item.status, item.reason = "done", f"{dialog} dialog handled"
+            return
+
+        if not after_key or after_key == EMPTY_STATE:
+            item.status, item.reason = "done", "no readable screen after click"
+            return
+
+        source = self._screen_elements.get(item.screen_key, [])
+        similarity = screen_similarity(source, after_probe)
+
+        if similarity < self.similarity_threshold:
+            # A different screen: this element opens a submenu.
+            item.status, item.reason = "done", "opened a screen"
+            if row is not None:
                 row.descended = True
-                self._descents += 1
-                if after_pkg and after_pkg != self.package:
-                    row.note = f"leaves app -> {after_pkg}"
-                self._walk(depth + 1, path + [element.label])
-                self._return_to(screen_key, path, elements)
-            elif after_key != screen_key:
-                # Same items, different key: a selection or toggle, not a menu
-                # -- choosing a filter or flipping a switch.
-                row.note = "selection"
-                self._return_to(screen_key, path, elements)
+            self._descents += 1
+
+            foreign = bool(after_pkg and after_pkg != self.package)
+            if foreign and row is not None:
+                row.note = f"leaves app -> {after_pkg}"
+
+            if foreign and not looks_like_dialog(after_views, self.package):
+                # A real pop-up over the app is in scope (a permission prompt
+                # is owned entirely by the permission controller). An
+                # unrelated app is not -- enumerating a browser's menu as if
+                # it were this app's would be worse than missing it.
+                self._foreign_skipped += 1
+                logger.info("foreign screen %s -- recorded, not walked", after_pkg)
+            else:
+                self._register_screen(
+                    after_key, after_views, item.path + [item.label], item.depth + 1
+                )
+        else:
+            item.status, item.reason = "done", "selection on the same screen"
+            if row is not None:
+                row.note = row.note or "selection"
 
     # -- public ----------------------------------------------------------
     def walk(self) -> List[TreeNode]:
@@ -521,10 +611,46 @@ class ElementTreeWalker:
             logger.info("Excluding active keyboard package: %s", ime)
         self._started = time.time()
 
-        self.driver.start_app(self.package, clear=False)
+        # Start from a fresh copy of the app. Beyond reproducibility, this is
+        # what brings first-run pop-ups back -- permission prompts, one-shot
+        # dialogs, onboarding -- so they are part of the tree rather than
+        # something a previous run permanently dismissed.
+        if self.reset_before_start:
+            logger.info("Resetting %s to a fresh state before exploring",
+                        self.package)
+        self.driver.start_app(self.package, clear=self.reset_before_start)
+
         self.rows.append(TreeNode(label=self.package, raw_label=self.package,
                                   kind="root", depth=1, path=[]))
-        self._walk(2, [])
+
+        root_key, views, current = self._await_stable()
+        if not root_key or root_key == EMPTY_STATE or not views:
+            logger.error("Could not read a launch screen for %s", self.package)
+            return self.rows
+        self._register_screen(root_key, views, [], 2)
+
+        # The worklist loop. Every iteration takes one pending element,
+        # reaches it, presses it, and marks it done -- so at any moment the
+        # remaining work is known, which is what makes the coverage figure
+        # real rather than asserted.
+        while self._budget_left():
+            _, _, current_pkg = (None, None, None)
+            here_key, _, _ = self._await_stable()
+            item = self._next_item(here_key)
+            if item is None:
+                logger.info("Worklist exhausted -- every element traversed.")
+                break
+            self._process(item)
+            self._processed += 1
+            if self._processed % self.checkpoint_every == 0:
+                self._checkpoint()
+
+        remaining = len(self._pending_items())
+        if remaining:
+            logger.warning(
+                "Stopped with %d element(s) still pending (budget reached). "
+                "Coverage is partial and the report says so.", remaining,
+            )
 
         logger.info("Walk finished: %s", self.stats())
         return self.rows
@@ -533,10 +659,30 @@ class ElementTreeWalker:
         by_depth: Dict[int, int] = {}
         for row in self.rows:
             by_depth[row.depth] = by_depth.get(row.depth, 0) + 1
+        status = {}
+        for item in self._worklist.values():
+            status[item.status] = status.get(item.status, 0) + 1
+        actionable = sum(
+            v for k, v in status.items()
+            if k in ("done", "pending", "unreachable")
+        )
+        traversed = status.get("done", 0)
+        coverage = round(100.0 * traversed / actionable, 1) if actionable else 0.0
+
         return {
             "rows": len(self.rows),
             "max_depth": max((r.depth for r in self.rows), default=0),
             "rows_by_depth": dict(sorted(by_depth.items())),
+            # The coverage figure, and the numbers behind it. `actionable`
+            # excludes elements never meant to be pressed (static text, back
+            # buttons, keypad keys, guard-blocked) so the percentage is not
+            # inflated by rows that were never work in the first place.
+            "coverage_percent": coverage,
+            "worklist_total": len(self._worklist),
+            "worklist_actionable": actionable,
+            "worklist_by_status": dict(sorted(status.items())),
+            "elements_pending": status.get("pending", 0),
+            "elements_unreachable": status.get("unreachable", 0),
             "screens_visited": len(self._visited_screens),
             "clicks": self._clicks,
             "descents": self._descents,
