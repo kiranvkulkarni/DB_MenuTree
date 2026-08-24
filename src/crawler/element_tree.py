@@ -697,6 +697,27 @@ class ElementTreeWalker:
         if not root_key or root_key == EMPTY_STATE or not views:
             logger.error("Could not read a launch screen for %s", self.package)
             return self.rows
+
+        # Refuse to root the tree in another app. If something else is in
+        # front at launch -- a leftover Gallery, a share sheet, whatever the
+        # previous session left behind -- registering it as the root poisons
+        # every navigation after it: the walker spends the whole run trying
+        # to return to a screen belonging to a different app. Observed: a run
+        # whose root was recorded as the Gallery (Open Photos / Share /
+        # Favourite) and which reached 13 rows before giving up.
+        if current and current != self.package:
+            logger.warning(
+                "Launch landed in %s, not %s -- retrying once", current, self.package,
+            )
+            self.driver.start_app(self.package, clear=False)
+            root_key, views, current = self._await_stable()
+            if current and current != self.package:
+                logger.error(
+                    "Cannot start %s: %s is in the foreground. Refusing to "
+                    "root the tree in another app.", self.package, current,
+                )
+                return self.rows
+
         self._register_screen(root_key, views, [], 2)
 
         # The worklist loop. Every iteration takes one pending element,

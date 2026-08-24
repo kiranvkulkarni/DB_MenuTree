@@ -34,6 +34,7 @@ class DeviceDriver(Protocol):
     def current_package(self) -> Optional[str]: ...
     def current_activity(self) -> Optional[str]: ...
     def current_ime_package(self) -> Optional[str]: ...
+    def screen_size(self) -> tuple: ...
     def screenshot(self, path: str) -> bool: ...
 
 
@@ -115,6 +116,17 @@ class AdbDriver:
         return None
 
 
+
+    def screen_size(self) -> tuple:
+        """(width, height) in pixels, from `wm size`."""
+        out = _adb(self.serial, "shell", "wm", "size")
+        for line in out.splitlines():
+            if "size:" in line and "x" in line:
+                dims = line.split(":")[-1].strip()
+                w, _, h = dims.partition("x")
+                return int(w), int(h)
+        raise DriverError(f"could not parse screen size from {out!r}")
+
     def current_ime_package(self) -> Optional[str]:
         """Active keyboard package, so its keys can be excluded from the tree."""
         try:
@@ -192,6 +204,17 @@ class U2Driver:
         return act or None
 
 
+
+    def screen_size(self) -> tuple:
+        """(width, height) in pixels, from `wm size`."""
+        out = _adb(self.serial, "shell", "wm", "size")
+        for line in out.splitlines():
+            if "size:" in line and "x" in line:
+                dims = line.split(":")[-1].strip()
+                w, _, h = dims.partition("x")
+                return int(w), int(h)
+        raise DriverError(f"could not parse screen size from {out!r}")
+
     def current_ime_package(self) -> Optional[str]:
         """Active keyboard package, so its keys can be excluded from the tree."""
         try:
@@ -201,6 +224,12 @@ class U2Driver:
             return None
         value = out.strip()
         return value.split("/")[0] if "/" in value else (value or None)
+
+
+    def screen_size(self) -> tuple:
+        """(width, height) in pixels."""
+        info = self.device.info
+        return int(info["displayWidth"]), int(info["displayHeight"])
 
     def screenshot(self, path: str) -> bool:
         try:
