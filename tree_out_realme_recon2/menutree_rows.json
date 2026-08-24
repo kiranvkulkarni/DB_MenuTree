@@ -1,0 +1,254 @@
+{
+  "format": "menutree-rows/1",
+  "app_package": "com.oplus.camera",
+  "rows": [
+    {
+      "label": "com.oplus.camera",
+      "raw_label": "com.oplus.camera",
+      "kind": "root",
+      "depth": 1,
+      "path": [],
+      "interactive": false,
+      "descended": false,
+      "blocked": null,
+      "note": ""
+    },
+    {
+      "label": "grant_singleton",
+      "raw_label": "grant_singleton",
+      "kind": "button",
+      "depth": 2,
+      "path": [],
+      "interactive": true,
+      "descended": false,
+      "blocked": null,
+      "note": ""
+    },
+    {
+      "label": "grant_dialog",
+      "raw_label": "grant_dialog",
+      "kind": "button",
+      "depth": 2,
+      "path": [],
+      "interactive": true,
+      "descended": false,
+      "blocked": null,
+      "note": ""
+    },
+    {
+      "label": "Allow Camera to access this device\u2019s location? [Title]",
+      "raw_label": "Allow Camera to access this device\u2019s location?",
+      "kind": "title",
+      "depth": 2,
+      "path": [],
+      "interactive": false,
+      "descended": false,
+      "blocked": null,
+      "note": ""
+    },
+    {
+      "label": "Precise (On/Off)",
+      "raw_label": "Precise",
+      "kind": "toggle",
+      "depth": 2,
+      "path": [],
+      "interactive": true,
+      "descended": false,
+      "blocked": null,
+      "note": ""
+    },
+    {
+      "label": "Approximate (On/Off)",
+      "raw_label": "Approximate",
+      "kind": "toggle",
+      "depth": 2,
+      "path": [],
+      "interactive": true,
+      "descended": false,
+      "blocked": null,
+      "note": "selection"
+    },
+    {
+      "label": "While using the app",
+      "raw_label": "While using the app",
+      "kind": "button",
+      "depth": 2,
+      "path": [],
+      "interactive": true,
+      "descended": false,
+      "blocked": null,
+      "note": ""
+    },
+    {
+      "label": "Only this time",
+      "raw_label": "Only this time",
+      "kind": "button",
+      "depth": 2,
+      "path": [],
+      "interactive": true,
+      "descended": false,
+      "blocked": null,
+      "note": ""
+    },
+    {
+      "label": "Don't allow",
+      "raw_label": "Don't allow",
+      "kind": "button",
+      "depth": 2,
+      "path": [],
+      "interactive": true,
+      "descended": false,
+      "blocked": null,
+      "note": ""
+    }
+  ],
+  "stats": {
+    "rows": 9,
+    "max_depth": 2,
+    "rows_by_depth": {
+      "1": 1,
+      "2": 8
+    },
+    "screens_visited": 1,
+    "clicks": 4,
+    "descents": 0,
+    "back_ok": 0,
+    "back_failed": 4,
+    "relaunches": 4,
+    "reclick_recoveries": 0,
+    "left_app": 4,
+    "lost_returns": 3,
+    "dialog_recoveries": 0,
+    "foreign_screens_skipped": 0,
+    "clear_between_paths": true,
+    "keypad_keys_skipped": 0,
+    "incidents": [],
+    "back_trace": [
+      {
+        "attempt": 1,
+        "depth": 0,
+        "expected": "0463cf1726",
+        "got": "6b7e12dea0",
+        "overlap": 0.0,
+        "package": "com.oplus.camera",
+        "landed_labels": [
+          "Turn on Location info permission",
+          "\"Camera\" requires the \"Location\" permission to add location information to photos and videos.",
+          "Cancel",
+          "Settings"
+        ],
+        "expected_labels": [
+          "grant_singleton",
+          "grant_dialog",
+          "Allow Camera to access this device\u2019s location?",
+          "Precise",
+          "Approximate",
+          "While using the app"
+        ]
+      },
+      {
+        "attempt": 2,
+        "depth": 0,
+        "expected": "0463cf1726",
+        "got": "8e04206286",
+        "overlap": 0.0,
+        "package": "com.android.launcher",
+        "landed_labels": [
+          "Date and weather",
+          "Mon, 24 Aug",
+          "iv_weather_type",
+          "22\u200e\u00b0\u200e",
+          "Search",
+          "googleapp_third_party_widget_initial_layout"
+        ],
+        "expected_labels": [
+          "grant_singleton",
+          "grant_dialog",
+          "Allow Camera to access this device\u2019s location?",
+          "Precise",
+          "Approximate",
+          "While using the app"
+        ]
+      },
+      {
+        "attempt": 1,
+        "depth": 0,
+        "expected": "0463cf1726",
+        "got": "8e04206286",
+        "overlap": 0.0,
+        "package": "com.android.launcher",
+        "landed_labels": [
+          "Date and weather",
+          "Mon, 24 Aug",
+          "iv_weather_type",
+          "22\u200e\u00b0\u200e",
+          "Search",
+          "googleapp_third_party_widget_initial_layout"
+        ],
+        "expected_labels": [
+          "grant_singleton",
+          "grant_dialog",
+          "Allow Camera to access this device\u2019s location?",
+          "Precise",
+          "Approximate",
+          "While using the app"
+        ]
+      },
+      {
+        "attempt": 1,
+        "depth": 0,
+        "expected": "0463cf1726",
+        "got": "8e04206286",
+        "overlap": 0.0,
+        "package": "com.android.launcher",
+        "landed_labels": [
+          "Date and weather",
+          "Mon, 24 Aug",
+          "iv_weather_type",
+          "22\u200e\u00b0\u200e",
+          "Search",
+          "googleapp_third_party_widget_initial_layout"
+        ],
+        "expected_labels": [
+          "grant_singleton",
+          "grant_dialog",
+          "Allow Camera to access this device\u2019s location?",
+          "Precise",
+          "Approximate",
+          "While using the app"
+        ]
+      },
+      {
+        "attempt": 1,
+        "depth": 0,
+        "expected": "0463cf1726",
+        "got": "8e04206286",
+        "overlap": 0.0,
+        "package": "com.android.launcher",
+        "landed_labels": [
+          "Date and weather",
+          "Mon, 24 Aug",
+          "iv_weather_type",
+          "22\u200e\u00b0\u200e",
+          "Search",
+          "googleapp_third_party_widget_initial_layout"
+        ],
+        "expected_labels": [
+          "grant_singleton",
+          "grant_dialog",
+          "Allow Camera to access this device\u2019s location?",
+          "Precise",
+          "Approximate",
+          "While using the app"
+        ]
+      }
+    ],
+    "elapsed_seconds": 63.4,
+    "guard": {
+      "enabled": true,
+      "patterns": 34,
+      "blocked_attempts": 0,
+      "blocked_controls": []
+    }
+  }
+}

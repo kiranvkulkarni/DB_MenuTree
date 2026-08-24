@@ -56,6 +56,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--guard-presets", default=",".join(DEFAULT_PRESETS),
                    help=f"available: {', '.join(sorted(GUARD_PRESETS))}")
     p.add_argument("--guard-extra", default="")
+    p.add_argument(
+        "--clear-between-paths", action="store_true",
+        help="pm clear the app before a relaunch when a sibling element has "
+             "vanished (the one-shot-dialog case: an earlier option already "
+             "dismissed it). Required to reach BOTH branches of a dialog like "
+             "'Turn on Location tags? Cancel / Turn on'. Resets the app's "
+             "saved preferences every time it fires -- only use on a "
+             "disposable test device, never on one with real user data.",
+    )
     p.add_argument("--uvta-output", default=None,
                    help="Path for the UVTA suite. Defaults to "
                         "<output-dir>/<package>_suite.uvta.")
@@ -88,6 +97,7 @@ def main() -> int:
             "guard_enabled": not args.no_guard,
             "guard_presets": [g for g in args.guard_presets.split(",") if g],
             "guard_extra_patterns": [g for g in args.guard_extra.split(",") if g],
+            "clear_between_paths": args.clear_between_paths,
         })
         try:
             walker.walk()
@@ -117,6 +127,8 @@ def main() -> int:
         print(f"  descents        : {stats.get('descents')}")
         print(f"  BACK ok/failed  : {stats.get('back_ok')}/{stats.get('back_failed')}")
         print(f"  relaunches      : {stats.get('relaunches')}")
+        print(f"  dialog recoveries: {stats.get('dialog_recoveries')} "
+              f"(clear_between_paths={stats.get('clear_between_paths')})")
         print(f"  elapsed         : {stats.get('elapsed_seconds')}s")
         guard = stats.get("guard") or {}
         if guard.get("blocked_attempts"):

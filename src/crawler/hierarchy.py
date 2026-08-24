@@ -109,10 +109,31 @@ def _affordance_depths(views: Sequence[Dict]) -> Dict[int, int]:
     return depths
 
 
+_DEFAULT_CHROME = (
+    "com.android.systemui",
+    "com.google.android.inputmethod.latin",
+    "com.samsung.android.honeyboard",
+    "com.touchtype.swiftkey",
+)
+
+
 def state_key(
-    views: Sequence[Dict], mode: str = "affordance", package: Optional[str] = None
+    views: Sequence[Dict],
+    mode: str = "affordance",
+    package: Optional[str] = None,
+    exclude_packages: Sequence[str] = _DEFAULT_CHROME,
 ) -> str:
-    """Stable hash identifying a screen."""
+    """Stable hash identifying a screen.
+
+    Excludes only known OS chrome (status bar, nav bar, IME) -- NOT every
+    view outside `package`. A screen can legitimately be owned entirely by a
+    system component: a runtime permission dialog is
+    `com.google.android.permissioncontroller`, in full. The previous
+    strict-to-`package` filter dropped every such view, so the "no content
+    survived filtering" branch below fired -- EMPTY_STATE -- and the walker
+    bailed out treating a real, addressable pop-up as nothing at all. `package`
+    is kept as a parameter for compatibility but no longer used to filter.
+    """
     if mode not in STATE_KEY_MODES:
         raise ValueError(f"unknown state key mode '{mode}'")
 
@@ -120,8 +141,8 @@ def state_key(
     parts: List[str] = []
 
     for index, view in enumerate(views):
-        if package and view.get("package") and view["package"] != package:
-            # Status bar / navigation bar / IME decorations are not the app.
+        view_pkg = view.get("package")
+        if view_pkg and any(view_pkg.startswith(x) for x in exclude_packages):
             continue
 
         fields = [
@@ -193,17 +214,26 @@ def looks_like_dialog(views: Sequence[Dict], package: Optional[str] = None) -> b
     """Heuristic: is this screen a modal decision point?
 
     Detected structurally, not semantically -- no model needed. Two signals:
-    an explicit dialog class anywhere in the tree, or a small in-app view
-    count (a modal shows far less than a full screen).
+    an explicit dialog class anywhere in the tree, or a small view count with
+    few clickables (a modal shows far less than a full screen).
+
+    Deliberately NOT filtered to `package`-owned views: a runtime permission
+    prompt ("Allow Camera to access this device's location?") is owned
+    *entirely* by com.google.android.permissioncontroller, none of it by the
+    app. Filtering to `package` first emptied the view list before the
+    heuristic ever ran, so this always returned False for exactly the
+    dialogs it exists to catch. `package` is accepted for signature
+    compatibility but no longer changes the result; only OS chrome (status
+    bar, nav bar, IME) is excluded from the count.
     """
-    in_app = [
+    content = [
         v for v in views
-        if not package or not v.get("package") or v.get("package") == package
+        if not (v.get("package") or "").startswith(_DEFAULT_CHROME)
     ]
-    if not in_app:
+    if not content:
         return False
 
-    for view in in_app:
+    for view in content:
         cls = (view.get("class") or "").lower()
         rid = (view.get("resource_id") or "").lower()
         if any(hint in cls or hint in rid for hint in _DIALOG_CLASS_HINTS):
@@ -211,8 +241,8 @@ def looks_like_dialog(views: Sequence[Dict], package: Optional[str] = None) -> b
 
     # A modal is small. Full app screens observed here run 80-150 views;
     # the Samsung location-tags dialog was 35.
-    clickable = sum(1 for v in in_app if v.get("clickable"))
-    return len(in_app) <= 45 and 1 < clickable <= 6
+    clickable = sum(1 for v in content if v.get("clickable"))
+    return len(content) <= 45 and 1 < clickable <= 6
 
 
 def center_of(view: Dict) -> Optional[tuple]:

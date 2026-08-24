@@ -1,0 +1,10 @@
+﻿Test Result,Defect ID,Comments,1 Depth,2 Depth,3 Depth,4 Depth,5 Depth,6 Depth,7 Depth,8 Depth
+NT,,,com.oplus.camera,,,,,,,
+NT,,,,grant_singleton,,,,,,
+NT,,,,grant_dialog,,,,,,
+NT,,,,Allow Camera to access this device’s location? [Title],,,,,,
+NT,,,,Precise (On/Off),,,,,,
+NT,,selection,,Approximate (On/Off),,,,,,
+NT,,,,While using the app,,,,,,
+NT,,,,Only this time,,,,,,
+NT,,,,Don't allow,,,,,,

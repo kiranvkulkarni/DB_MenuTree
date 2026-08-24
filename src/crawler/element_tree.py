@@ -41,7 +41,13 @@ from .elements import (
     enumerate_elements,
     screen_similarity,
 )
-from .hierarchy import EMPTY_STATE, center_of, parse_hierarchy, state_key
+from .hierarchy import (
+    EMPTY_STATE,
+    center_of,
+    looks_like_dialog,
+    parse_hierarchy,
+    state_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +119,13 @@ class ElementTreeWalker:
         self.back_attempts = int(config.get("back_attempts", 4))
         self.return_similarity = float(config.get("return_similarity", 0.75))
         self.checkpoint_every = int(config.get("checkpoint_every", 25))
+        # Off by default: pm clear resets the app's saved preferences, which
+        # is unacceptable on a personal device. On a disposable test device it
+        # is what makes a one-shot dialog ("Turn on Location tags? Cancel /
+        # Turn on") reappear so the sibling not taken first can still be
+        # reached -- without it that branch is lost the moment the first
+        # option is clicked, with no way back.
+        self.clear_between_paths = bool(config.get("clear_between_paths", False))
 
         self.guard = ActionGuard.from_config(
             enabled=config.get("guard_enabled", True),
@@ -132,6 +145,8 @@ class ElementTreeWalker:
         self._left_app = 0
         self._exclude = list(CHROME_PACKAGES)
         self._lost = 0
+        self._dialog_recoveries = 0
+        self._foreign_skipped = 0
         self._back_trace: List[Dict] = []
         self._keypad_skipped = 0
         self._incidents: List[Dict] = []
@@ -275,12 +290,14 @@ class ElementTreeWalker:
             return True
         return False
 
-    def _relaunch_and_replay(self, target_key: str, path: List[str]) -> bool:
+    def _relaunch_and_replay(
+        self, target_key: str, path: List[str], clear: bool = False
+    ) -> bool:
         """Fallback: restart the app and re-walk the labels that got us here."""
         assert self.driver is not None
         self._relaunches += 1
         try:
-            self.driver.start_app(self.package, clear=False)
+            self.driver.start_app(self.package, clear=clear)
         except DriverError as exc:
             logger.warning("Relaunch failed: %s", exc)
             return False
@@ -349,11 +366,34 @@ class ElementTreeWalker:
         if depth > self.max_depth or not self._budget_left():
             return
 
-        screen_key, views, _ = self._await_stable()
+        screen_key, views, current = self._await_stable()
         if not screen_key or screen_key == EMPTY_STATE:
             return
         if screen_key in self._visited_screens:
             return
+
+        if current and current != self.package:
+            # state_key no longer collapses a foreign-owned screen to
+            # EMPTY_STATE (a runtime permission prompt is entirely owned by
+            # com.google.android.permissioncontroller and is real, addressable
+            # content). But that means every foreign screen is now a
+            # candidate to walk, including ones that are NOT a pop-up over
+            # the app -- a browser opened via "Learn more", the launcher
+            # mid-transition, an unrelated app entirely. Only descend when it
+            # structurally looks like a dialog; otherwise this screen was
+            # already recorded as a "leaves app" note on the row that led
+            # here, and walking it further would enumerate a whole other
+            # app's menu as if it were this app's.
+            if not looks_like_dialog(views, self.package):
+                self._foreign_skipped += 1
+                logger.info(
+                    "depth %-2d  not a dialog, foreign package %s -- not walked",
+                    depth, current,
+                )
+                return
+            logger.info("depth %-2d  system dialog over the app (%s)",
+                        depth, current)
+
         self._visited_screens.add(screen_key)
 
         elements = self._elements(views)
@@ -414,7 +454,26 @@ class ElementTreeWalker:
                  if e.label == element.label and e.interactive),
                 None,
             )
+            if live is None and self.clear_between_paths:
+                # The element that was on this screen a moment ago is gone.
+                # The likely cause is a one-shot dialog: an earlier sibling
+                # (e.g. "Cancel") already dismissed it, so "Turn on" no
+                # longer exists to click. Clearing and replaying the path
+                # restores the app to first-run state, which makes the
+                # dialog reappear so this branch is not silently lost.
+                if self._relaunch_and_replay(screen_key, path, clear=True):
+                    _, current_views, _ = self._await_stable()
+                    live = next(
+                        (e for e in self._elements(current_views)
+                         if e.label == element.label and e.interactive),
+                        None,
+                    )
+                    if live is not None:
+                        self._dialog_recoveries += 1
+                        row.note = "recovered via clear+relaunch (one-shot dialog)"
             if live is None or not self._click(live, current_views):
+                if live is None:
+                    row.note = row.note or "element vanished before click (one-shot?)"
                 continue
 
             after_key, after_views, after_pkg = self._await_stable()
@@ -479,6 +538,9 @@ class ElementTreeWalker:
             "reclick_recoveries": self._reclicks,
             "left_app": self._left_app,
             "lost_returns": self._lost,
+            "dialog_recoveries": self._dialog_recoveries,
+            "foreign_screens_skipped": self._foreign_skipped,
+            "clear_between_paths": self.clear_between_paths,
             "keypad_keys_skipped": self._keypad_skipped,
             "incidents": self._incidents,
             "back_trace": self._back_trace[:40],
