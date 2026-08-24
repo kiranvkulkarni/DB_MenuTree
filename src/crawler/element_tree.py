@@ -442,7 +442,15 @@ class ElementTreeWalker:
                     # Could not get back. Abandoning the whole screen would
                     # discard every sibling still unvisited, so skip just this
                     # element and re-check on the next one.
+                    #
+                    # The row for this element was already appended above
+                    # with no note, which is indistinguishable in the sheet
+                    # from a genuinely-tested leaf with nothing behind it --
+                    # a real transparency gap for a coverage deliverable.
+                    # Tag it so "recorded" and "actually clicked" are never
+                    # confused when reading the workbook.
                     self._lost += 1
+                    row.note = "NOT TESTED -- could not return to parent screen"
                     logger.warning(
                         "Could not return to depth %d screen; skipping %r",
                         depth, element.label,
