@@ -35,6 +35,7 @@ class DeviceDriver(Protocol):
     def current_activity(self) -> Optional[str]: ...
     def current_ime_package(self) -> Optional[str]: ...
     def screen_size(self) -> tuple: ...
+    def launch_clean(self, package: str, clear: bool = False) -> bool: ...
     def screenshot(self, path: str) -> bool: ...
 
 
@@ -116,6 +117,67 @@ class AdbDriver:
         return None
 
 
+
+
+    def launch_clean(self, package: str, clear: bool = False) -> bool:
+        """Launch the app's real entry activity with its task cleared.
+
+        `start_app` resumes whatever task the package owns -- and another
+        app's activity can be sitting on top of it. Observed: clicking
+        "Latest Photos" in the camera launched the Gallery *into the
+        camera's task*, so every later relaunch landed on the Gallery, not
+        the camera. `pm clear` does not help: it wipes the camera's data but
+        leaves a foreign activity in the task.
+
+        Starting the entry activity explicitly with CLEAR_TASK guarantees the
+        app's own first screen, whatever is stacked above it.
+        """
+        if clear:
+            try:
+                _adb(self.serial, "shell", "pm", "clear", package)
+            except DriverError as exc:
+                logger.debug("pm clear failed for %s: %s", package, exc)
+
+        activity = None
+        try:
+            out = _adb(self.serial, "shell", "cmd", "package",
+                       "resolve-activity", "--brief", "-c",
+                       "android.intent.category.LAUNCHER", package)
+            for line in out.splitlines():
+                line = line.strip()
+                if line.startswith(f"{package}/"):
+                    activity = line
+                    break
+        except DriverError:
+            pass
+
+        if not activity:
+            return False
+
+        # --activity-clear-task throws a Binder exception on some devices, so
+        # clear the way instead: stop whatever foreign app is in front. It is
+        # only there because the crawl opened it, and it is sitting inside
+        # our task -- stopping it is what actually returns the task to our
+        # activity. Verified on device: stopping the Gallery then starting
+        # .Camera lands on the camera; every other sequence lands back on the
+        # Gallery.
+        try:
+            front = self.current_package()
+        except Exception:
+            front = None
+        if front and front != package:
+            try:
+                _adb(self.serial, "shell", "am", "force-stop", front)
+            except DriverError as exc:
+                logger.debug("could not stop %s: %s", front, exc)
+
+        try:
+            _adb(self.serial, "shell", "am", "start", "-n", activity)
+        except DriverError as exc:
+            logger.warning("clean launch of %s failed: %s", activity, exc)
+            return False
+        time.sleep(self.settle * 2)
+        return (self.current_package() or package) == package
 
     def screen_size(self) -> tuple:
         """(width, height) in pixels, from `wm size`."""
@@ -205,6 +267,67 @@ class U2Driver:
 
 
 
+
+    def launch_clean(self, package: str, clear: bool = False) -> bool:
+        """Launch the app's real entry activity with its task cleared.
+
+        `start_app` resumes whatever task the package owns -- and another
+        app's activity can be sitting on top of it. Observed: clicking
+        "Latest Photos" in the camera launched the Gallery *into the
+        camera's task*, so every later relaunch landed on the Gallery, not
+        the camera. `pm clear` does not help: it wipes the camera's data but
+        leaves a foreign activity in the task.
+
+        Starting the entry activity explicitly with CLEAR_TASK guarantees the
+        app's own first screen, whatever is stacked above it.
+        """
+        if clear:
+            try:
+                _adb(self.serial, "shell", "pm", "clear", package)
+            except DriverError as exc:
+                logger.debug("pm clear failed for %s: %s", package, exc)
+
+        activity = None
+        try:
+            out = _adb(self.serial, "shell", "cmd", "package",
+                       "resolve-activity", "--brief", "-c",
+                       "android.intent.category.LAUNCHER", package)
+            for line in out.splitlines():
+                line = line.strip()
+                if line.startswith(f"{package}/"):
+                    activity = line
+                    break
+        except DriverError:
+            pass
+
+        if not activity:
+            return False
+
+        # --activity-clear-task throws a Binder exception on some devices, so
+        # clear the way instead: stop whatever foreign app is in front. It is
+        # only there because the crawl opened it, and it is sitting inside
+        # our task -- stopping it is what actually returns the task to our
+        # activity. Verified on device: stopping the Gallery then starting
+        # .Camera lands on the camera; every other sequence lands back on the
+        # Gallery.
+        try:
+            front = self.current_package()
+        except Exception:
+            front = None
+        if front and front != package:
+            try:
+                _adb(self.serial, "shell", "am", "force-stop", front)
+            except DriverError as exc:
+                logger.debug("could not stop %s: %s", front, exc)
+
+        try:
+            _adb(self.serial, "shell", "am", "start", "-n", activity)
+        except DriverError as exc:
+            logger.warning("clean launch of %s failed: %s", activity, exc)
+            return False
+        time.sleep(self.settle * 2)
+        return (self.current_package() or package) == package
+
     def screen_size(self) -> tuple:
         """(width, height) in pixels, from `wm size`."""
         out = _adb(self.serial, "shell", "wm", "size")
@@ -224,6 +347,7 @@ class U2Driver:
             return None
         value = out.strip()
         return value.split("/")[0] if "/" in value else (value or None)
+
 
 
     def screen_size(self) -> tuple:

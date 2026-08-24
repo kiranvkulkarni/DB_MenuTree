@@ -169,11 +169,30 @@ def enumerate_elements(
     return elements
 
 
-def label_set(elements: Sequence[Element]) -> set:
+import re as _re
+
+# Same state-suffix problem as element lookup, but for screen identity.
+# A screen registered while the filter was off reads "filteroff"; revisit it
+# with the filter on and it reads "filteron". Comparing exact labels drops
+# similarity below the 0.75 threshold, so the walker fails to recognise a
+# screen it already knows and pays for a relaunch. Measured: 54 of 60
+# navigations unidentified, 88 relaunches consuming most of the budget.
+_STATE_SUFFIX = _re.compile(r"(off|on|auto)$", _re.IGNORECASE)
+
+
+def _stem(label: str) -> str:
+    return _STATE_SUFFIX.sub("", (label or "").strip().lower()).strip()
+
+
+def label_set(elements: Sequence[Element], normalise: bool = False) -> set:
+    if normalise:
+        return {_stem(e.label) for e in elements}
     return {e.label for e in elements}
 
 
-def screen_similarity(before: Sequence[Element], after: Sequence[Element]) -> float:
+def screen_similarity(
+    before: Sequence[Element], after: Sequence[Element], normalise: bool = True
+) -> float:
     """Jaccard overlap of two screens' labels.
 
     Used to tell "this click opened a submenu" from "this click merely
@@ -181,7 +200,7 @@ def screen_similarity(before: Sequence[Element], after: Sequence[Element]) -> fl
     same screen with the same items, so those are leaves; opening Settings
     replaces the item set, so that descends.
     """
-    a, b = label_set(before), label_set(after)
+    a, b = label_set(before, normalise), label_set(after, normalise)
     if not a and not b:
         return 1.0
     union = a | b

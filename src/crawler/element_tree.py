@@ -61,6 +61,17 @@ logger = logging.getLogger(__name__)
 # is what made navigation look broken for three debugging rounds.
 KEYPAD_KEY = re.compile(r"^[0-9*#+]{1,3}$")
 
+# Trailing state baked into a label. Vendor camera UIs name a control by its
+# current setting -- "filteroff" becomes "filteron", "face beautyoff" becomes
+# "face beautyon", "FlashOff" becomes "FlashAuto" -- so a path recorded on
+# the way in cannot be replayed once anything has been toggled. Matching on
+# the stem keeps replay working across state changes.
+_STATE_SUFFIX = re.compile(r"(off|on|auto)$", re.IGNORECASE)
+
+
+def _label_stem(label: str) -> str:
+    return _STATE_SUFFIX.sub("", (label or "").strip().lower()).strip()
+
 # System dialogs that interrupt a walk. An ANR or crash is a real defect the
 # run has surfaced, so it is recorded as an incident rather than silently
 # dismissed -- "the crawl caused 3 ANRs" is a finding a gate should report.
@@ -196,6 +207,8 @@ class ElementTreeWalker:
         self._processed = 0
         self._nav_forward = 0
         self._nav_back = 0
+        self._nav_trace: List[Dict] = []
+        self._stem_matches = 0
         self._worklist: Dict[tuple, WorkItem] = {}
         self._screen_elements: Dict[str, List[Element]] = {}
         self._screen_paths: Dict[str, List[str]] = {}
@@ -346,24 +359,42 @@ class ElementTreeWalker:
         assert self.driver is not None
         self._relaunches += 1
         try:
-            self.driver.start_app(self.package, clear=clear)
+            # Clean launch, not a task resume: another app's activity may be
+            # stacked on top of ours (the Gallery ends up inside the camera's
+            # task after "Latest Photos"), and resuming would land there.
+            if not self.driver.launch_clean(self.package, clear=clear):
+                self.driver.start_app(self.package, clear=clear)
         except DriverError as exc:
             logger.warning("Relaunch failed: %s", exc)
             return False
 
         key, views, _ = self._await_stable()
         for label in path:
-            element = next(
-                (e for e in self._elements(views)
-                 if e.label == label and e.interactive),
-                None,
-            )
+            element = self._find_element(label, views)
             if element is None:
                 return False
             if not self._click(element, views):
                 return False
             key, views, _ = self._await_stable()
-        return key == target_key
+
+        # Verify by element overlap, never by exact state key.
+        #
+        # The key encodes affordance text, and the camera puts its flash mode
+        # in the label -- FlashOff / FlashAuto / FlashOn. So relaunching onto
+        # the correct screen with a different flash state yields a different
+        # key, and an exact test calls that a failed replay. Measured: 38 of
+        # 41 navigations failed this way, including ones whose path was empty
+        # (relaunch, click nothing, be at the root) which cannot fail for any
+        # navigational reason.
+        #
+        # _is_same_screen was corrected for exactly this in fcc9967; this
+        # second comparison was missed and kept the bug alive.
+        if key == target_key:
+            return True
+        target_elements = self._screen_elements.get(target_key)
+        if target_elements and views:
+            return self._is_same_screen(views, target_elements)
+        return False
 
     def _detect_system_dialog(self, elements: Sequence[Element]) -> Optional[str]:
         blob = " ".join(e.label.lower() for e in elements)
@@ -514,11 +545,28 @@ class ElementTreeWalker:
                 best, best_score = key, score
         return best if best_score >= self.return_similarity else None
 
+    def _find_element(
+        self, label: str, views: Sequence[Dict], rid: Optional[str] = None
+    ) -> Optional[Element]:
+        """Locate an element by label, tolerating a changed toggle state."""
+        elements = [e for e in self._elements(views) if e.interactive]
+        exact = next((e for e in elements if e.label == label), None)
+        if exact is not None:
+            return exact
+        if rid:
+            by_rid = next((e for e in elements if e.resource_id == rid), None)
+            if by_rid is not None:
+                return by_rid
+        stem = _label_stem(label)
+        if stem:
+            near = [e for e in elements if _label_stem(e.label) == stem]
+            if len(near) == 1:
+                self._stem_matches += 1
+                return near[0]
+        return None
+
     def _click_label(self, label: str, views: Sequence[Dict]) -> bool:
-        live = next(
-            (e for e in self._elements(views) if e.label == label and e.interactive),
-            None,
-        )
+        live = self._find_element(label, views)
         return bool(live and self._click(live, views))
 
     def _navigate_to(self, item: WorkItem) -> Tuple[bool, List[Dict]]:
@@ -548,6 +596,21 @@ class ElementTreeWalker:
         here_key = self._identify_current(views)
         here_path = self._screen_paths.get(here_key) if here_key else None
 
+        # Every navigation decision is recorded. Three hypotheses about this
+        # code were wrong, twice because a fix shipped before the premise was
+        # checked. The trace says which branch was taken and whether it
+        # landed, so the next change is driven by evidence.
+        trace = {
+            "want": item.screen_key[:10],
+            "want_path": list(item.path),
+            "here": here_key[:10] if here_key else None,
+            "here_path": here_path,
+            "identified": here_key is not None,
+            "branch": None,
+            "ok": False,
+        }
+        self._nav_trace.append(trace)
+
         if here_path is not None:
             target_path = item.path
 
@@ -560,10 +623,12 @@ class ElementTreeWalker:
                     if not self._click_label(label, views):
                         ok = False
                         break
+                trace["branch"] = "forward"
                 if ok:
                     _, views, _ = self._await_stable()
                     if views and target and self._is_same_screen(views, target):
                         self._nav_forward += 1
+                        trace["ok"] = True
                         return True, views
 
             # Target sits above us: BACK out the difference.
@@ -574,15 +639,22 @@ class ElementTreeWalker:
                         self.driver.press_back()  # type: ignore[union-attr]
                     except DriverError:
                         break
+                trace["branch"] = "back"
                 _, views, _ = self._await_stable()
                 if views and target and self._is_same_screen(views, target):
                     self._nav_back += 1
+                    trace["ok"] = True
                     return True, views
 
         # Unrelated screen, or the shortcut did not land: replay from launch.
+        if trace["branch"] is None:
+            trace["branch"] = "replay"
         if self._relaunch_and_replay(item.screen_key, item.path):
             _, views, _ = self._await_stable()
+            trace["ok"] = True
+            trace["branch"] += "+replay_ok"
             return bool(views), views
+        trace["branch"] += "+replay_failed"
         return False, []
 
     def _process(self, item: WorkItem) -> None:
@@ -599,11 +671,7 @@ class ElementTreeWalker:
                            item.label, item.screen_key[:12])
             return
 
-        live = next(
-            (e for e in self._elements(views)
-             if e.label == item.label and e.interactive),
-            None,
-        )
+        live = self._find_element(item.label, views)
         if live is None and self.clear_between_paths:
             # The element was here a moment ago and is gone. Usually a
             # one-shot dialog: a sibling ("Cancel") already dismissed it, so
@@ -611,11 +679,7 @@ class ElementTreeWalker:
             # replaying restores first-run state, making it reappear.
             if self._relaunch_and_replay(item.screen_key, item.path, clear=True):
                 _, views, _ = self._await_stable()
-                live = next(
-                    (e for e in self._elements(views)
-                     if e.label == item.label and e.interactive),
-                    None,
-                )
+                live = self._find_element(item.label, views)
                 if live is not None:
                     self._dialog_recoveries += 1
                     if row is not None:
@@ -688,7 +752,8 @@ class ElementTreeWalker:
         if self.reset_before_start:
             logger.info("Resetting %s to a fresh state before exploring",
                         self.package)
-        self.driver.start_app(self.package, clear=self.reset_before_start)
+        if not self.driver.launch_clean(self.package, clear=self.reset_before_start):
+            self.driver.start_app(self.package, clear=self.reset_before_start)
 
         self.rows.append(TreeNode(label=self.package, raw_label=self.package,
                                   kind="root", depth=1, path=[]))
@@ -783,6 +848,8 @@ class ElementTreeWalker:
             "reclick_recoveries": self._reclicks,
             "nav_forward": self._nav_forward,
             "nav_back": self._nav_back,
+            "nav_trace": self._nav_trace[:60],
+            "stem_matches": self._stem_matches,
             "left_app": self._left_app,
             "lost_returns": self._lost,
             "dialog_recoveries": self._dialog_recoveries,
