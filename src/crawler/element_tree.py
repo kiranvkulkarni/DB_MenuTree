@@ -646,6 +646,24 @@ class ElementTreeWalker:
                     trace["ok"] = True
                     return True, views
 
+        # Cheap last resort before a relaunch: just re-click the element we
+        # descended through. Selecting an option often closes the menu and
+        # drops us on the parent, so re-entering is one tap -- but the path
+        # shortcuts above only fire when the current screen was identified,
+        # and identification still fails often enough to matter. A relaunch
+        # is ~15s and this is ~1s, and 112 relaunches consumed most of the
+        # last run's budget.
+        if item.path and self.driver is not None:
+            _, here_views, here_pkg = self._await_stable()
+            if here_pkg == self.package and here_views:
+                if self._click_label(item.path[-1], here_views):
+                    _, views, _ = self._await_stable()
+                    if views and target and self._is_same_screen(views, target):
+                        self._reclicks += 1
+                        trace["branch"] = (trace["branch"] or "") + "+reclick_ok"
+                        trace["ok"] = True
+                        return True, views
+
         # Unrelated screen, or the shortcut did not land: replay from launch.
         if trace["branch"] is None:
             trace["branch"] = "replay"
