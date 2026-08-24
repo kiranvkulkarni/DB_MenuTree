@@ -32,3 +32,9 @@ config.*.yaml
 .vscode/
 .idea/
 .DS_Store
+
+# Per-run walk artifacts
+output/
+smoke_*.log
+recon_*.log
+realme_full.log
