@@ -194,6 +194,8 @@ class ElementTreeWalker:
         self._incidents: List[Dict] = []
         self._reclicks = 0
         self._processed = 0
+        self._nav_forward = 0
+        self._nav_back = 0
         self._worklist: Dict[tuple, WorkItem] = {}
         self._screen_elements: Dict[str, List[Element]] = {}
         self._screen_paths: Dict[str, List[str]] = {}
@@ -500,8 +502,41 @@ class ElementTreeWalker:
                 return here[0]
         return min(pending, key=lambda i: i.depth)
 
+    def _identify_current(self, views: Sequence[Dict]) -> Optional[str]:
+        """Which known screen are we on? Matched by element overlap."""
+        if not views:
+            return None
+        here = self._elements(views)
+        best, best_score = None, 0.0
+        for key, elements in self._screen_elements.items():
+            score = screen_similarity(elements, here)
+            if score > best_score:
+                best, best_score = key, score
+        return best if best_score >= self.return_similarity else None
+
+    def _click_label(self, label: str, views: Sequence[Dict]) -> bool:
+        live = next(
+            (e for e in self._elements(views) if e.label == label and e.interactive),
+            None,
+        )
+        return bool(live and self._click(live, views))
+
     def _navigate_to(self, item: WorkItem) -> Tuple[bool, List[Dict]]:
-        """Get to the screen this item lives on."""
+        """Get to the screen this item lives on.
+
+        Direction matters, and BACK only goes one way. The recursive walker
+        only ever returned to the screen it had just left -- always upward --
+        so BACK-first was correct there. A worklist jumps to arbitrary
+        screens, and using BACK to reach one *deeper* than the current
+        position walks away from it: asked for the SubSet settings menu, BACK
+        delivered the camera main screen instead, every time. That was 82 of
+        91 navigations failing into a ~20s relaunch each.
+
+        Both paths are known, so the relationship decides the move:
+          target extends here  -> click forward through the extra labels
+          target is an ancestor -> BACK the difference
+          unrelated            -> relaunch and replay from launch
+        """
         target = self._screen_elements.get(item.screen_key)
         key, views, _ = self._await_stable()
 
@@ -510,7 +545,42 @@ class ElementTreeWalker:
         if key == item.screen_key and views:
             return True, views
 
-        if self._return_to(item.screen_key, item.path, target):
+        here_key = self._identify_current(views)
+        here_path = self._screen_paths.get(here_key) if here_key else None
+
+        if here_path is not None:
+            target_path = item.path
+
+            # Target sits below us: click down into it.
+            if (len(target_path) > len(here_path)
+                    and target_path[:len(here_path)] == here_path):
+                ok = True
+                for label in target_path[len(here_path):]:
+                    _, views, _ = self._await_stable()
+                    if not self._click_label(label, views):
+                        ok = False
+                        break
+                if ok:
+                    _, views, _ = self._await_stable()
+                    if views and target and self._is_same_screen(views, target):
+                        self._nav_forward += 1
+                        return True, views
+
+            # Target sits above us: BACK out the difference.
+            elif (len(target_path) < len(here_path)
+                    and here_path[:len(target_path)] == target_path):
+                for _ in range(len(here_path) - len(target_path)):
+                    try:
+                        self.driver.press_back()  # type: ignore[union-attr]
+                    except DriverError:
+                        break
+                _, views, _ = self._await_stable()
+                if views and target and self._is_same_screen(views, target):
+                    self._nav_back += 1
+                    return True, views
+
+        # Unrelated screen, or the shortcut did not land: replay from launch.
+        if self._relaunch_and_replay(item.screen_key, item.path):
             _, views, _ = self._await_stable()
             return bool(views), views
         return False, []
@@ -690,6 +760,8 @@ class ElementTreeWalker:
             "back_failed": self._back_failed,
             "relaunches": self._relaunches,
             "reclick_recoveries": self._reclicks,
+            "nav_forward": self._nav_forward,
+            "nav_back": self._nav_back,
             "left_app": self._left_app,
             "lost_returns": self._lost,
             "dialog_recoveries": self._dialog_recoveries,
