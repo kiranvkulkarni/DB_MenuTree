@@ -29,6 +29,7 @@ from src.verify.matching import (  # noqa: E402
     REVIEW,
     best_match,
     from_resource_id,
+    stem,
     load_aliases,
     proposed_aliases,
     score,
@@ -83,6 +84,28 @@ def main() -> int:
         value, reason = score(spec, screen)
         ok &= check(f"{spec!r} is not {screen!r}", value < REVIEW,
                     f"{value:.2f} {reason}")
+
+    print("\nsingular/plural must not keep a match apart")
+    # One character sank the whole Settings sheet: the sheet says "Quick
+    # settings", the control's id is quick_setting_entry_button, and every
+    # row lived under that first step -- 80 of 88 rows reported Fail against
+    # controls that were present and working.
+    ok &= check("plural spec vs singular resource id",
+                score("Quick settings", "quick setting entry button")[0] >= 0.8,
+                f"{score('Quick settings', 'quick setting entry button')[0]:.2f}")
+    ok &= check("singular spec vs plural screen text",
+                score("Filter", "Filters")[0] >= REVIEW)
+    # Test stem() directly. Going through score() would prove nothing here:
+    # "ON"/"ONS" already match at 0.88 by containment, which has nothing to
+    # do with stemming.
+    ok &= check("stemming folds a real plural", stem("settings") == "setting")
+    ok &= check("stemming leaves short words alone", stem("ons") == "ons",
+                "'on' must never become 'o'")
+    ok &= check("stemming leaves a double-s alone", stem("gloss") == "gloss")
+    ok &= check("stemming leaves a non-plural alone", stem("focus") == "focus")
+    ok &= check("stemming does not rescue genuinely different words",
+                score("Quick settings", "Quick controls")[0] < REVIEW,
+                "settings/controls differ in meaning, not in number")
 
     print("\nresource ids are developer English, often closer than the visible text")
     ok &= check("id is split into words",
