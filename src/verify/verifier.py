@@ -123,6 +123,7 @@ class MenuTreeVerifier:
         self._relaunches = 0
         self._entry_dialogs_dismissed = 0
         self._scrolls = 0
+        self._fails_under_precondition = 0
         self.max_scrolls = int(config.get("max_scrolls", 6))
         self.scroll_span = int(config.get("scroll_span", 900))
         self._released = False
@@ -460,6 +461,7 @@ class MenuTreeVerifier:
             "relaunches": self._relaunches,
             "entry_dialogs_dismissed": self._entry_dialogs_dismissed,
             "scrolls": self._scrolls,
+            "fails_under_precondition": self._fails_under_precondition,
             "elapsed_seconds": round(time.time() - self._started, 1),
             "guard": self.guard.summary(),
         }
@@ -521,11 +523,12 @@ class MenuTreeVerifier:
                 why[len("GUARD:"):] + " -- withheld on purpose, verify by hand",
             )
         if not reached:
+            # A precondition does NOT excuse a miss. See _verify_row's note
+            # below: NA-ing every preconditioned row produced a 100% pass
+            # rate over 18 of 120 rows.
             if row.context:
-                return RowResult(
-                    row, NA,
-                    f"{why} -- may be the precondition: " + "; ".join(row.context),
-                )
+                self._fails_under_precondition += 1
+                why += "  [under: " + "; ".join(row.context) + "]"
             return RowResult(row, FAIL, why)
 
         _, views, current = self._await_stable()
@@ -549,21 +552,33 @@ class MenuTreeVerifier:
         element = match.element if match else None
         if element is None:
             if row.context:
-                # Cannot distinguish a real defect from an unmet precondition.
-                return RowResult(
-                    row, NA,
-                    f"not found: {row.selector_text!r} -- verify by hand under: "
-                    + "; ".join(row.context),
-                )
+                # A missing control is reported as Fail even when the row
+                # carries a precondition, and the precondition is named for
+                # triage instead.
+                #
+                # The opposite rule -- NA whenever context exists -- looked
+                # more careful and was far worse. `[Rear Camera]` sits high
+                # in the Modes sheet, so 989 of 1078 rows inherit it, and
+                # every genuine miss became NA. The first Modes run reported
+                # "PASS RATE 100.0%" over 18 Pass, 102 NA, 0 Fail: a gate
+                # that checked 15% of its rows and declared the build
+                # perfect. A false green is the one failure a gate must never
+                # produce.
+                #
+                # Most of these preconditions are ambient state the app
+                # satisfies on launch. Where one genuinely was not met, the
+                # comment says so and a human downgrades the row -- which is
+                # what the Test Result column is for.
+                self._fails_under_precondition += 1
             here = [e.label for e in self._elements(views) if e.label][:12]
             best = best_match(row.selector_text, self._elements(views))
             near = (f"; closest {best.element.label!r} at {best.score:.2f}"
                     if best else "; nothing scored")
-            return RowResult(
-                row, FAIL,
-                f"expected element not present: {row.selector_text!r}"
-                f"{near}; screen showed {here}",
-            )
+            detail = (f"expected element not present: {row.selector_text!r}"
+                      f"{near}; screen showed {here}")
+            if row.context:
+                detail += "  [under: " + "; ".join(row.context) + "]"
+            return RowResult(row, FAIL, detail)
         detail = f"found as {element.kind}"
         if match is not None and match.score < 1.0:
             # Say what it actually matched, and how sure. A reviewer must be
