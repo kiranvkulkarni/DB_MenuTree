@@ -63,6 +63,25 @@ def normalise(text: str) -> str:
     return _SPACES.sub(" ", text).strip().lower()
 
 
+def stem(word: str) -> str:
+    """Fold a trailing plural so token sets can meet.
+
+    A tester writes "Quick settings"; the control's id is
+    `quick_setting_entry_button`. One character kept those apart and the whole
+    Settings sheet failed on it -- every row lived under that first step, so
+    80 of 88 rows reported Fail against controls that were present and
+    working.
+
+    Deliberately minimal: only a trailing "s", and only on words long enough
+    that it is unlikely to be the whole word. Anything cleverer risks folding
+    words that genuinely differ, and a false match hides a defect.
+    """
+    if (len(word) > 3 and word.endswith("s")
+            and not word.endswith("ss") and not word.endswith("us")):
+        return word[:-1]
+    return word
+
+
 def tokens(text: str, drop_noise: bool = True) -> List[str]:
     words = normalise(text).split()
     if not drop_noise:
@@ -70,7 +89,7 @@ def tokens(text: str, drop_noise: bool = True) -> List[str]:
     kept = [w for w in words if w not in NOISE_WORDS]
     # Never reduce a label to nothing: "Back key icon" is all noise words,
     # and an empty token set matches everything.
-    return kept or words
+    return [stem(w) for w in (kept or words)]
 
 
 def from_resource_id(resource_id: Optional[str]) -> str:
@@ -168,17 +187,38 @@ def best_match(spec_label: str,
                 if normalise(element.label) == target:
                     return Match(element, 1.0, "confirmed alias", "alias")
 
+    # A resource id shared by several elements on one screen is a CLASS name,
+    # not an instance name, so it cannot identify which one is meant.
+    #
+    # This cost a real misclick: the Samsung camera gives Flash, Resolution,
+    # Motion photo and Filters the same id, `quick_setting_button_main`.
+    # Matching "Quick settings" against that id scored 0.765 -- exactly the
+    # same as the genuine target, `quick_setting_entry_button` on the "Quick
+    # controls" button -- and the tie was broken by document order, so the
+    # walk pressed Flash. Every row below then failed against a control that
+    # was present and working.
+    shared: Dict[str, int] = {}
+    for element in elements:
+        rid = from_resource_id(getattr(element, "resource_id", None))
+        if rid:
+            shared[rid] = shared.get(rid, 0) + 1
+
     best: Optional[Match] = None
     for element in elements:
-        for source, text in (("label", element.label),
-                             ("resource-id",
-                              from_resource_id(getattr(element, "resource_id", None)))):
+        rid = from_resource_id(getattr(element, "resource_id", None))
+        sources = [("label", element.label)]
+        if rid and shared.get(rid, 0) == 1:
+            sources.append(("resource-id", rid))
+        for source, text in sources:
             if not text:
                 continue
             value, why = score(spec_label, text)
             # A resource-id match is weaker evidence than visible text.
             if source == "resource-id":
                 value *= 0.9
+            # Strictly greater, so a tie keeps the earlier candidate -- and
+            # because label is scored before resource-id for each element,
+            # visible text wins a tie against an id.
             if best is None or value > best.score:
                 best = Match(element, value, why, source)
     return best

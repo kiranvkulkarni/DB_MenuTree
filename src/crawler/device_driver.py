@@ -28,6 +28,8 @@ class DeviceDriver(Protocol):
     def dump_hierarchy(self) -> str: ...
     def tap(self, x: int, y: int, settle: bool = True) -> None: ...
     def long_tap(self, x: int, y: int, settle: bool = True) -> None: ...
+    def swipe(self, x1: int, y1: int, x2: int, y2: int,
+              duration_ms: int = 300) -> None: ...
     def press_back(self, settle: bool = True) -> None: ...
     def start_app(self, package: str, clear: bool = False) -> None: ...
     def stop_app(self, package: str) -> None: ...
@@ -77,6 +79,11 @@ class AdbDriver:
         _adb(self.serial, "shell", "input", "swipe", str(x), str(y), str(x), str(y), "800")
         if settle:
             time.sleep(self.settle)
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int,
+              duration_ms: int = 300) -> None:
+        _adb(self.serial, "shell", "input", "swipe",
+             str(x1), str(y1), str(x2), str(y2), str(duration_ms))
 
     def press_back(self, settle: bool = True) -> None:
         _adb(self.serial, "shell", "input", "keyevent", "KEYCODE_BACK")
@@ -176,6 +183,22 @@ class AdbDriver:
                 _adb(self.serial, "shell", "am", "force-stop", front)
             except DriverError as exc:
                 logger.debug("could not stop %s: %s", front, exc)
+
+        # Stop OUR package too, not just a foreign one. `am start` on a live
+        # task only resumes it, so when the app is already in front -- just
+        # sitting three screens deep in its own settings -- this "relaunch"
+        # changed nothing and returned to exactly the screen it was asked to
+        # leave.
+        #
+        # Measured: 76 relaunches in one verifier run produced 3 passes,
+        # because every one of them was a no-op that left the app inside
+        # Settings, so the next row's first step was looked for on the wrong
+        # screen. Killing our own task first is what makes `am start`
+        # actually cold-start the entry activity.
+        try:
+            _adb(self.serial, "shell", "am", "force-stop", package)
+        except DriverError as exc:
+            logger.debug("could not stop %s: %s", package, exc)
 
         try:
             _adb(self.serial, "shell", "am", "start", "-n", activity)
@@ -308,6 +331,10 @@ class U2Driver:
         if settle:
             time.sleep(self.settle)
 
+    def swipe(self, x1: int, y1: int, x2: int, y2: int,
+              duration_ms: int = 300) -> None:
+        self.device.swipe(x1, y1, x2, y2, duration=duration_ms / 1000.0)
+
     def press_back(self, settle: bool = True) -> None:
         self.device.press("back")
         if settle:
@@ -396,6 +423,22 @@ class U2Driver:
                 _adb(self.serial, "shell", "am", "force-stop", front)
             except DriverError as exc:
                 logger.debug("could not stop %s: %s", front, exc)
+
+        # Stop OUR package too, not just a foreign one. `am start` on a live
+        # task only resumes it, so when the app is already in front -- just
+        # sitting three screens deep in its own settings -- this "relaunch"
+        # changed nothing and returned to exactly the screen it was asked to
+        # leave.
+        #
+        # Measured: 76 relaunches in one verifier run produced 3 passes,
+        # because every one of them was a no-op that left the app inside
+        # Settings, so the next row's first step was looked for on the wrong
+        # screen. Killing our own task first is what makes `am start`
+        # actually cold-start the entry activity.
+        try:
+            _adb(self.serial, "shell", "am", "force-stop", package)
+        except DriverError as exc:
+            logger.debug("could not stop %s: %s", package, exc)
 
         try:
             _adb(self.serial, "shell", "am", "start", "-n", activity)

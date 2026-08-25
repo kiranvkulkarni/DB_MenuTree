@@ -26,6 +26,8 @@ from ..crawler.action_guard import DEFAULT_PRESETS, ActionGuard
 from ..crawler.device_driver import DeviceDriver, DriverError, make_driver
 from ..crawler.elements import Element, enumerate_elements, screen_similarity
 from ..crawler.hierarchy import (
+    box_of,
+    looks_like_dialog,
     EMPTY_STATE,
     center_of,
     foreground_package,
@@ -115,8 +117,14 @@ class MenuTreeVerifier:
         self.driver: Optional[DeviceDriver] = None
         self._started = 0.0
         self._current_path: List[str] = []
+        # False once a navigation fails: we no longer know where we are.
+        self._position_known = True
         self._navigations = 0
         self._relaunches = 0
+        self._entry_dialogs_dismissed = 0
+        self._scrolls = 0
+        self.max_scrolls = int(config.get("max_scrolls", 6))
+        self.scroll_span = int(config.get("scroll_span", 900))
         self._released = False
 
     # -- device ----------------------------------------------------------
@@ -193,6 +201,65 @@ class MenuTreeVerifier:
         match = self._match(text, views)
         return match.element if match else None
 
+    def _scrollable(self, views: Sequence[Dict]) -> Optional[Dict]:
+        """The tallest scrollable container on screen, if any."""
+        best, best_h = None, 0
+        for view in views:
+            if not view.get("scrollable"):
+                continue
+            centre = center_of(view)
+            if centre is None:
+                continue
+            box = box_of(view)
+            height = (box[3] - box[1]) if box else 0
+            if height >= best_h:
+                best, best_h = view, height
+        return best
+
+    def _match_scrolling(self, text: str,
+                         views: Sequence[Dict]) -> Tuple[Optional[Match], List[Dict]]:
+        """Find a control, scrolling the list if it is below the fold.
+
+        A settings list is taller than the screen. "Settings to keep",
+        "Shooting methods" and "About Camera" all sit near the bottom of the
+        Samsung camera's settings, and reporting them missing because they
+        had not been scrolled to would be a manufactured defect -- 21 rows of
+        one measured run failed for exactly that reason.
+
+        Returns the match and the views it was found in, since the caller
+        must click against the hierarchy that is now on screen.
+        """
+        assert self.driver is not None
+        match = self._match(text, views)
+        if match is not None:
+            return match, list(views)
+
+        container = self._scrollable(views)
+        if container is None:
+            return None, list(views)
+        centre = center_of(container)
+        if centre is None:
+            return None, list(views)
+
+        x, y = centre
+        seen = set()
+        for _ in range(self.max_scrolls):
+            key, current, _ = self._await_stable()
+            if key in seen:
+                break                       # the list stopped moving
+            seen.add(key)
+            self.driver.swipe(x, y + self.scroll_span // 2,
+                              x, y - self.scroll_span // 2, 260)
+            self._scrolls += 1
+            key, current, _ = self._await_stable()
+            if not current:
+                break
+            match = self._match(text, current)
+            if match is not None:
+                return match, list(current)
+            views = current
+        return None, list(views)
+
     def _click(self, element: Element, views: Sequence[Dict]) -> bool:
         assert self.driver is not None
         if element.view_index >= len(views):
@@ -211,9 +278,50 @@ class MenuTreeVerifier:
     def _relaunch(self) -> None:
         assert self.driver is not None
         self._relaunches += 1
+        self._position_known = True
         if not self.driver.launch_clean(self.package, clear=False):
             self.driver.start_app(self.package, clear=False)
         self._current_path = []
+
+    # A first-run prompt that stands between a cold launch and the app's
+    # real entry screen. Dismissed with the non-committal branch.
+    ENTRY_DISMISS = ("cancel", "not now", "no thanks", "later", "deny",
+                     "don't allow", "dont allow", "skip")
+
+    def _dismiss_entry_dialog(self, wanted_first_step: str) -> bool:
+        """Clear a first-run prompt blocking the entry screen.
+
+        A cold launch of the Samsung camera lands on "Turn on Location tags?",
+        not the viewfinder, so every path that starts at the viewfinder fails
+        on its first step. Relaunching does not help -- it produces the same
+        dialog again.
+
+        The dialog must NOT be dismissed when it is the thing being verified:
+        Modes rows 9-26 are exactly this prompt and its two branches. So it
+        is only cleared when the row's own first step does not appear on it,
+        which is precisely the case where it is in the way rather than the
+        target.
+        """
+        assert self.driver is not None
+        _, views, _ = self._await_stable()
+        if not views:
+            return False
+        elements = self._elements(views)
+        if not looks_like_dialog(views, self.package):
+            return False
+        if wanted_first_step and self._match(wanted_first_step, views):
+            return False        # the dialog IS the target; leave it alone
+
+        for wanted in self.ENTRY_DISMISS:
+            for element in elements:
+                if element.label.strip().lower() == wanted:
+                    if self._click(element, views):
+                        self._entry_dialogs_dismissed += 1
+                        logger.info("dismissed entry dialog via %r",
+                                    element.label)
+                        self._await_stable()
+                        return True
+        return False
 
     # -- navigation ------------------------------------------------------
     def _navigate(self, path: Sequence[str]) -> Tuple[bool, str]:
@@ -232,10 +340,22 @@ class MenuTreeVerifier:
                 break
             shared += 1
 
-        if shared < len(self._current_path):
-            # We are deeper than, or off, the target path: restart and replay.
+        # A failed navigation leaves us on an unknown screen. Trusting
+        # _current_path after that is worse than knowing nothing: the shared
+        # prefix looks fine, so no relaunch happens, and the next row clicks
+        # its first step against whatever screen it actually landed on.
+        #
+        # Measured: one failure cascaded into 57 of 70 rows failing at step
+        # 'Quick settings' -- a control that is on the main screen and matches
+        # at 0.77 -- because the walk was still deep inside Settings and never
+        # went back. Only 1 relaunch happened in the whole run.
+        if not self._position_known or shared < len(self._current_path):
             self._relaunch()
             shared = 0
+
+        # A cold launch lands on the first-run prompt, not the viewfinder.
+        if shared == 0 and path:
+            self._dismiss_entry_dialog(path[0])
 
         self._current_path = path[:shared]
         for step in range(shared, len(path)):
@@ -244,15 +364,29 @@ class MenuTreeVerifier:
 
             blocked = self.guard.blocks("text", label)
             if blocked:
+                self._position_known = False
                 return False, f"path step blocked by action guard ({blocked})"
 
             _, views, _ = self._await_stable()
             if not views:
+                self._position_known = False
                 return False, "no readable screen while navigating"
-            element = self._find(label, views)
+            found, views = self._match_scrolling(label, views)
+            element = found.element if found else None
             if element is None:
-                return False, f"path step not found on screen: {label!r}"
+                # Say what WAS on screen. Without this, "path step not found"
+                # is unactionable: it cannot distinguish a wording mismatch
+                # from having landed on the wrong screen entirely, and those
+                # need opposite fixes.
+                here = [e.label for e in self._elements(views) if e.label][:12]
+                best = best_match(label, self._elements(views))
+                near = (f"; closest was {best.element.label!r} at {best.score:.2f}"
+                        if best else "; nothing scored at all")
+                self._position_known = False
+                return False, (f"path step not found on screen: {label!r}"
+                               f"{near}; screen showed {here}")
             if not self._click(element, views):
+                self._position_known = False
                 return False, f"path step could not be clicked: {label!r}"
 
             # Track position by index, not by searching for the label: the
@@ -261,6 +395,7 @@ class MenuTreeVerifier:
             # depth and corrupt the shared-prefix calculation for every
             # subsequent row.
             self._current_path = path[:step + 1]
+        self._position_known = True
         return True, ""
 
     # -- verify ----------------------------------------------------------
@@ -297,6 +432,8 @@ class MenuTreeVerifier:
             "pass_rate_percent": report.pass_rate(),
             "navigations": self._navigations,
             "relaunches": self._relaunches,
+            "entry_dialogs_dismissed": self._entry_dialogs_dismissed,
+            "scrolls": self._scrolls,
             "elapsed_seconds": round(time.time() - self._started, 1),
             "guard": self.guard.summary(),
         }
@@ -368,7 +505,7 @@ class MenuTreeVerifier:
                 row, NA, f"screen belongs to {current} -- outside the app",
             )
 
-        match = self._match(row.selector_text, views)
+        match, views = self._match_scrolling(row.selector_text, views)
         if match is not None:
             self.match_log.append({
                 "sheet_row": row.key,
@@ -387,9 +524,14 @@ class MenuTreeVerifier:
                     f"not found: {row.selector_text!r} -- verify by hand under: "
                     + "; ".join(row.context),
                 )
+            here = [e.label for e in self._elements(views) if e.label][:12]
+            best = best_match(row.selector_text, self._elements(views))
+            near = (f"; closest {best.element.label!r} at {best.score:.2f}"
+                    if best else "; nothing scored")
             return RowResult(
                 row, FAIL,
-                f"expected element not present: {row.selector_text!r}",
+                f"expected element not present: {row.selector_text!r}"
+                f"{near}; screen showed {here}",
             )
         detail = f"found as {element.kind}"
         if match is not None and match.score < 1.0:

@@ -276,6 +276,18 @@ def looks_like_dialog(views: Sequence[Dict], package: Optional[str] = None) -> b
     return len(content) <= 45 and 1 < clickable <= 6
 
 
+def box_of(view: Dict) -> Optional[tuple]:
+    """Parse a `[x1,y1][x2,y2]` bounds string into (x1, y1, x2, y2)."""
+    bounds = view.get("bounds") or ""
+    try:
+        first, second = bounds.split("][")
+        x1, y1 = (int(v) for v in first.lstrip("[").split(","))
+        x2, y2 = (int(v) for v in second.rstrip("]").split(","))
+    except (ValueError, AttributeError):
+        return None
+    return (x1, y1, x2, y2)
+
+
 def center_of(view: Dict) -> Optional[tuple]:
     """Parse a `[x1,y1][x2,y2]` bounds string into a centre point."""
     bounds = view.get("bounds") or ""
