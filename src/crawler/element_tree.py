@@ -166,7 +166,17 @@ class ElementTreeWalker:
         self.include_foreign = config.get("include_foreign", True)
         self.similarity_threshold = float(config.get("similarity_threshold", 0.6))
         self.back_attempts = int(config.get("back_attempts", 4))
-        self.return_similarity = float(config.get("return_similarity", 0.75))
+        # 0.75 was too strict, measured rather than guessed: of 40 recorded
+        # identification failures, 32 scored 0.6-0.7 and were demonstrably
+        # the same screen. One example differed by a single label out of
+        # four -- the viewfinder's content-description flipping "PHOTO Rear
+        # Camera preview" to "PHOTO Front Camera preview" after a camera
+        # switch, with Close menu / Aspect ratioFull / 1:1 all identical.
+        # Each such miss cost a ~11s relaunch.
+        #
+        # 0.55 admits that band and still rejects the genuine misses, which
+        # scored 0.0-0.4 (a Google Lens consent screen, an empty state).
+        self.return_similarity = float(config.get("return_similarity", 0.55))
         self.checkpoint_every = int(config.get("checkpoint_every", 25))
         # Off by default: pm clear resets the app's saved preferences, which
         # is unacceptable on a personal device. On a disposable test device it
