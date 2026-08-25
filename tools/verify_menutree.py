@@ -62,6 +62,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--guard-extra", default="")
     p.add_argument("--dry-run", action="store_true",
                    help="parse and report the spec only; no device needed")
+    p.add_argument("--max-rows", type=int, default=0,
+                   help="verify only the first N spec rows. For iterating: a "
+                        "967-row sheet takes hours, and finding a bug in the "
+                        "first 100 rows does not need the other 867.")
     p.add_argument("--aliases", default="",
                    help="JSON map of sheet wording -> on-screen text, "
                         "confirmed by a human. Beats any guess. Produce "
@@ -128,6 +132,9 @@ def main() -> int:
 
     sheets = [s.strip() for s in args.sheets.split(",") if s.strip()] or None
     spec = read_workbook(spec_path, sheets)
+    if args.max_rows:
+        spec = spec[:args.max_rows]
+        logger.info("Limited to the first %d spec row(s).", len(spec))
     print(summarise(spec))
 
     if args.dry_run:
@@ -214,6 +221,25 @@ def main() -> int:
         if counts.get(name):
             print(f"  {name:<15}: {counts[name]}")
     print("-" * 58)
+    # A pass rate is only meaningful over the rows actually judged.
+    # A run that NA-d most of its sheet once reported "100.0%" over
+    # 18 of 120 rows -- a gate that checked 15% of the spec and called
+    # the build perfect. Say so loudly rather than print the number
+    # bare and let it be read as a green result.
+    judged = counts.get(PASS, 0) + counts.get(FAIL, 0)
+    coverage = (100.0 * judged / report.stats["rows_checked"]
+                if report.stats["rows_checked"] else 0.0)
+    print(f"  rows judged    : {judged} of {report.stats['rows_checked']}"
+          f"  ({coverage:.1f}% -- the rest were NA)")
+    if coverage < 60.0:
+        print()
+        print("  " + "!" * 58)
+        print(f"  THIS PASS RATE IS NOT A GATE RESULT: only {coverage:.0f}% of the")
+        print("  rows checked produced a Pass or Fail. The rest were NA, so the")
+        print("  percentage below describes a small slice of the spec, not the")
+        print("  build. Read the NA reasons before trusting it.")
+        print("  " + "!" * 58)
+        print()
     print(f"  PASS RATE      : {report.pass_rate()}%  (of Pass+Fail)")
     print(f"  navigations    : {report.stats['navigations']}")
     print(f"  relaunches     : {report.stats['relaunches']}")
