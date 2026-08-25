@@ -679,6 +679,75 @@ walks are still kept, but the failure is now printed loudly and exits 1.
 
 ---
 
+## 12.56 Navigation, and the limiter underneath it
+
+Both paths are known, so getting from one screen to another is always the
+same shape: **rise to the deepest screen the two paths share, then descend.**
+`navigation_plan()` is that rule, extracted as pure arithmetic so
+`tests/test_navigation.py` can cover it without a device.
+
+One rule replaces the two special cases that preceded it, and adds the one
+that was missing:
+
+| here | target | plan | |
+|---|---|---|---|
+| `A>B>C` | `A>B>C>D` | `(0, [D])` | descend |
+| `A>B>C` | `A>B` | `(1, [])` | rise |
+| `A>B>C` | `A>B>D` | `(1, [D])` | **sibling** |
+| `A>B>C` | `X>Y` | `(3, [X,Y])` | rise to root, descend |
+
+The sibling case is the one that matters. In a depth-first walk the usual
+next move is to a sibling -- finish `Flash > On`, now do `Flash > Off` -- and
+it matched neither old branch, so every one fell through to a relaunch and
+full replay. The baseline run recorded `nav_forward 3, nav_back 3` across
+**176 clicks**: six shortcuts in the entire run, with 69 relaunches costing
+34.7% of the clock.
+
+**Why rising is safe.** `rises` never exceeds our own depth (asserted in the
+tests), so BACK only ever retraces a descent we made, and the deepest it can
+land is the root screen -- it is the *next* press that would leave the app,
+and that one is never issued. Two further guards: `_click_label` fails if the
+label is not on the screen in front of us, so a BACK landing somewhere
+unexpected can never cause a blind click; and arrival is verified against the
+target's elements, falling through to replay if it did not land.
+
+An early version refused any plan that rose all the way to the root, fearing
+unrelated paths. That rejected the cheapest and commonest move of all -- a
+top-level sibling, Photo to Video to Portrait -- and sent it to a relaunch.
+
+### Rejected: re-planning mid-climb
+
+Worth recording because it looks obviously right and is not.
+
+One BACK is genuinely not one level: an overlay like `SubSet` collapses
+several at once, so a planned two-press climb can overshoot. The natural fix
+is to rise one press at a time, identify where you landed, and re-plan.
+
+Measured, it was worse. The trace showed it re-planning from bad data -- one
+BACK from `filteroff > SubSet` reported as landing on `Front Camera`, a
+different branch entirely -- and `identify_misses` hit its cap of 40 in a
+single run, against 8 without it. **Re-planning from a misidentified screen
+picks a confidently wrong route.**
+
+### The real limiter: screen identity
+
+`back_ok 5` against `back_failed 64`. Shortcuts land where expected about
+**10%** of the time, and that is not a fault of the climbing strategy.
+
+The trace says why: the `SubSet` screen appears beneath many different
+parents carrying the same 26 elements. Element-set similarity -- the whole
+basis of `screen_similarity` and `return_similarity` -- cannot distinguish
+those instances, so "where am I?" returns a plausible wrong answer.
+
+Until identity separates them, no path-based navigation can be reliable, and
+roughly a quarter to a third of every run will keep going to relaunches.
+That is the next thing to fix, and it is upstream of navigation, coverage,
+and reproducibility alike. Note it likely needs something *other* than the
+element set -- the activity name, the scroll position, or the path taken to
+arrive -- because the element sets are genuinely identical.
+
+---
+
 ## 12.6 Device lifecycle and concurrency
 
 Two rules that are easy to get wrong and expensive to debug, because both
