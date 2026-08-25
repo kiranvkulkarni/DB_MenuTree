@@ -25,7 +25,13 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from ..crawler.action_guard import DEFAULT_PRESETS, ActionGuard
 from ..crawler.device_driver import DeviceDriver, DriverError, make_driver
 from ..crawler.elements import Element, enumerate_elements, screen_similarity
-from ..crawler.hierarchy import EMPTY_STATE, center_of, parse_hierarchy, state_key
+from ..crawler.hierarchy import (
+    EMPTY_STATE,
+    center_of,
+    foreground_package,
+    parse_hierarchy,
+    state_key,
+)
 from .spec_reader import SpecRow
 
 logger = logging.getLogger(__name__)
@@ -86,6 +92,8 @@ class MenuTreeVerifier:
         self.settle = float(config.get("settle_seconds", 1.0))
         self.ready_timeout = float(config.get("ready_timeout", 20.0))
         self.stable_interval = float(config.get("stable_interval", 0.4))
+        self.first_interval = float(config.get("first_interval", 0.12))
+        self.interval_growth = float(config.get("interval_growth", 2.0))
         self.state_mode = config.get("state_key_mode", "affordance")
         self.backend = config.get("driver", "auto")
         self.return_similarity = float(config.get("return_similarity", 0.75))
@@ -107,24 +115,50 @@ class MenuTreeVerifier:
         self._released = False
 
     # -- device ----------------------------------------------------------
-    def _capture(self) -> Tuple[Optional[str], List[Dict], str]:
+    def _capture(self, with_package: bool = True) -> Tuple[Optional[str], List[Dict], str]:
+        """Read the screen; `with_package` is the expensive half. See the
+        walker's `_capture` -- the same measurements apply, and matter more
+        here because the verifier walks every row of the sheet."""
         assert self.driver is not None
         views = parse_hierarchy(self.driver.dump_hierarchy())
         if not views:
             return None, [], ""
-        return (state_key(views, self.state_mode, self.package),
-                views, self.driver.current_package() or "")
+        current = self._resolve_package(views) if with_package else ""
+        return state_key(views, self.state_mode, self.package), views, current
+
+    def _resolve_package(self, views: Sequence[Dict]) -> str:
+        """Foreground app, read from the dump; confirmed only when foreign.
+
+        The authoritative call costs ~390ms against ~150ms for the dump, and
+        was 23% of a measured walk. It is still paid when the cheap answer
+        says we have left the app, because that is the answer worth being
+        certain about.
+        """
+        assert self.driver is not None
+        derived = foreground_package(views)
+        if not derived or derived == self.package:
+            return derived
+        return self.driver.current_package() or derived
 
     def _await_stable(self) -> Tuple[Optional[str], List[Dict], str]:
+        """Poll until two dumps agree, with a growing gap between looks.
+
+        Nearly every screen is already still on the second look, so glance
+        again quickly and reserve patience for the ones that are genuinely
+        still animating.
+        """
         deadline = time.time() + self.ready_timeout
-        previous, views, current = self._capture()
+        previous, views, _ = self._capture(with_package=False)
         settled = None
+        gap = self.first_interval
         while time.time() < deadline:
             if previous and previous != EMPTY_STATE and settled == previous:
-                return previous, views, current
+                break
             settled = previous
-            time.sleep(self.stable_interval)
-            previous, views, current = self._capture()
+            time.sleep(gap)
+            gap = min(gap * self.interval_growth, self.stable_interval * 2)
+            previous, views, _ = self._capture(with_package=False)
+        current = self._resolve_package(views) if views else ""
         return previous, views, current
 
     def _elements(self, views: Sequence[Dict]) -> List[Element]:
@@ -156,7 +190,9 @@ class MenuTreeVerifier:
         if centre is None:
             return False
         try:
-            self.driver.tap(*centre)
+            # settle=False: _await_stable follows every click here, so the
+            # driver's blind 1.0s sleep on top of it was dead time.
+            self.driver.tap(*centre, settle=False)
         except DriverError:
             return False
         return True

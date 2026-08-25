@@ -108,6 +108,7 @@ def main() -> int:
     rows_file = output_dir / "menutree_rows.json"
 
     lock = None
+    walk_failed = None
     if not args.skip_walk:
         # Refuse to start while another run is already driving this handset.
         try:
@@ -141,7 +142,14 @@ def main() -> int:
         except KeyboardInterrupt:
             logger.warning("Interrupted; keeping what was discovered.")
         except Exception as exc:
-            logger.error("Walk ended early: %s", exc)
+            # Keep a partial walk -- a run that died at row 300 is still
+            # worth its rows. But remember that it died: a crash used to be
+            # reported as a successful run, because the root row alone made
+            # `walker.rows` non-empty. A NameError in the walker produced
+            # "1 row, 0 clicks, exit 0", which reads as "this app has no UI"
+            # rather than "this tool is broken". A gate must not do that.
+            logger.error("Walk ended early: %s", exc, exc_info=True)
+            walk_failed = exc
             if not walker.rows:
                 raise
         finally:
@@ -226,6 +234,15 @@ def main() -> int:
                 logger.error("UVTA suite rejected: %s", exc)
         else:
             logger.warning("No rows were eligible for UVTA emission.")
+
+    if walk_failed is not None:
+        print()
+        print("  " + "!" * 56)
+        print(f"  WALK DID NOT COMPLETE: {type(walk_failed).__name__}: {walk_failed}")
+        print("  The rows above are a PARTIAL result. Do not read the coverage")
+        print("  figure as this build's coverage. Traceback is in the run log.")
+        print("  " + "!" * 56)
+        return 1
     return 0
 
 

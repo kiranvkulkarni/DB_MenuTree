@@ -587,6 +587,98 @@ comparing.
 
 ---
 
+## 12.55 Throughput *is* coverage
+
+The most important fact about coverage, and the least obvious:
+
+> **The good runs do not stop because the walker gets lost. They stop
+> because the clock runs out.**
+
+Measured over eight Realme runs, every run that reached meaningful depth
+ended with `elements_pending > 0` — the time budget expired with most of the
+worklist never attempted. The best run had **154 of 224 actionable elements
+never tried**. Its 25% coverage was `56 done / 224 actionable`; the other 69%
+was not a failure to navigate, it was a failure to get there in time.
+
+So making an action cheaper *is* raising coverage, and the phase timer
+(`phase_seconds` in the stats) exists to say which action to make cheaper.
+Do not optimise without reading it — three of the four things that looked
+obviously expensive were not.
+
+### What the timer actually said
+
+First measurement, 128s run:
+
+| phase | seconds | % of run |
+|---|---|---|
+| `await_stable` | 97.6 | **76%** |
+| ├ `current_package` | 29.7 | 23% |
+| ├ `dump` | 29.0 | 23% |
+| └ `sleep(0.4)` | 38.9 | 30% |
+| `tap` | 4.3 | 3% |
+
+The hypothesis going in was that `dump_hierarchy` dominated, because it
+parses a whole screen. It does not: a dump costs **0.11s**. Parsing and
+state-keying are free (1ms and 0ms). Three real costs turned up instead.
+
+**1. A blind sleep after every tap.** `tap()` did `click()` then
+`time.sleep(settle)` — 1.00s of a 1.27s tap. Every one of those taps is
+immediately followed by `_await_stable()`, which polls the screen properly.
+The sleep was pure redundancy, and it is the exact anti-pattern §8 warns
+about, sitting inside the driver. `tap(settle=False)` now skips it; the
+default stays `True` for callers with no quiescence loop.
+
+**2. `current_package()` costs 0.41s — four times a whole dump.** And the
+dump already carries a `package` on every node, because uiautomator dumps the
+focused window. `foreground_package(views)` reads it for free: the package
+owning the most views, excluding OS chrome (the status and navigation bars
+are on every screen and would otherwise win on a sparse one).
+
+Measured against the authoritative call on 24 settled screens: **24 agreed,
+0 disagreed**. On *unsettled* screens it lags a transition by a frame — an
+early test caught a dump still showing the camera while the Gallery came up —
+so it is only resolved after quiescence, and a *foreign* answer is still
+confirmed with the real call before anything acts on it. Walking a foreign
+app as if it were ours has cost real debugging here (§12.5), so that one
+answer is worth 390ms.
+
+**3. The quiescence gap was flat.** A settle needs 2.28 dumps on average,
+barely above the minimum of two — so nearly every screen is already still on
+the second look, and a fixed 0.4s gap just pays 0.4s to confirm it. The gap
+now starts at 0.12s and doubles, capped at 0.8s. Fast screens settle in a
+third of the time; a screen that is genuinely still animating gets *more*
+patience than before by its fourth poll, which is the right trade.
+
+### Result, same 120s budget, same device and app
+
+| | before | after |
+|---|---|---|
+| clicks | 22 | **36** (+64%) |
+| rows | 180 | **216** (+20%) |
+| `await_stable` mean | 1284ms | **642ms** (−50%) |
+| `current_package` | 29.7s (23%) | 1.3s (1%) |
+
+The next-largest phase is now `relaunch_clear` at 24.5% — 3.07s per relaunch,
+10 of them. Note that `launch_clean(clear=True)` and `clear=False` measured
+3.10s and 3.13s, so **the cost is the launch, not the `pm clear`**. Reducing
+it means relaunching less often, which is a navigation problem, not a timing
+one.
+
+### Two traps when measuring this
+
+**A mid-run checkpoint is not a result.** The walker checkpoints
+`menutree_rows.json` as it goes, so reading it while a run is live gives a
+plausible, wrong, smaller answer. This has already caused one false "fix
+works" on this project. Check `output/.run-lock-<serial>` before believing a
+number — if the lock is there, the run is still going.
+
+**A crash used to look like a successful empty run.** A `NameError` in the
+walker was caught, logged, and reported as "1 row, 0 clicks, exit 0" — which
+reads as "this app has no UI" rather than "this tool is broken". Partial
+walks are still kept, but the failure is now printed loudly and exits 1.
+
+---
+
 ## 12.6 Device lifecycle and concurrency
 
 Two rules that are easy to get wrong and expensive to debug, because both

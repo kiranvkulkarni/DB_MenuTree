@@ -44,6 +44,7 @@ from .elements import (
 from .hierarchy import (
     EMPTY_STATE,
     center_of,
+    foreground_package,
     looks_like_dialog,
     parse_hierarchy,
     state_key,
@@ -160,6 +161,10 @@ class ElementTreeWalker:
         self.settle = float(config.get("settle_seconds", 1.0))
         self.ready_timeout = float(config.get("ready_timeout", 25.0))
         self.stable_interval = float(config.get("stable_interval", 0.4))
+        # Backoff for the quiescence poll: cheap first glance, growing
+        # gaps for screens that are genuinely still animating.
+        self.first_interval = float(config.get("first_interval", 0.12))
+        self.interval_growth = float(config.get("interval_growth", 2.0))
         self.state_mode = config.get("state_key_mode", "affordance")
         self.backend = config.get("driver", "auto")
         self.include_static_text = config.get("include_static_text", True)
@@ -220,6 +225,13 @@ class ElementTreeWalker:
         self._nav_trace: List[Dict] = []
         self._identify_misses: List[Dict] = []
         self._released = False
+        # Where the clock actually goes. Runs end on the time budget with
+        # most of the worklist untouched (154 of 224 actionable elements in
+        # one measured run), so throughput *is* coverage -- and the only way
+        # to raise it without guessing is to measure the phases.
+        self._phases: Dict[str, List[float]] = {}
+        self._settle_polls = 0
+        self._package_disagreements = 0
         self._stem_matches = 0
         self._worklist: Dict[tuple, WorkItem] = {}
         self._screen_elements: Dict[str, List[Element]] = {}
@@ -227,24 +239,99 @@ class ElementTreeWalker:
         self._row_for: Dict[tuple, TreeNode] = {}
 
     # -- capture ---------------------------------------------------------
-    def _capture(self) -> Tuple[Optional[str], List[Dict], str]:
+    def _phase(self, name: str, started: float) -> None:
+        """Record how long one phase took. Cost is a dict lookup and a float."""
+        bucket = self._phases.setdefault(name, [0.0, 0.0])
+        bucket[0] += time.time() - started
+        bucket[1] += 1
+
+    def _phase_report(self) -> Dict[str, Dict[str, float]]:
+        """Seconds and calls per phase, worst total first."""
+        total = max(time.time() - self._started, 1e-9)
+        out = {}
+        for name, (seconds, calls) in sorted(
+            self._phases.items(), key=lambda kv: -kv[1][0]
+        ):
+            out[name] = {
+                "seconds": round(seconds, 1),
+                "calls": int(calls),
+                "mean_ms": round(1000.0 * seconds / calls, 1) if calls else 0.0,
+                "percent_of_run": round(100.0 * seconds / total, 1),
+            }
+        return out
+
+    def _capture(self, with_package: bool = True) -> Tuple[Optional[str], List[Dict], str]:
+        """Read the screen. `with_package` is the expensive half.
+
+        Measured on the Realme: `dump_hierarchy` costs 0.11s, but
+        `current_package` costs 0.41s -- four times as much. The quiescence
+        loop only needs the state key to decide it has settled, and only the
+        final package value is ever returned, so polling with
+        `with_package=False` removes ~0.4s from every iteration.
+        """
         assert self.driver is not None
+        started = time.time()
         views = parse_hierarchy(self.driver.dump_hierarchy())
+        self._phase("dump", started)
         if not views:
             return None, [], ""
-        current = self.driver.current_package() or ""
+        current = self._resolve_package(views) if with_package else ""
         return state_key(views, self.state_mode, self.package), views, current
 
+    def _resolve_package(self, views: Sequence[Dict]) -> str:
+        """Which app is in front, cheaply when that is safe.
+
+        Read from the dump we already have. The authoritative call costs
+        ~390ms against ~150ms for the whole dump, and it was 23% of a
+        measured run. It is still paid -- but only when the cheap answer
+        says we have left the app under test, because *that* is the answer
+        worth being certain about: walking a foreign app as if it were ours
+        has cost real debugging here before.
+        """
+        assert self.driver is not None
+        derived = foreground_package(views)
+        if not derived or derived == self.package:
+            return derived
+        started = time.time()
+        confirmed = self.driver.current_package() or derived
+        self._phase("current_package", started)
+        if confirmed != derived:
+            self._package_disagreements += 1
+        return confirmed
+
     def _await_stable(self) -> Tuple[Optional[str], List[Dict], str]:
-        deadline = time.time() + self.ready_timeout
-        previous, views, current = self._capture()
+        """Poll until two consecutive dumps agree, then read the package once.
+
+        The gap between polls backs off rather than being fixed. Measured,
+        a settle needs 2.28 dumps on average -- barely above the minimum of
+        two -- so nearly every screen is already still on the second look,
+        and a fixed 0.4s gap simply pays 0.4s to confirm it. Waiting the
+        full interval was 30% of a whole run.
+
+        So: glance again quickly, and only grow the gap for screens that
+        really are still moving. A slow screen ends up waiting *longer*
+        than the old fixed interval by its third poll, which is the right
+        trade -- the ones that need patience get more of it.
+        """
+        assert self.driver is not None
+        entered = time.time()
+        deadline = entered + self.ready_timeout
+        previous, views, _ = self._capture(with_package=False)
         settled = None
+        polls = 1
+        gap = self.first_interval
         while time.time() < deadline:
             if previous and previous != EMPTY_STATE and settled == previous:
-                return previous, views, current
+                break
             settled = previous
-            time.sleep(self.stable_interval)
-            previous, views, current = self._capture()
+            time.sleep(gap)
+            gap = min(gap * self.interval_growth, self.stable_interval * 2)
+            previous, views, _ = self._capture(with_package=False)
+            polls += 1
+
+        current = self._resolve_package(views) if views else ""
+        self._settle_polls += polls
+        self._phase("await_stable", entered)
         return previous, views, current
 
     def _elements(self, views: Sequence[Dict]) -> List[Element]:
@@ -382,8 +469,10 @@ class ElementTreeWalker:
             # Clean launch, not a task resume: another app's activity may be
             # stacked on top of ours (the Gallery ends up inside the camera's
             # task after "Latest Photos"), and resuming would land there.
+            started = time.time()
             if not self.driver.launch_clean(self.package, clear=clear):
                 self.driver.start_app(self.package, clear=clear)
+            self._phase("relaunch_clear" if clear else "relaunch", started)
         except DriverError as exc:
             logger.warning("Relaunch failed: %s", exc)
             return False
@@ -451,10 +540,15 @@ class ElementTreeWalker:
         centre = center_of(views[element.view_index])
         if centre is None:
             return False
+        started = time.time()
         try:
-            self.driver.tap(*centre)
+            # settle=False: every click here is followed by _await_stable,
+            # which polls the screen properly. The driver's blind sleep on
+            # top of that was 1.00s of dead time per click, measured.
+            self.driver.tap(*centre, settle=False)
         except DriverError:
             return False
+        self._phase("tap", started)
         self._clicks += 1
         return True
 
@@ -910,6 +1004,11 @@ class ElementTreeWalker:
             "nav_forward": self._nav_forward,
             "nav_back": self._nav_back,
             "nav_trace": self._nav_trace[:60],
+            # Read this before trying to raise coverage: runs end on the
+            # clock, so the biggest phase is the biggest coverage lever.
+            "phase_seconds": self._phase_report(),
+            "settle_polls": self._settle_polls,
+            "package_disagreements": self._package_disagreements,
             "identify_misses": self._identify_misses[:40],
             "stem_matches": self._stem_matches,
             "left_app": self._left_app,
