@@ -242,6 +242,29 @@ class MenuTreeVerifier:
             return None, list(views)
 
         x, y = centre
+        # Rewind to the top of the list before searching down it.
+        #
+        # Scroll position carries over from the previous row. Searching only
+        # downward from wherever the last lookup left off means a control
+        # ABOVE that point can never be found: row 66 asked for "Shooting
+        # methods" and failed, while the very same label was sitting on
+        # screen as the nearest candidate for other rows. The tell was that
+        # almost every near-miss named a bottom-of-list item -- "Dual
+        # recordings", "About Camera", "Permissions" -- because the list was
+        # parked at the bottom.
+        for _ in range(self.max_scrolls):
+            before, _, _ = self._await_stable()
+            self.driver.swipe(x, y - self.scroll_span // 2,
+                              x, y + self.scroll_span // 2, 220)
+            self._scrolls += 1
+            after, current, _ = self._await_stable()
+            if after == before:
+                break                       # already at the top
+            views = current
+        match = self._match(text, views)
+        if match is not None:
+            return match, list(views)
+
         seen = set()
         for _ in range(self.max_scrolls):
             key, current, _ = self._await_stable()
@@ -365,7 +388,10 @@ class MenuTreeVerifier:
             blocked = self.guard.blocks("text", label)
             if blocked:
                 self._position_known = False
-                return False, f"path step blocked by action guard ({blocked})"
+                # Marked so the caller can report NA rather than Fail: the
+                # tool declined to press this, which is not evidence the
+                # build is broken.
+                return False, f"GUARD:path step blocked by action guard ({blocked})"
 
             _, views, _ = self._await_stable()
             if not views:
@@ -489,6 +515,11 @@ class MenuTreeVerifier:
             )
 
         reached, why = self._navigate(row.path)
+        if not reached and why.startswith("GUARD:"):
+            return RowResult(
+                row, NA,
+                why[len("GUARD:"):] + " -- withheld on purpose, verify by hand",
+            )
         if not reached:
             if row.context:
                 return RowResult(
