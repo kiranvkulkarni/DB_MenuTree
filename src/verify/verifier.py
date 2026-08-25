@@ -317,11 +317,21 @@ class MenuTreeVerifier:
                 return RowResult(row, PASS, "application launched")
             return RowResult(row, FAIL, f"app not in foreground (saw {current!r})")
 
-        if row.context:
-            return RowResult(
-                row, NA,
-                "requires precondition: " + "; ".join(row.context),
-            )
+        # A precondition is NOT a reason to skip the row.
+        #
+        # Measured on the real workbook: 3 context rows put a precondition on
+        # 963 of 1052 verifiable rows -- 91% -- because a marker like
+        # `[Rear Camera]` sits high in the sheet and legitimately qualifies
+        # everything beneath it. Returning NA for any row carrying context
+        # meant the verifier would check 89 rows and skip the rest, which is
+        # not a gate.
+        #
+        # Most such preconditions are ambient state the app satisfies on
+        # launch, so the row is attempted normally. Context is used only to
+        # interpret a MISS, below: we genuinely cannot tell "the build lost
+        # this control" from "the precondition did not hold", so a missing
+        # element on a row with context becomes NA naming the precondition,
+        # rather than a Fail that might be a lie.
 
         blocked = self.guard.blocks("text", row.selector_text)
         if blocked:
@@ -332,6 +342,11 @@ class MenuTreeVerifier:
 
         reached, why = self._navigate(row.path)
         if not reached:
+            if row.context:
+                return RowResult(
+                    row, NA,
+                    f"{why} -- may be the precondition: " + "; ".join(row.context),
+                )
             return RowResult(row, FAIL, why)
 
         _, views, current = self._await_stable()
@@ -344,8 +359,18 @@ class MenuTreeVerifier:
 
         element = self._find(row.selector_text, views)
         if element is None:
+            if row.context:
+                # Cannot distinguish a real defect from an unmet precondition.
+                return RowResult(
+                    row, NA,
+                    f"not found: {row.selector_text!r} -- verify by hand under: "
+                    + "; ".join(row.context),
+                )
             return RowResult(
                 row, FAIL,
                 f"expected element not present: {row.selector_text!r}",
             )
-        return RowResult(row, PASS, f"found as {element.kind}")
+        detail = f"found as {element.kind}"
+        if row.context:
+            detail += "  [under: " + "; ".join(row.context) + "]"
+        return RowResult(row, PASS, detail)

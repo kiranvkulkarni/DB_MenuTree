@@ -22,7 +22,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.crawler.action_guard import DEFAULT_PRESETS, GUARD_PRESETS  # noqa: E402
 from src.logging_setup import setup_logging  # noqa: E402
 from src.run_lock import DeviceBusy, RunLock  # noqa: E402
-from src.verify.spec_reader import health, read_workbook, summarise  # noqa: E402
+from src.verify.spec_reader import (  # noqa: E402
+    diagnostics,
+    health,
+    inspect_workbook,
+    read_workbook,
+    summarise,
+)
 from src.verify.verifier import FAIL, NA, PASS, MenuTreeVerifier  # noqa: E402
 
 logger = logging.getLogger("verify_menutree")
@@ -117,6 +123,7 @@ def main() -> int:
 
     if args.dry_run:
         print(health(spec))
+        print(diagnostics(inspect_workbook(spec_path, sheets)))
         preview = output_dir / "spec_parsed.json"
         preview.write_text(json.dumps(
             [{"sheet": r.sheet, "excel_row": r.excel_row, "depth": r.depth,

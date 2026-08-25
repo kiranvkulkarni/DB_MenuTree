@@ -856,6 +856,36 @@ key icon` at many points and depths, so `path.index(label)` resolves to the
 first occurrence, which is usually the wrong depth, and corrupts the
 shared-prefix calculation for every subsequent row.
 
+### A precondition is not a reason to skip a row
+
+The first version returned `NA` for any row carrying a `[bracketed]`
+context. A dry run against a real workbook killed that immediately:
+
+> **3 context rows put a precondition on 963 of 1052 verifiable rows.**
+
+A marker like `[Rear Camera]` sits high in the sheet and legitimately
+qualifies everything beneath it, so 91% of rows inherited one. The verifier
+would have checked 89 rows and skipped the rest, which is not a gate.
+
+Most such preconditions are ambient state the app already satisfies on
+launch. So a row with context is now attempted like any other, and context is
+used only to interpret a **miss**:
+
+| | outcome |
+|---|---|
+| context, element found | **Pass** |
+| context, element missing | **NA**, naming the precondition |
+| no context, element missing | **Fail** |
+
+The reasoning is that we cannot distinguish "the build lost this control"
+from "the precondition did not hold", so calling it a Fail would be a lie —
+but refusing to look at all wastes the row entirely.
+
+This is worth remembering as a general shape: the fixture was built to
+imitate the real workbook and had 3 context rows out of 74, where the real
+one had 3 out of 1055. **The ratio, not the feature, was what broke it** —
+and only real data showed that.
+
 ### The original workbook is never modified
 
 Results are written to a copy, `<name>_verified.xlsx`, in the per-run folder.
