@@ -104,6 +104,7 @@ class MenuTreeVerifier:
         self._current_path: List[str] = []
         self._navigations = 0
         self._relaunches = 0
+        self._released = False
 
     # -- device ----------------------------------------------------------
     def _capture(self) -> Tuple[Optional[str], List[Dict], str]:
@@ -252,12 +253,19 @@ class MenuTreeVerifier:
             "elapsed_seconds": round(time.time() - self._started, 1),
             "guard": self.guard.summary(),
         }
-        try:
-            self.driver.release_device()
-        except Exception:
-            pass
+        self._release()
         logger.info("Verification finished: %s", report.stats)
         return report
+
+    def _release(self) -> None:
+        """Drop the stay-awake hold; safe to call more than once."""
+        if getattr(self, "_released", False) or self.driver is None:
+            return
+        self._released = True
+        try:
+            self.driver.release_device(self.package)
+        except Exception as exc:
+            logger.debug("release_device failed: %s", exc)
 
     def _verify_row(self, row: SpecRow) -> RowResult:
         # A bracketed context row states a precondition; there is nothing on

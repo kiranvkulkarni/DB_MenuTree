@@ -219,6 +219,7 @@ class ElementTreeWalker:
         self._nav_back = 0
         self._nav_trace: List[Dict] = []
         self._identify_misses: List[Dict] = []
+        self._released = False
         self._stem_matches = 0
         self._worklist: Dict[tuple, WorkItem] = {}
         self._screen_elements: Dict[str, List[Element]] = {}
@@ -851,12 +852,25 @@ class ElementTreeWalker:
                 "Coverage is partial and the report says so.", remaining,
             )
 
-        try:
-            self.driver.release_device()
-        except Exception:
-            pass
+        self._release()
         logger.info("Walk finished: %s", self.stats())
         return self.rows
+
+    def _release(self) -> None:
+        """Drop the stay-awake hold. Safe to call more than once.
+
+        Must run however the walk ends. A run killed by a timeout or Ctrl+C
+        used to leave `svc power stayon true` set, so the device stayed awake
+        indefinitely afterwards -- which looks, from the outside, like the
+        tool is still doing something.
+        """
+        if self._released or self.driver is None:
+            return
+        self._released = True
+        try:
+            self.driver.release_device(self.package)
+        except Exception as exc:
+            logger.debug("release_device failed: %s", exc)
 
     def stats(self) -> Dict:
         by_depth: Dict[int, int] = {}

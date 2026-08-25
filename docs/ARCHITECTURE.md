@@ -58,9 +58,21 @@ contains no run id, timestamp, or absolute path, so CI can diff it.
 
 ---
 
-## 3. Two crawler back-ends
+## 3. Four back-ends
 
-Both produce a `MenuTree`; everything downstream is shared.
+Built in this order, each answering the previous one's failure. This section
+and §4–§9 describe the first two, which produce a screen *graph*; §12.5
+describes the element-tree walker and §13 the verifier, which produce the
+element tree the MenuTree deliverable actually wants.
+
+| | Back-end | Question | Status |
+|---|---|---|---|
+| A | DroidBot / `utg_parser` | what screens exist? | superseded |
+| B | replay explorer | what screens exist, deterministically? | superseded |
+| C | element-tree walker (§12.5) | what *elements* exist, by depth? | works, not reproducible |
+| D | **verifier (§13)** | does the build match the authored sheet? | **the gate** |
+
+A and B both produce a `MenuTree`; everything downstream is shared:
 
 | | DroidBot (`utg_parser`) | Replay explorer (`replay_explorer`) |
 |---|---|---|
@@ -546,7 +558,10 @@ correctness.
 
 ### Known limits
 
-- Depth reached so far is 4, against an expected 18.
+- Best depth reached is 8, against an expected 18. (Early runs reached only
+  4; the wake, clear-propagation and identity-threshold fixes below moved it.)
+- **Discovery is not reproducible.** Identical code, device and app produced
+  465 / 291 / 90 rows. This is the reason the verifier exists — see §13.
 - Data-heavy screens contribute records as rows (call log entries). Fixed
   option lists — filters, resolutions — come out correctly, which is what the
   camera sheet needs, but user data and fixed options are not distinguished.
@@ -555,17 +570,139 @@ correctness.
   A crawler can draft structure and types; those annotations cannot be
   observed on a screen.
 
-### The alternative worth considering
+### Screen identity: 0.55, and why it is not a guess
 
-Discovery must solve preconditions, data-vs-menu discrimination, and
-depth-18 traversal. **Diffing against the existing sheet** needs none of
-them: load the expected rows, walk the build, report what is missing, new, or
-moved. That is also what the workbook actually reports — 4 fails in 1896 —
-so it fits the deliverable more closely than regeneration does.
+Two screens count as the same when their element sets overlap by
+`return_similarity`. The threshold began at 0.75, which was too strict: of 40
+recorded identification failures, **32 scored 0.6–0.7 and were demonstrably
+the same screen** — the near-misses are logged in `identify_misses` precisely
+so this could be measured rather than argued about. Lowering it to 0.55 took
+one Realme run from 306 to 400 rows, identification misses from 40 to 4, and
+relaunches from 57 to 22.
+
+Comparison is stem-normalised, because OEM labels encode their own state:
+`filteroff` becomes `filteron` when you press it, so a screen scored 0.25
+against itself. `_label_stem` strips the trailing state suffix before
+comparing.
 
 ---
 
-## 13. Extending it
+## 12.6 Device lifecycle and concurrency
+
+Two rules that are easy to get wrong and expensive to debug, because both
+failure modes look like something else entirely.
+
+### A run must hand the device back, however it ends
+
+`prepare_device()` wakes the screen, dismisses the keyguard, and sets
+`svc power stayon true`. This is not a convenience. A screen that times out
+mid-run destroys the walk *silently*: the OEM camera replaces its entire UI
+with a "Tap to show preview" placeholder under `.setting.ScreenOffActivity`,
+leaving one element to explore. The walk keeps running and finds nothing —
+and because the outcome then depends on *when* the screen happened to time
+out, this is a strong contributor to the 90-vs-465 variance.
+
+`release_device(package)` is the exact inverse and does three things:
+
+1. drops `stayon`
+2. force-stops the app under test
+3. presses Home
+
+All three matter. Dropping `stayon` alone leaves the app open, mid-menu, on a
+lit screen — and an OEM camera left open keeps auto-focusing, running scene
+detection and animating its viewfinder. Observed from across a desk that is
+indistinguishable from the tool still clicking, and it was reported as
+exactly that.
+
+**`release_device` must run from a `finally`.** It used to run only on the
+success path, so a run killed by a timeout or Ctrl-C left `stayon true` set
+permanently and the handset lit indefinitely. `_release()` is idempotent
+because both the walker and the CLI call it.
+
+### One run per device
+
+`src/run_lock.py` holds a lock file per device serial in the output root. Two
+runs driving one handset interleave their taps, and the damage is invisible
+in the logs — each reports a plausible walk while the other navigates
+underneath it. It also explains a device that appears to act after a run
+"finished": an earlier run with a two-hour budget is still going, and the
+finished one is not the one you are watching.
+
+A live lock refuses the new run and prints the PID to kill. A stale one — the
+owning process is gone — is taken over silently. `_alive()` is deliberately
+conservative: a PID it cannot classify counts as alive, because wrongly
+declaring a lock stale is worse than a spurious refusal. `--force-lock`
+overrides.
+
+---
+
+## 13. Verification: walking the sheet instead of discovering it
+
+Discovery must solve preconditions, data-vs-menu discrimination, depth-18
+traversal *and* reproducibility. Verification needs none of them.
+
+The 1,896-row sheet is hand-authored and repeatedly verified — it is a
+specification, not a discovery output. So the job was never "discover the
+tree"; it is "walk the known tree and assert each row is present".
+
+| problem | under discovery | under verification |
+|---|---|---|
+| reproducibility | unsolved blocker | gone — same rows every run |
+| preconditions | impossible to infer | gone — the sheet states them |
+| coverage denominator | grows as you explore | fixed at 1,896 |
+| navigation failure | silent lost coverage | a Fail on a named row |
+
+### Reading the sheet back into a tree
+
+Two properties of the layout make this reliable, and both are load-bearing:
+
+- **Depth is positional.** A row's depth is which `N Depth` column holds its
+  label, so structure is explicit rather than inferred from indentation.
+- **Rows are in tree order.** The sheet is depth-first, so a row's parent is
+  the nearest preceding row one level shallower. No ids needed.
+
+The header is located by looking for the depth columns rather than a fixed
+row index, so the summary block at the top of the real workbook — and any
+drift in its height — does not break the parse.
+
+Three cases cost real debugging:
+
+**Depth 1 is the application, not a control.** Left in the path, every route
+began with a "Camera" tap that matches nothing on screen, and *every row*
+failed with `path step not found`. It is satisfied by the app being up.
+
+**`[Bracketed]` rows are context, not clicks.** `[When location Permission is
+OFF in Dut]` states a precondition. It is carried as context for the rows it
+qualifies and reported `NA` with the precondition quoted — a human runs it.
+Crucially, such a marker scopes to its **siblings** as well as its
+descendants: it sits at the *same* depth as the Cancel / Turn on rows it
+governs, so discarding same-depth context detaches the precondition from the
+rows that need it.
+
+**Annotations are not on-screen text.** `[Title]`, `(On/Off)`, `(Radio button
+On/Off)` are notes to the reader. They are stripped before the label is used
+as a selector, and kept for the report.
+
+### Track position by index, not by label
+
+The verifier exploits the sheet's depth-first order: consecutive rows usually
+share a path prefix, so the common case is stepping forward one level rather
+than relaunching. That requires knowing where you currently are.
+
+Position is tracked as `path[:step + 1]` — an index — **never** by searching
+the path for the label just clicked. The sheet repeats `ON`, `OK` and `Back
+key icon` at many points and depths, so `path.index(label)` resolves to the
+first occurrence, which is usually the wrong depth, and corrupts the
+shared-prefix calculation for every subsequent row.
+
+### The original workbook is never modified
+
+Results are written to a copy, `<name>_verified.xlsx`, in the per-run folder.
+Exit code 2 on any failure.
+
+---
+
+## 14. Extending it
 
 **Adding a crawler back-end.** Produce a `MenuTree` (or write
 `menutree.json`, format `menutree/1`, and use `MenuTreeLoader`). Everything
@@ -575,6 +712,8 @@ vocabulary in `menu_tree.py` and `path_emitter.py` — a small enum mapping.
 **Adding a device back-end.** Implement the `DeviceDriver` protocol in
 `device_driver.py`. Exploration targets the protocol only. `AdbDriver` exists
 as a no-agent fallback for Android versions the uiautomator2 agent lags.
+Implement `release_device` properly — see §12.6; a driver that does not hand
+the device back leaves the handset lit with the app running.
 
 **Changing UVTA output.** Edit `src/generator/uvta_syntax.py`, nothing else.
 
@@ -582,7 +721,16 @@ as a no-agent fallback for Android versions the uiautomator2 agent lags.
 re-run the §6.1 re-hash to see the effect on a known corpus *before* spending
 15 minutes on a device run.
 
-**Testing without a device.** `tests/make_fixture.py` writes a synthetic
-`droidbot_out/` in DroidBot's exact on-disk format.
-`tests/test_hierarchy.py` covers parsing, state keys, and Compose selector
-resolution offline. Both run in seconds — use them first.
+**Testing without a device.** All of these run in seconds — use them first.
+
+- `tests/test_hierarchy.py` — parsing, state keys, Compose selector resolution.
+- `tests/test_run_lock.py` — per-device mutual exclusion and stale-lock
+  takeover. Note the comment in it: the first version of that test planted a
+  PID that had already exited, so the lock correctly treated it as stale and
+  the test passed for the wrong reason. Liveness tests need a live process.
+- `tests/make_spec_fixture.py` — writes `tests/spec_fixture.xlsx`, shaped like
+  the real deliverable, so the spec reader can be exercised without it. Then
+  `python tools/verify_menutree.py --spec tests/spec_fixture.xlsx --package
+  com.example --dry-run`.
+- `tests/make_fixture.py` — a synthetic `droidbot_out/` in DroidBot's exact
+  on-disk format.
