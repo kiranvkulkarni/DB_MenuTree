@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.crawler.action_guard import DEFAULT_PRESETS, GUARD_PRESETS  # noqa: E402
 from src.logging_setup import setup_logging  # noqa: E402
 from src.run_lock import DeviceBusy, RunLock  # noqa: E402
-from src.verify.spec_reader import read_workbook, summarise  # noqa: E402
+from src.verify.spec_reader import health, read_workbook, summarise  # noqa: E402
 from src.verify.verifier import FAIL, NA, PASS, MenuTreeVerifier  # noqa: E402
 
 logger = logging.getLogger("verify_menutree")
@@ -116,6 +116,7 @@ def main() -> int:
     print(summarise(spec))
 
     if args.dry_run:
+        print(health(spec))
         preview = output_dir / "spec_parsed.json"
         preview.write_text(json.dumps(
             [{"sheet": r.sheet, "excel_row": r.excel_row, "depth": r.depth,
@@ -124,6 +125,10 @@ def main() -> int:
               "is_context": r.is_context} for r in spec],
             indent=2), encoding="utf-8")
         print(f"\n  dry run -- parsed spec written to {preview.resolve()}")
+        print()
+        print("  NOTE: spec_parsed.json contains your sheet's labels. The")
+        print("  SPEC HEALTH block above is numbers only and safe to share;")
+        print("  the JSON is not.")
         print("  Check the paths and selector_text against the real UI, then "
               "re-run without --dry-run.")
         return 0

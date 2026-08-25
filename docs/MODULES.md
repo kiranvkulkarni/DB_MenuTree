@@ -66,6 +66,7 @@ ever written over a previous run.
 |---|---|
 | `src/crawler/element_tree.py` | Worklist traversal over `(screen, element)`. Records `pending / done / unreachable / blocked / recorded`, giving a coverage denominator. Relaunch-and-replay navigation, keypad/MMI protection, incident capture. |
 | `tools/build_menutree.py` | CLI. Per-run folder, guard flags, `--clear-between-paths`, `--no-reset`, `--skip-walk`. |
+| `tools/compare_runs.py` | Two-run comparison: metrics side by side with better/worse markers, plus where the clock went. Warns when a run is still live, because a mid-run checkpoint reads as a finished result. |
 
 ## Back-end D — verifier (the gate)
 
@@ -151,6 +152,15 @@ Two traps: a **mid-run checkpoint is not a result** (check
 `output/.run-lock-<serial>` — if it exists the run is still going), and a
 crashed walk is now printed loudly and exits 1 rather than looking like a
 successful empty run.
+
+Before and after any change that touches traversal, run:
+
+```bash
+python tools/compare_runs.py --package <pkg>     # the two most recent runs
+```
+
+Three navigation changes on this project were shipped without that
+comparison and all three made coverage worse. It costs one command.
 
 ## Common tasks
 
