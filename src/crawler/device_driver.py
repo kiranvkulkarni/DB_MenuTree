@@ -26,9 +26,9 @@ class DriverError(Exception):
 
 class DeviceDriver(Protocol):
     def dump_hierarchy(self) -> str: ...
-    def tap(self, x: int, y: int) -> None: ...
-    def long_tap(self, x: int, y: int) -> None: ...
-    def press_back(self) -> None: ...
+    def tap(self, x: int, y: int, settle: bool = True) -> None: ...
+    def long_tap(self, x: int, y: int, settle: bool = True) -> None: ...
+    def press_back(self, settle: bool = True) -> None: ...
     def start_app(self, package: str, clear: bool = False) -> None: ...
     def stop_app(self, package: str) -> None: ...
     def current_package(self) -> Optional[str]: ...
@@ -67,17 +67,21 @@ class AdbDriver:
         _adb(self.serial, "shell", "uiautomator", "dump", remote)
         return _adb(self.serial, "shell", "cat", remote)
 
-    def tap(self, x: int, y: int) -> None:
+    def tap(self, x: int, y: int, settle: bool = True) -> None:
+        """Tap; see U2Driver.tap for why `settle` is optional."""
         _adb(self.serial, "shell", "input", "tap", str(x), str(y))
-        time.sleep(self.settle)
+        if settle:
+            time.sleep(self.settle)
 
-    def long_tap(self, x: int, y: int) -> None:
+    def long_tap(self, x: int, y: int, settle: bool = True) -> None:
         _adb(self.serial, "shell", "input", "swipe", str(x), str(y), str(x), str(y), "800")
-        time.sleep(self.settle)
+        if settle:
+            time.sleep(self.settle)
 
-    def press_back(self) -> None:
+    def press_back(self, settle: bool = True) -> None:
         _adb(self.serial, "shell", "input", "keyevent", "KEYCODE_BACK")
-        time.sleep(self.settle)
+        if settle:
+            time.sleep(self.settle)
 
     def start_app(self, package: str, clear: bool = False) -> None:
         if clear:
@@ -286,17 +290,28 @@ class U2Driver:
     def dump_hierarchy(self) -> str:
         return self.device.dump_hierarchy()
 
-    def tap(self, x: int, y: int) -> None:
+    def tap(self, x: int, y: int, settle: bool = True) -> None:
+        """Tap, and by default wait a fixed settle period afterwards.
+
+        Callers that follow every action with a quiescence wait should pass
+        `settle=False`: the blind sleep is then pure waste. Measured on the
+        Realme, the sleep was 1.00s of a 1.27s tap, while the dump that the
+        quiescence loop polls with costs 0.11s. The default stays True so
+        callers without a quiescence loop keep their existing behaviour.
+        """
         self.device.click(x, y)
-        time.sleep(self.settle)
+        if settle:
+            time.sleep(self.settle)
 
-    def long_tap(self, x: int, y: int) -> None:
+    def long_tap(self, x: int, y: int, settle: bool = True) -> None:
         self.device.long_click(x, y, duration=0.8)
-        time.sleep(self.settle)
+        if settle:
+            time.sleep(self.settle)
 
-    def press_back(self) -> None:
+    def press_back(self, settle: bool = True) -> None:
         self.device.press("back")
-        time.sleep(self.settle)
+        if settle:
+            time.sleep(self.settle)
 
     def start_app(self, package: str, clear: bool = False) -> None:
         if clear:

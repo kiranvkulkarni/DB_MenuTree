@@ -78,6 +78,33 @@ The last three moved the numbers measurably on the Realme:
 Best measured run: **465 rows, depth 8, 29 screens, 79 elements traversed**.
 Starting point was 102 rows at depth 4.
 
+### Throughput, because runs die on the clock
+
+Every run that reached real depth ended with the time budget expired and most
+of the worklist never attempted — the best one had **154 of 224 actionable
+elements never tried**. Its 25% was `56 done / 224 actionable`; the missing
+69% was not bad navigation, it was not getting there in time.
+
+So a phase timer now records where the clock goes (`phase_seconds` in the
+stats), and it contradicted the obvious guesses. A hierarchy dump costs
+0.11s. But `tap()` was doing a blind 1.0s sleep before a quiescence wait that
+polls properly anyway; `current_package()` cost 0.41s -- four times a dump --
+for a value the dump already contains; and the quiescence gap was flat at
+0.4s when 2.28 dumps settle the average screen.
+
+Same 120s budget, same device and app, after fixing those three:
+
+| | before | after |
+|---|---|---|
+| clicks | 22 | **36** (+64%) |
+| rows | 180 | **216** (+20%) |
+| `await_stable` mean | 1284ms | **642ms** |
+| `current_package` share | 23% of run | 1% |
+
+The largest remaining phase is relaunching (24.5%). `pm clear` is not the
+cost -- clear and no-clear launches measured 3.10s and 3.13s -- so the fix is
+to relaunch less often, which is navigation, not timing.
+
 Also solid: the safety layer — the action guard (with identifier-label
 normalisation), keypad/MMI protection, IME exclusion, ANR detection, per-run
 output folders, and now the run lock and device release. That layer is what

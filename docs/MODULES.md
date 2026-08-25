@@ -54,7 +54,7 @@ ever written over a previous run.
 
 | File | Responsibility |
 |---|---|
-| `src/crawler/hierarchy.py` | uiautomator XML to normalised views. **`state_key`** (the state abstraction), `EMPTY_STATE`, `looks_like_dialog`, `center_of`. |
+| `src/crawler/hierarchy.py` | uiautomator XML to normalised views. **`state_key`** (the state abstraction), `foreground_package` (which app is in front, read free from the dump), `EMPTY_STATE`, `looks_like_dialog`, `center_of`. |
 | `src/crawler/elements.py` | `enumerate_elements` — every element, not just clickable ones. `Element.annotated()` renders the sheet's `[Title]` / `(On/Off)` notation. `screen_similarity` for screen identity. |
 | `src/crawler/device_driver.py` | `DeviceDriver` protocol; `U2Driver` (uiautomator2) and `AdbDriver` (no-agent fallback). **Owns device lifecycle**: `prepare_device` / `release_device` / `launch_clean`. |
 | `src/crawler/action_guard.py` | Refuses to click destructive, outbound, account and commerce controls. Presets plus `--guard-extra`. Guarded rows are reported, never pressed. |
@@ -136,6 +136,22 @@ Two rules follow, and both are load-bearing:
 - `_release()` is **idempotent**. It is called from both the walker and the
   CLI's `finally`, and must not fail on the second call.
 
+## Throughput is coverage
+
+Runs end on the clock with most of the worklist untouched, so a cheaper
+action is directly more coverage. Every run writes **`phase_seconds`** into
+`menutree_rows.json`: seconds, calls, mean ms and percent of run, per phase.
+
+**Read it before optimising anything.** Three of the four things that looked
+expensive were not — a hierarchy dump costs 0.11s, while the innocuous-looking
+`current_package()` cost 0.41s and 23% of a run. ARCHITECTURE §12.55 has the
+measurements and what came of them.
+
+Two traps: a **mid-run checkpoint is not a result** (check
+`output/.run-lock-<serial>` — if it exists the run is still going), and a
+crashed walk is now printed loudly and exits 1 rather than looking like a
+successful empty run.
+
 ## Common tasks
 
 | Task | Go to |
@@ -143,6 +159,7 @@ Two rules follow, and both are load-bearing:
 | Change UVTA output syntax | `generator/uvta_syntax.py` |
 | Change the workbook layout | `generator/menutree_sheet.py` |
 | Change what counts as "the same screen" | `hierarchy.py :: state_key`, `elements.py :: screen_similarity` |
+| Make a run faster (which raises coverage) | read `phase_seconds` in the stats first, then `element_tree.py :: _await_stable` |
 | Change how a view becomes a selector | `parser/selectors.py` |
 | Change what is refused as unsafe | `crawler/action_guard.py` |
 | Change how the authored sheet is read | `verify/spec_reader.py` |

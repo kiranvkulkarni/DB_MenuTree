@@ -210,6 +210,37 @@ def interactive_views(
 _DIALOG_CLASS_HINTS = ("alertdialog", "dialog", "popupwindow", "bottomsheet")
 
 
+def foreground_package(
+    views: Sequence[Dict], exclude_packages: Sequence[str] = _DEFAULT_CHROME
+) -> str:
+    """The app in front, read from a dump we have already paid for.
+
+    `adb`/`u2`'s own "what is the current package" call costs ~390ms on the
+    Realme against ~150ms for the whole hierarchy dump, and the quiescence
+    loop needs it constantly. But the dump already carries a `package` on
+    every node, and uiautomator dumps the *focused* window, so the package
+    owning the most views is the foreground app.
+
+    OS chrome is excluded because the status and navigation bars appear on
+    every screen and would otherwise win on a sparse one.
+
+    Measured against the authoritative call on the Realme camera: 24 of 24
+    screens agreed once the screen had settled. Before settling it can lag a
+    transition by one frame (a dump still showing the camera while the
+    Gallery is coming up), so callers must resolve the package *after*
+    quiescence, and should confirm a foreign answer with the real call
+    before acting on it.
+    """
+    counts: Dict[str, int] = {}
+    for view in views:
+        pkg = view.get("package")
+        if pkg and not any(pkg.startswith(x) for x in exclude_packages):
+            counts[pkg] = counts.get(pkg, 0) + 1
+    if not counts:
+        return ""
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
 def looks_like_dialog(views: Sequence[Dict], package: Optional[str] = None) -> bool:
     """Heuristic: is this screen a modal decision point?
 

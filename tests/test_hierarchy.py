@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.crawler.hierarchy import (  # noqa: E402
     center_of,
+    foreground_package,
     interactive_views,
     parse_hierarchy,
     state_key,
@@ -125,6 +126,32 @@ def main() -> int:
     e = state_key(parse_hierarchy(dump("Rs 15612 / g")), "content", PKG)
     ok &= check("content mode is sensitive to display text", d != e,
                 "this is why it is not the default")
+
+    print("\nforeground package, derived from the dump")
+    # Replaces a ~390ms device call with a free read of a dump we already
+    # have -- it was 23% of a measured run. The cases that matter are the
+    # ones that would send the walker into the wrong app.
+    def views_for(pairs):
+        return [{"package": pkg} for pkg, n in pairs for _ in range(n)]
+
+    ok &= check("the majority package wins",
+                foreground_package(views_for([(PKG, 40), ("com.other", 3)])) == PKG)
+    ok &= check("status/nav bar never wins on a sparse screen",
+                foreground_package(
+                    views_for([("com.android.systemui", 30), (PKG, 2)])) == PKG,
+                "systemui is on every screen; excluding it is what makes this work")
+    ok &= check("a foreign app in front is reported, not hidden",
+                foreground_package(
+                    views_for([("com.coloros.gallery3d", 25), (PKG, 4)]))
+                == "com.coloros.gallery3d",
+                "walking the Gallery as if it were the camera has cost real time")
+    ok &= check("the keyboard does not win",
+                foreground_package(
+                    views_for([("com.google.android.inputmethod.latin", 50),
+                               (PKG, 6)])) == PKG)
+    ok &= check("no views gives empty, not a crash", foreground_package([]) == "")
+    ok &= check("only chrome gives empty, not systemui",
+                foreground_package(views_for([("com.android.systemui", 9)])) == "")
 
     print("\nbounds")
     ok &= check("centre computed", center_of(wrapper) == (1056, 459),
