@@ -319,7 +319,15 @@ class ElementTreeWalker:
 
         self._back_failed += 1
 
-        return self._relaunch_and_replay(target_key, path)
+        # Honour clear_between_paths here too. Without it, an app that
+        # restores its last-used mode reopens in that mode on every recovery
+        # relaunch, so a replay to the root can never succeed: measured on
+        # the S26 FE camera as 97 relaunches for 30 clicks, 94 unreachable,
+        # with the trace showing want_path=[] failing while here_path was
+        # ['PORTRAIT']. pm clear resets the mode; skipping it does not.
+        return self._relaunch_and_replay(
+            target_key, path, clear=self.clear_between_paths
+        )
 
     def _reclick_back(
         self, target_key: str, path: List[str],
@@ -667,7 +675,9 @@ class ElementTreeWalker:
         # Unrelated screen, or the shortcut did not land: replay from launch.
         if trace["branch"] is None:
             trace["branch"] = "replay"
-        if self._relaunch_and_replay(item.screen_key, item.path):
+        if self._relaunch_and_replay(
+            item.screen_key, item.path, clear=self.clear_between_paths
+        ):
             _, views, _ = self._await_stable()
             trace["ok"] = True
             trace["branch"] += "+replay_ok"
