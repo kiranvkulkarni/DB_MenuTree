@@ -18,6 +18,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+COMMENTS = {}
+
 MAX_DEPTH = 18          # as in the original sheet, so deeper sheets still fit
 # The original puts the header on row 4 and the first data row on row 5.
 # Getting this wrong is silent and costly: with the header on row 5, the
@@ -28,8 +30,16 @@ HEADER_ROW = 4
 
 
 def build_sheet(book, title, rows, first):
+    """Write one sheet, preserving the original's own row numbers.
+
+    The header row is derived per sheet rather than fixed: the real workbook
+    puts Settings' header on row 4 and Modes' on row 5, and preserving each
+    sheet's own numbering is what lets a reviewer compare this reconstruction
+    against the original line by line.
+    """
     sheet = book.active if first else book.create_sheet()
     sheet.title = title
+    header_row = min(r[0] for r in rows) - 1
 
     depths = [d for _, d, _ in rows]
     sheet.cell(row=2, column=2, value="PRELOAD")
@@ -40,15 +50,17 @@ def build_sheet(book, title, rows, first):
     sheet.cell(row=2, column=11, value="NA")
     sheet.cell(row=2, column=13, value="NT")
 
-    sheet.cell(row=HEADER_ROW, column=2, value="Test Result")
-    sheet.cell(row=HEADER_ROW, column=3, value="Defect ID")
-    sheet.cell(row=HEADER_ROW, column=4, value="Comments")
+    sheet.cell(row=header_row, column=2, value="Test Result")
+    sheet.cell(row=header_row, column=3, value="Defect ID")
+    sheet.cell(row=header_row, column=4, value="Comments")
     # Depth N lives in column E+N-1, exactly as the photographs show.
     for depth in range(1, MAX_DEPTH + 1):
-        sheet.cell(row=HEADER_ROW, column=4 + depth, value=f"{depth} Depth")
+        sheet.cell(row=header_row, column=4 + depth, value=f"{depth} Depth")
 
     for excel_row, depth, label in rows:
         sheet.cell(row=excel_row, column=4 + depth, value=label)
+    for excel_row, note in (COMMENTS.get(title) or {}).items():
+        sheet.cell(row=excel_row, column=4, value=note)
 
     widths = {2: 12, 3: 10, 4: 14}
     for col, w in widths.items():
@@ -76,8 +88,9 @@ def main() -> int:
     except ImportError:
         pass
     try:
-        from menutree_ocr.modes_rows import MODES
+        from menutree_ocr.modes_rows import MODES, NT_COMMENTS
         available["Modes"] = MODES
+        COMMENTS["Modes"] = NT_COMMENTS
     except ImportError:
         pass
 
@@ -102,11 +115,6 @@ def main() -> int:
         print(f"  {name:<10}     - not transcribed yet")
 
     # The header must not collide with the first data row.
-    first_data = min(r[0] for name in present for r in available[name])
-    if first_data <= HEADER_ROW:
-        print(f"  ERROR: data starts at row {first_data} but the header is on "
-              f"row {HEADER_ROW}; the header would be overwritten.")
-        return 1
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
