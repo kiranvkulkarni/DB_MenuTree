@@ -32,6 +32,7 @@ from ..crawler.hierarchy import (
     parse_hierarchy,
     state_key,
 )
+from .matching import CONFIDENT, REVIEW, Match, best_match
 from .spec_reader import SpecRow
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,10 @@ class MenuTreeVerifier:
             extra=config.get("guard_extra_patterns") or [],
         )
 
+        self._aliases: Dict[str, str] = config.get("aliases") or {}
+        # Every non-exact match, so a human can confirm the wording once.
+        self.match_log: List[Dict] = []
+
         self.driver: Optional[DeviceDriver] = None
         self._started = 0.0
         self._current_path: List[str] = []
@@ -164,23 +169,29 @@ class MenuTreeVerifier:
     def _elements(self, views: Sequence[Dict]) -> List[Element]:
         return enumerate_elements(views, self.package)
 
-    def _find(self, text: str, views: Sequence[Dict]) -> Optional[Element]:
-        """Locate an element whose visible text matches the specification."""
+    def _match(self, text: str, views: Sequence[Dict]) -> Optional[Match]:
+        """Best on-screen element for a spec label, scored.
+
+        The depth columns are not selectors -- they are how a manual test
+        engineer described the control in their own English. "Flash icon" is
+        `Flash`, "Priorize quality" is `Prioritize quality`, "Back key icon"
+        may be a content-desc of `Navigate up`. Exact matching reports a Fail
+        on a control that is present and working, which for a gate is the
+        worst error there is: it manufactures defects.
+
+        See `matching.py`. Scores below `REVIEW` are not a match.
+        """
         if not text:
             return None
-        wanted = text.strip().lower()
-        elements = self._elements(views)
-        for element in elements:
-            if element.label.strip().lower() == wanted:
-                return element
-        # The sheet is hand-authored, so wording drifts: trailing state
-        # suffixes, punctuation, truncation. Accept containment either way
-        # before declaring a row missing.
-        for element in elements:
-            label = element.label.strip().lower()
-            if label and (wanted in label or label in wanted):
-                return element
-        return None
+        match = best_match(text, self._elements(views), self._aliases)
+        if match is None or match.score < REVIEW:
+            return None
+        return match
+
+    def _find(self, text: str, views: Sequence[Dict]) -> Optional[Element]:
+        """Back-compat wrapper: the element only, no score."""
+        match = self._match(text, views)
+        return match.element if match else None
 
     def _click(self, element: Element, views: Sequence[Dict]) -> bool:
         assert self.driver is not None
@@ -357,7 +368,17 @@ class MenuTreeVerifier:
                 row, NA, f"screen belongs to {current} -- outside the app",
             )
 
-        element = self._find(row.selector_text, views)
+        match = self._match(row.selector_text, views)
+        if match is not None:
+            self.match_log.append({
+                "sheet_row": row.key,
+                "spec_label": row.selector_text,
+                "on_screen": match.element.label,
+                "score": match.score,
+                "why": match.why,
+                "matched_on": match.matched_on,
+            })
+        element = match.element if match else None
         if element is None:
             if row.context:
                 # Cannot distinguish a real defect from an unmet precondition.
@@ -371,6 +392,14 @@ class MenuTreeVerifier:
                 f"expected element not present: {row.selector_text!r}",
             )
         detail = f"found as {element.kind}"
+        if match is not None and match.score < 1.0:
+            # Say what it actually matched, and how sure. A reviewer must be
+            # able to see that "Priorize quality" was matched to
+            # "Prioritize quality" without rerunning anything.
+            detail += (f" -- matched {match.element.label!r} on "
+                       f"{match.matched_on} ({match.why}, {match.score:.2f})")
+            if match.score < CONFIDENT:
+                detail = "REVIEW WORDING: " + detail
         if row.context:
             detail += "  [under: " + "; ".join(row.context) + "]"
         return RowResult(row, PASS, detail)

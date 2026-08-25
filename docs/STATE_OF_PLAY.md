@@ -235,6 +235,35 @@ Rows with context are now attempted normally; context only explains a miss.
 See ARCHITECTURE 13.
 
 **The walk itself is still only exercised against a fixture.**
+
+### The depth columns are a tester's English, not selectors
+
+Confirmed by the person who owns the sheet, and it changes what matching has
+to do. A depth cell is how a manual engineer described the control while
+looking at the phone: `Flash icon` for `Flash`, `Back key icon` for a
+content-desc of `Navigate up`, `Priorize quality` for `Prioritize quality`,
+`Location tags ...recorded.` for a sentence they did not transcribe.
+
+Exact matching reports **Fail on controls that are present and working** --
+for a gate, the worst error there is, because it manufactures defects and
+gets itself switched off.
+
+`src/verify/matching.py` now scores each spec label against every element's
+visible text *and* its resource id (developer English is often closer to
+tester English, and is the only handle on an icon with no text). Confident
+matches are silent; weak ones are still counted as found but the workbook
+comment is prefixed `REVIEW WORDING:` and names what was actually matched.
+
+Tolerance without blindness: `Photo`/`Video` 0.10, `12MP`/`50MP` 0.25,
+`ON`/`OFF` 0.20 -- all rejected. The tightest real pair is
+`Front Camera`/`Rear Camera` at 0.56 against a 0.60 threshold. Correct, but
+thin.
+
+**The durable fix is the alias file, not the heuristic.** Every inexact match
+lands in `alias_review.json`; confirm it once, pass it back with `--aliases`,
+and that mapping is exact and auditable from then on. Weak matches arrive
+pre-marked `confirmed: false`, so nothing is silently promoted. The first run
+is fuzzy and noisy; each review makes the next sharper.
 The real workbook cannot leave your infrastructure, so `tests/spec_fixture.xlsx`
 reproduces its shape instead — summary block, header row, depth columns to 7,
 bracketed context rows, `[Title]` / `(On/Off)` annotations, a permission
