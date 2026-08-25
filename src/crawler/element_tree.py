@@ -150,6 +150,40 @@ class TreeNode:
         }
 
 
+def navigation_plan(
+    here_path: Sequence[str], target_path: Sequence[str]
+) -> Tuple[int, List[str]]:
+    """How to get from one known screen to another: rise, then descend.
+
+    Returns `(rises, descents)` -- how many times to press BACK, then which
+    labels to click. Both paths are rooted at the app launch, so the deepest
+    screen they share is their longest common prefix.
+
+    One rule covers every case:
+
+        here A>B>C  target A>B>C>D  -> (0, [D])        descend only
+        here A>B>C  target A>B      -> (1, [])         rise only
+        here A>B>C  target A>B>D    -> (1, [D])        sibling
+        here A>B>C  target X>Y      -> (3, [X, Y])     unrelated
+        here A>B>C  target A>B>C    -> (0, [])         already there
+
+    The sibling case is the one that matters. In a depth-first walk of a menu
+    tree the usual next move is to a sibling -- finish "Flash > On", now do
+    "Flash > Off" -- and it used to match neither special case, so it fell
+    through to a relaunch and full replay.
+
+    An unrelated target is still returned as a plan, but the caller should
+    prefer replaying from launch there: rising through screens we did not
+    descend is exactly the direction BACK is unreliable in.
+    """
+    shared = 0
+    for a, b in zip(here_path, target_path):
+        if a != b:
+            break
+        shared += 1
+    return len(here_path) - shared, list(target_path[shared:])
+
+
 class ElementTreeWalker:
     def __init__(self, package: str, serial: Optional[str], config: dict):
         self.package = package
@@ -221,6 +255,7 @@ class ElementTreeWalker:
         self._reclicks = 0
         self._processed = 0
         self._nav_forward = 0
+        self._nav_sibling = 0
         self._nav_back = 0
         self._nav_trace: List[Dict] = []
         self._identify_misses: List[Dict] = []
@@ -745,37 +780,104 @@ class ElementTreeWalker:
         if here_path is not None:
             target_path = item.path
 
-            # Target sits below us: click down into it.
-            if (len(target_path) > len(here_path)
-                    and target_path[:len(here_path)] == here_path):
+            # Both paths are known, so the move is always the same shape:
+            # rise to the deepest screen they share, then descend. That one
+            # rule subsumes the two special cases it replaced --
+            #
+            #   pure descendant : shared == here_path, so 0 backs
+            #   pure ancestor   : shared == target_path, so 0 clicks forward
+            #
+            # -- and adds the case that was missing and is by far the most
+            # common. In a depth-first walk of a menu tree, the usual next
+            # move is to a *sibling*: finish "Flash > On", now do
+            # "Flash > Off". Neither old branch matched a sibling, so every
+            # one of them fell through to relaunch-and-replay: ~3.1s of
+            # launch plus a replay of the whole path, where one BACK and one
+            # click would do. Relaunching was 24.5% of a measured run.
+            #
+            # BACK is only ever used to rise along a path we know we came
+            # down, which is the direction it is reliable in -- using it to
+            # reach a screen *deeper* than the current one was an early
+            # defect (asked for the SubSet menu, BACK gave the main screen,
+            # 82 of 91 navigations failing). The result is verified below,
+            # and anything that does not land still falls through to replay.
+            rises, descents = navigation_plan(here_path, target_path)
+            trace["rises"] = rises
+            trace["descents"] = list(descents)
+
+            # Rising is safe for any plan this function produces, because
+            # `rises` never exceeds our own depth (asserted in
+            # tests/test_navigation.py): we only ever press BACK back up the
+            # path we descended, and the deepest it can take us is the root
+            # screen. It is the *next* BACK that would leave the app, and
+            # that one is never issued.
+            #
+            # An earlier version here refused any plan whose rises reached
+            # the root, on the theory that unrelated paths were dangerous.
+            # That rejected the cheapest and most common move in the tree --
+            # a top-level sibling, Photo to Video to Portrait -- and sent it
+            # to a full relaunch instead.
+            #
+            # Two further guards make this safe rather than merely cheap:
+            # `_click_label` fails if the label is not on the screen in front
+            # of us, so a BACK that lands somewhere unexpected can never
+            # cause a blind click; and the arrival is verified against the
+            # target's elements below, falling through to replay if it did
+            # not land.
+            if rises or descents:
+                trace["branch"] = (
+                    "forward" if not rises else "back" if not descents else "sibling"
+                )
+                # Settle *after* an action, never before one. `views` is
+                # already current on entry, so the loop below used to open by
+                # re-settling a screen nothing had touched -- one wasted
+                # ~640ms wait on every navigation, and await_stable was 62%
+                # of the run.
+                # Rise the planned number of steps, then descend.
+                #
+                # An attempt to be cleverer here made things worse and is
+                # deliberately not in the tree: rising one press at a time
+                # and re-planning from whatever screen we appeared to land
+                # on. It looked obviously better -- one BACK is genuinely
+                # not one level, since an overlay like SubSet collapses
+                # several at once. But the trace showed the re-plan acting
+                # on bad data: one BACK from `filteroff > SubSet` was
+                # reported as landing on `Front Camera`, a different branch,
+                # and identify_misses hit its cap of 40 in a single run.
+                # Re-planning from a misidentified screen just picks a
+                # confidently wrong route.
+                #
+                # The identification is the real limiter (see below), not
+                # the climbing strategy, so this stays simple until that is
+                # fixed.
                 ok = True
-                for label in target_path[len(here_path):]:
-                    _, views, _ = self._await_stable()
-                    if not self._click_label(label, views):
+                climbed = 0
+                for _ in range(rises):
+                    try:
+                        self.driver.press_back(settle=False)  # type: ignore[union-attr]
+                    except DriverError:
                         ok = False
                         break
-                trace["branch"] = "forward"
-                if ok:
+                    climbed += 1
                     _, views, _ = self._await_stable()
+                if ok:
+                    for label in descents:
+                        if not self._click_label(label, views):
+                            ok = False
+                            break
+                        _, views, _ = self._await_stable()
+                if ok:
                     if views and target and self._is_same_screen(views, target):
-                        self._nav_forward += 1
+                        if not rises:
+                            self._nav_forward += 1
+                        elif not descents:
+                            self._nav_back += 1
+                        else:
+                            self._nav_sibling += 1
+                        self._back_ok += climbed
                         trace["ok"] = True
                         return True, views
-
-            # Target sits above us: BACK out the difference.
-            elif (len(target_path) < len(here_path)
-                    and here_path[:len(target_path)] == target_path):
-                for _ in range(len(here_path) - len(target_path)):
-                    try:
-                        self.driver.press_back()  # type: ignore[union-attr]
-                    except DriverError:
-                        break
-                trace["branch"] = "back"
-                _, views, _ = self._await_stable()
-                if views and target and self._is_same_screen(views, target):
-                    self._nav_back += 1
-                    trace["ok"] = True
-                    return True, views
+                self._back_failed += climbed
 
         # Unrelated screen, or the shortcut did not land: replay from launch.
         if trace["branch"] is None:
@@ -1002,6 +1104,7 @@ class ElementTreeWalker:
             "relaunches": self._relaunches,
             "reclick_recoveries": self._reclicks,
             "nav_forward": self._nav_forward,
+            "nav_sibling": self._nav_sibling,
             "nav_back": self._nav_back,
             "nav_trace": self._nav_trace[:60],
             # Read this before trying to raise coverage: runs end on the
