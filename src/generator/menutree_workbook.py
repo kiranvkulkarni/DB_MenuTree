@@ -18,6 +18,43 @@ logger = logging.getLogger(__name__)
 RESULT_NOT_TESTED = "NT"
 RESULTS = ("Pass", "Fail", "NA", "NT")
 
+# Why a row could not be covered automatically, and what a human must do.
+# Keyed on the note the walker left; the value is what goes in the sheet.
+MANUAL_REASONS = (
+    ("could not return to parent screen",
+     "MANUAL: automation could not navigate back here -- verify by hand"),
+    ("element vanished before click",
+     "MANUAL: one-shot control, gone before it could be pressed -- "
+     "verify on a fresh install"),
+    ("blocked by action guard",
+     "MANUAL: withheld as destructive/outbound -- verify deliberately"),
+    ("leaves app ->",
+     "MANUAL: hands off to another app -- verify that app's screen by hand"),
+)
+
+# Permission dialog branches cannot be re-offered once Android records a
+# decision, and on this device `pm revoke` / `pm reset-permissions` both fail
+# with SecurityException (adb lacks REVOKE_RUNTIME_PERMISSIONS). Whichever
+# branch the run did not take is unreachable for every later run too, so it
+# is a standing manual item rather than a transient gap.
+PERMISSION_BRANCHES = (
+    "while using the app", "only this time", "don't allow", "dont allow",
+    "allow", "deny", "precise", "approximate",
+)
+
+
+def manual_reason(row: dict) -> str:
+    """Non-empty when a human has to cover this row."""
+    note = (row.get("note") or "").lower()
+    for needle, message in MANUAL_REASONS:
+        if needle in note:
+            return message
+    label = (row.get("raw_label") or row.get("label") or "").strip().lower()
+    if label in PERMISSION_BRANCHES:
+        return ("MANUAL: OS permission choice -- cannot be re-offered once "
+                "decided, and adb cannot reset it on this device")
+    return ""
+
 _HEADER_FILL = "1F4E79"
 _SUMMARY_FILL = "DDEBF7"
 _RESULT_FILLS = {
@@ -72,8 +109,10 @@ def write_workbook(
     top = Alignment(vertical="top", wrap_text=True)
 
     # -- summary ---------------------------------------------------------
+    manual_rows = [r for r in rows if manual_reason(r)]
     counts = {r: 0 for r in RESULTS}
-    counts[result_default] = len(rows)
+    counts["NA"] = len(manual_rows)
+    counts[result_default] = len(rows) - len(manual_rows)
     summary = [
         ("Package", package),
         ("Total", len(rows)),
@@ -82,6 +121,7 @@ def write_workbook(
         ("NA", counts["NA"]),
         ("NT", counts["NT"]),
         ("Max depth", depth),
+        ("Needs manual test", len(manual_rows)),
     ]
     for index, (label, value) in enumerate(summary, start=1):
         key = sheet.cell(row=1, column=index, value=label)
@@ -100,7 +140,7 @@ def write_workbook(
 
     # -- header ----------------------------------------------------------
     header_row = 5
-    header = ["Test Result", "Defect ID", "Comments"]
+    header = ["Test Result", "Defect ID", "Comments", "Needs Manual Test"]
     header += [f"{i} Depth" for i in range(1, depth + 1)]
     header += ["Kind", "UVTA Test Case"]
 
@@ -128,11 +168,23 @@ def write_workbook(
             )
         sheet.cell(row=excel_row, column=3, value=comment).alignment = top
 
-        column = 3 + max(1, min(int(row.get("depth", 1)), depth))
+        manual = manual_reason(row)
+        manual_cell = sheet.cell(row=excel_row, column=4, value=manual)
+        manual_cell.alignment = top
+        if manual:
+            manual_cell.fill = PatternFill("solid", fgColor="FFF2CC")
+            manual_cell.font = Font(bold=True)
+            # A row needing a human is not "not tested yet" -- it is a
+            # standing action. Marking it NA keeps it out of the automated
+            # pass rate instead of quietly depressing it.
+            result.value = "NA"
+            result.fill = PatternFill("solid", fgColor=_RESULT_FILLS["NA"])
+
+        column = 4 + max(1, min(int(row.get("depth", 1)), depth))
         label_cell = sheet.cell(row=excel_row, column=column, value=row.get("label", ""))
         label_cell.alignment = top
 
-        sheet.cell(row=excel_row, column=3 + depth + 1, value=row.get("kind", ""))
+        sheet.cell(row=excel_row, column=4 + depth + 1, value=row.get("kind", ""))
 
         uvta = uvta_by_row.get(offset, "")
         uvta_cell = sheet.cell(row=excel_row, column=uvta_column, value=uvta)
@@ -146,7 +198,7 @@ def write_workbook(
     sheet.add_data_validation(validation)
     validation.add(f"A{header_row + 1}:A{header_row + len(rows)}")
 
-    sheet.freeze_panes = sheet.cell(row=header_row + 1, column=4)
+    sheet.freeze_panes = sheet.cell(row=header_row + 1, column=5)
     sheet.auto_filter.ref = (
         f"A{header_row}:"
         f"{sheet.cell(row=header_row, column=uvta_column).coordinate}"
