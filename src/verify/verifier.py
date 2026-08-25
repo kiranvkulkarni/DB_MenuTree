@@ -219,6 +219,8 @@ class MenuTreeVerifier:
     def verify(self, spec: Sequence[SpecRow]) -> VerifyReport:
         report = VerifyReport(package=self.package)
         self.driver = make_driver(self.serial, self.backend, self.settle)
+        if not self.driver.prepare_device():
+            logger.warning("Device could not be woken/unlocked.")
         self._started = time.time()
 
         if not self.driver.launch_clean(self.package, clear=self.reset_before_start):
@@ -250,6 +252,10 @@ class MenuTreeVerifier:
             "elapsed_seconds": round(time.time() - self._started, 1),
             "guard": self.guard.summary(),
         }
+        try:
+            self.driver.release_device()
+        except Exception:
+            pass
         logger.info("Verification finished: %s", report.stats)
         return report
 
