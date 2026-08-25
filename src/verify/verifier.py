@@ -16,6 +16,7 @@ mostly local movement: the next row is usually a sibling or a child of the
 one just checked. Navigation cost -- the thing that dominated discovery --
 largely disappears.
 """
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -124,6 +125,10 @@ class MenuTreeVerifier:
         self._entry_dialogs_dismissed = 0
         self._scrolls = 0
         self._fails_under_precondition = 0
+        self._unreachable_preconditions = 0
+        self._partial: Optional[VerifyReport] = None
+        cp = config.get('checkpoint_path')
+        self.checkpoint_path = Path(cp) if cp else None
         self.max_scrolls = int(config.get("max_scrolls", 6))
         self.scroll_span = int(config.get("scroll_span", 900))
         self._released = False
@@ -307,6 +312,30 @@ class MenuTreeVerifier:
             self.driver.start_app(self.package, clear=False)
         self._current_path = []
 
+    # Preconditions this tool genuinely cannot establish, so a miss under one
+    # is not evidence about the build.
+    #
+    # Only permission state qualifies, and only because it was measured:
+    # `pm clear` does not revoke a preinstalled camera's permissions (they are
+    # GRANTED_BY_DEFAULT) and `pm revoke` / `pm reset-permissions` both fail
+    # with SecurityException for shell. Once Android records a decision the
+    # other branches are never offered again, so "Only this time" and
+    # "Don't Allow" cannot be reached at all.
+    #
+    # This list is deliberately tiny. The rule it replaces -- NA whenever ANY
+    # context exists -- turned 989 of 1078 rows into NA and produced a 100%
+    # pass rate over 15% of the sheet. `[Rear Camera]` is ambient state the
+    # app satisfies on launch and must NOT excuse a miss.
+    UNESTABLISHABLE = ("permission",)
+
+    def _unestablishable(self, row: SpecRow) -> Optional[str]:
+        for note in row.context:
+            low = note.lower()
+            for term in self.UNESTABLISHABLE:
+                if term in low:
+                    return note
+        return None
+
     # A first-run prompt that stands between a cold launch and the app's
     # real entry screen. Dismissed with the non-committal branch.
     ENTRY_DISMISS = ("cancel", "not now", "no thanks", "later", "deny",
@@ -451,9 +480,31 @@ class MenuTreeVerifier:
             if index % 25 == 0:
                 counts = report.counts()
                 logger.info("%d/%d checked  %s", index, len(spec), counts)
+                # Checkpoint. A full sheet takes hours, and losing all of it
+                # to one interruption would make a long run a gamble. The
+                # KeyboardInterrupt handler reads `_partial`, which was never
+                # actually assigned -- so an interrupted run reported nothing
+                # at all.
+                report.stats = self._stats(report, len(spec))
+                self._partial = report
+                if self.checkpoint_path:
+                    try:
+                        self.checkpoint_path.write_text(json.dumps(
+                            {"package": self.package, "partial": True,
+                             "stats": report.stats,
+                             "results": [r.to_dict() for r in report.results]},
+                            indent=2), encoding="utf-8")
+                    except OSError as exc:
+                        logger.debug("checkpoint failed: %s", exc)
 
-        report.stats = {
-            "rows_in_spec": len(spec),
+        report.stats = self._stats(report, len(spec))
+        self._release()
+        logger.info("Verification finished: %s", report.stats)
+        return report
+
+    def _stats(self, report: "VerifyReport", total: int) -> Dict:
+        return {
+            "rows_in_spec": total,
             "rows_checked": len(report.results),
             "counts": report.counts(),
             "pass_rate_percent": report.pass_rate(),
@@ -462,12 +513,10 @@ class MenuTreeVerifier:
             "entry_dialogs_dismissed": self._entry_dialogs_dismissed,
             "scrolls": self._scrolls,
             "fails_under_precondition": self._fails_under_precondition,
+            "unreachable_preconditions": self._unreachable_preconditions,
             "elapsed_seconds": round(time.time() - self._started, 1),
             "guard": self.guard.summary(),
         }
-        self._release()
-        logger.info("Verification finished: %s", report.stats)
-        return report
 
     def _release(self) -> None:
         """Drop the stay-awake hold; safe to call more than once."""
@@ -523,9 +572,17 @@ class MenuTreeVerifier:
                 why[len("GUARD:"):] + " -- withheld on purpose, verify by hand",
             )
         if not reached:
-            # A precondition does NOT excuse a miss. See _verify_row's note
-            # below: NA-ing every preconditioned row produced a 100% pass
-            # rate over 18 of 120 rows.
+            blocker = self._unestablishable(row)
+            if blocker:
+                self._unreachable_preconditions += 1
+                return RowResult(
+                    row, NA,
+                    f"{why} -- precondition cannot be restored on this device: "
+                    f"{blocker}",
+                )
+            # Any OTHER precondition does NOT excuse a miss. See the note on
+            # UNESTABLISHABLE: NA-ing every preconditioned row produced a
+            # 100% pass rate over 15% of the sheet.
             if row.context:
                 self._fails_under_precondition += 1
                 why += "  [under: " + "; ".join(row.context) + "]"
@@ -551,6 +608,14 @@ class MenuTreeVerifier:
             })
         element = match.element if match else None
         if element is None:
+            blocker = self._unestablishable(row)
+            if blocker:
+                self._unreachable_preconditions += 1
+                return RowResult(
+                    row, NA,
+                    f"not found: {row.selector_text!r} -- precondition cannot "
+                    f"be restored on this device: {blocker}",
+                )
             if row.context:
                 # A missing control is reported as Fail even when the row
                 # carries a precondition, and the precondition is named for

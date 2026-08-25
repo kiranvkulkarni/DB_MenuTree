@@ -173,6 +173,7 @@ def main() -> int:
 
     verifier = MenuTreeVerifier(args.package, args.serial, {
         "aliases": aliases,
+        "checkpoint_path": str(output_dir / "verify_results.partial.json"),
         "time_budget": args.time_budget,
         "ready_timeout": args.ready_timeout,
         "settle_seconds": args.settle,
