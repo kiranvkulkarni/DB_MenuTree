@@ -208,6 +208,75 @@ def read_workbook(path: Path, sheets: Optional[Sequence[str]] = None) -> List[Sp
     return out
 
 
+def health(rows: Sequence[SpecRow]) -> str:
+    """Structural check of a parsed workbook, in numbers only.
+
+    Deliberately prints **no labels**. The real workbook cannot leave the
+    infrastructure it lives on, so this is what can be read aloud, pasted
+    into a chat, or attached to a ticket without disclosing its content --
+    counts, shapes, and the row numbers of anything that looks wrong, so a
+    person with the sheet open can go and look.
+
+    Everything the verifier does rests on the reconstructed `path` being
+    right, and a path is only as good as the layout assumptions in this
+    module. These are the ways those assumptions fail.
+    """
+    real = [r for r in rows if not r.is_context]
+    lines = ["", "=" * 60, "  SPEC HEALTH (numbers only -- safe to share)", "=" * 60,
+             f"  rows parsed           : {len(rows)}",
+             f"  context rows          : {len(rows) - len(real)}",
+             f"  max depth             : {max((r.depth for r in rows), default=0)}"]
+
+    # A row deeper than 1 with no reconstructed path has no parent: either
+    # the header was misread or the sheet is not in depth-first order.
+    # Depth 1 is the app and depth 2 sits directly under it, so an empty
+    # path is correct for both. Only depth 3+ needs ancestors.
+    orphans = [r for r in real if r.depth > 2 and not r.path]
+    lines.append(f"  rows with NO path     : {len(orphans)}   <- must be 0")
+    if orphans:
+        lines.append("      first few at rows: "
+                     + ", ".join(f"{r.sheet}!{r.excel_row}" for r in orphans[:8]))
+
+    # Path length should be depth-1 for a well-formed tree (root excluded).
+    # Depth 1 = the app (no path). Depth 2 = one click from launch, path [].
+    # So a well-formed row at depth d carries d-2 ancestors.
+    wrong = [r for r in real
+             if not r.is_root and len(r.path) != r.depth - 2]
+    lines.append(f"  path length mismatch  : {len(wrong)}   <- expect 0")
+    if wrong:
+        lines.append("      first few at rows: "
+                     + ", ".join(f"{r.sheet}!{r.excel_row}(d{r.depth},p{len(r.path)})"
+                                 for r in wrong[:8]))
+
+    # An empty selector means the whole label was annotation.
+    empty = [r for r in real if not r.selector_text]
+    lines.append(f"  empty selector text   : {len(empty)}   <- these can never match")
+    if empty:
+        lines.append("      first few at rows: "
+                     + ", ".join(f"{r.sheet}!{r.excel_row}" for r in empty[:8]))
+
+    # Two siblings with the same selector are indistinguishable on screen.
+    seen: Dict[tuple, int] = {}
+    for r in real:
+        key = (r.sheet, tuple(r.path), r.selector_text.lower())
+        seen[key] = seen.get(key, 0) + 1
+    dupes = sum(n - 1 for n in seen.values() if n > 1)
+    lines.append(f"  duplicate siblings    : {dupes}   <- ambiguous, first match wins")
+
+    lines.append(f"  rows needing a human  : "
+                 f"{sum(1 for r in real if r.context)}   (have a precondition)")
+
+    lines.append("-" * 60)
+    lines.append("  path depth distribution (how far the walk must descend):")
+    by_len: Dict[int, int] = {}
+    for r in real:
+        by_len[len(r.path)] = by_len.get(len(r.path), 0) + 1
+    for n in sorted(by_len):
+        lines.append(f"    {n} step(s) from launch : {by_len[n]}")
+    lines.append("=" * 60)
+    return "\n".join(lines)
+
+
 def summarise(rows: Sequence[SpecRow]) -> str:
     by_sheet: Dict[str, int] = {}
     by_depth: Dict[int, int] = {}
