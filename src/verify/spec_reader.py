@@ -120,68 +120,86 @@ def read_sheet(sheet) -> List[SpecRow]:
     # Nearest ancestor at each depth, so a row's path is read off directly.
     ancestors: Dict[int, str] = {}
     context_stack: Dict[int, str] = {}
+    multi_cell_rows: List[int] = []
 
     for excel_row in range(header["row"] + 1, sheet.max_row + 1):
-        depth = None
-        label = ""
+        # A row usually holds one label, but not always. The authors
+        # sometimes put a parent and its only child on ONE line to save
+        # vertical space -- row 42 of the S25 Ultra Modes sheet carries
+        # "Download filters" at depth 5 and "Download filters from Galaxy
+        # app" at depth 6 together.
+        #
+        # This loop used to take the first non-empty depth cell and `break`,
+        # so the deeper label was dropped without a word. A spec row that is
+        # never read is never verified and never reported missing, which is
+        # the worst way to lose coverage.
+        filled = []
         for level, column in depth_columns.items():
             value = sheet.cell(row=excel_row, column=column).value
             if value is not None and str(value).strip():
-                depth, label = level, str(value).strip()
-                break
-        if depth is None:
+                filled.append((level, str(value).strip()))
+        if not filled:
             continue
+        if len(filled) > 1:
+            multi_cell_rows.append(excel_row)
 
-        is_context = bool(CONTEXT_ROW.match(label))
-        # Depth 1 names the application, not a control on a screen. Launching
-        # the app satisfies it, so it must never become a click step -- left
-        # in, every path began with a "Camera" tap that matches nothing and
-        # every row failed with "path step not found on screen".
-        is_root = depth == 1
-        selector_text = strip_annotations(label)
+        for depth, label in filled:
+            is_context = bool(CONTEXT_ROW.match(label))
+            # Depth 1 names the application, not a control on a screen. Launching
+            # the app satisfies it, so it must never become a click step -- left
+            # in, every path began with a "Camera" tap that matches nothing and
+            # every row failed with "path step not found on screen".
+            is_root = depth == 1
+            selector_text = strip_annotations(label)
 
-        # Anything at or below this row's depth stops being an ancestor.
-        for level in [d for d in ancestors if d >= depth]:
-            ancestors.pop(level, None)
+            # Anything at or below this row's depth stops being an ancestor.
+            for level in [d for d in ancestors if d >= depth]:
+                ancestors.pop(level, None)
 
-        # Context is scoped differently: a bracketed marker applies to its
-        # *siblings* as well as its descendants. "[When location Permission
-        # is OFF in Dut]" sits at the same depth as the Cancel / Turn on rows
-        # it qualifies, so dropping same-depth context would detach the
-        # precondition from the rows that need it. Only a deeper marker is
-        # discarded here; a same-depth one is replaced below when another
-        # bracketed row appears at that level.
-        for level in [d for d in context_stack if d > depth]:
-            context_stack.pop(level, None)
-        if is_context:
-            context_stack.pop(depth, None)
+            # Context is scoped differently: a bracketed marker applies to its
+            # *siblings* as well as its descendants. "[When location Permission
+            # is OFF in Dut]" sits at the same depth as the Cancel / Turn on rows
+            # it qualifies, so dropping same-depth context would detach the
+            # precondition from the rows that need it. Only a deeper marker is
+            # discarded here; a same-depth one is replaced below when another
+            # bracketed row appears at that level.
+            for level in [d for d in context_stack if d > depth]:
+                context_stack.pop(level, None)
+            if is_context:
+                context_stack.pop(depth, None)
 
-        path = [ancestors[d] for d in sorted(ancestors) if d < depth]
-        context = [context_stack[d] for d in sorted(context_stack) if d <= depth]
+            path = [ancestors[d] for d in sorted(ancestors) if d < depth]
+            context = [context_stack[d] for d in sorted(context_stack) if d <= depth]
 
-        rows.append(SpecRow(
-            sheet=sheet.title,
-            excel_row=excel_row,
-            depth=depth,
-            label=label,
-            selector_text=selector_text,
-            path=path,
-            context=context,
-            is_context=is_context,
-            is_root=is_root,
-            authored_result=str(
-                sheet.cell(row=excel_row, column=meta["result"]).value or ""
-            ).strip() if "result" in meta else "",
-            comments=str(
-                sheet.cell(row=excel_row, column=meta["comments"]).value or ""
-            ).strip() if "comments" in meta else "",
-        ))
+            rows.append(SpecRow(
+                sheet=sheet.title,
+                excel_row=excel_row,
+                depth=depth,
+                label=label,
+                selector_text=selector_text,
+                path=path,
+                context=context,
+                is_context=is_context,
+                is_root=is_root,
+                authored_result=str(
+                    sheet.cell(row=excel_row, column=meta["result"]).value or ""
+                ).strip() if "result" in meta else "",
+                comments=str(
+                    sheet.cell(row=excel_row, column=meta["comments"]).value or ""
+                ).strip() if "comments" in meta else "",
+            ))
 
-        if is_context:
-            context_stack[depth] = label
-        elif not is_root:
-            ancestors[depth] = selector_text
+            if is_context:
+                context_stack[depth] = label
+            elif not is_root:
+                ancestors[depth] = selector_text
 
+    if multi_cell_rows:
+        logger.info("sheet %r: %d row(s) carry more than one depth cell "
+                    "(parent and child on one line); all are kept: %s%s",
+                    sheet.title, len(multi_cell_rows),
+                    multi_cell_rows[:10],
+                    " ..." if len(multi_cell_rows) > 10 else "")
     logger.info("sheet %r: %d spec row(s), max depth %d",
                 sheet.title, len(rows),
                 max((r.depth for r in rows), default=0))
