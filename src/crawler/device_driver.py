@@ -35,6 +35,7 @@ class DeviceDriver(Protocol):
     def current_activity(self) -> Optional[str]: ...
     def current_ime_package(self) -> Optional[str]: ...
     def screen_size(self) -> tuple: ...
+    def prepare_device(self) -> bool: ...
     def launch_clean(self, package: str, clear: bool = False) -> bool: ...
     def screenshot(self, path: str) -> bool: ...
 
@@ -178,6 +179,53 @@ class AdbDriver:
             return False
         time.sleep(self.settle * 2)
         return (self.current_package() or package) == package
+
+
+    def prepare_device(self) -> bool:
+        """Wake the screen, dismiss the keyguard, and keep it awake.
+
+        A sleeping device silently destroys a run: the OEM camera swaps its
+        whole UI for a "Tap to show preview" placeholder under
+        .setting.ScreenOffActivity, leaving exactly one element to explore.
+        A walk that began fine and slept partway through simply stops finding
+        anything -- which is a strong candidate for the run-to-run variance
+        (90 to 465 rows on identical code), since the result then depends on
+        *when* the screen happened to time out.
+
+        `svc power stayon true` holds the screen on while charging, and the
+        device is on USB for adb, so this holds for the whole run.
+        """
+        ok = True
+        for args in (
+            ("shell", "input", "keyevent", "KEYCODE_WAKEUP"),
+            ("shell", "wm", "dismiss-keyguard"),
+            ("shell", "svc", "power", "stayon", "true"),
+        ):
+            try:
+                _adb(self.serial, *args)
+            except DriverError as exc:
+                logger.debug("prepare_device step %s failed: %s", args[-1], exc)
+                ok = False
+        time.sleep(self.settle)
+
+        try:
+            out = _adb(self.serial, "shell", "dumpsys", "power")
+            awake = "mWakefulness=Awake" in out
+        except DriverError:
+            awake = True
+        if not awake:
+            logger.warning(
+                "Device still not awake. The screen must be on for the walk "
+                "to see anything."
+            )
+        return ok and awake
+
+    def release_device(self) -> None:
+        """Undo the stay-awake hold."""
+        try:
+            _adb(self.serial, "shell", "svc", "power", "stayon", "false")
+        except DriverError:
+            pass
 
     def screen_size(self) -> tuple:
         """(width, height) in pixels, from `wm size`."""
@@ -328,6 +376,53 @@ class U2Driver:
         time.sleep(self.settle * 2)
         return (self.current_package() or package) == package
 
+
+    def prepare_device(self) -> bool:
+        """Wake the screen, dismiss the keyguard, and keep it awake.
+
+        A sleeping device silently destroys a run: the OEM camera swaps its
+        whole UI for a "Tap to show preview" placeholder under
+        .setting.ScreenOffActivity, leaving exactly one element to explore.
+        A walk that began fine and slept partway through simply stops finding
+        anything -- which is a strong candidate for the run-to-run variance
+        (90 to 465 rows on identical code), since the result then depends on
+        *when* the screen happened to time out.
+
+        `svc power stayon true` holds the screen on while charging, and the
+        device is on USB for adb, so this holds for the whole run.
+        """
+        ok = True
+        for args in (
+            ("shell", "input", "keyevent", "KEYCODE_WAKEUP"),
+            ("shell", "wm", "dismiss-keyguard"),
+            ("shell", "svc", "power", "stayon", "true"),
+        ):
+            try:
+                _adb(self.serial, *args)
+            except DriverError as exc:
+                logger.debug("prepare_device step %s failed: %s", args[-1], exc)
+                ok = False
+        time.sleep(self.settle)
+
+        try:
+            out = _adb(self.serial, "shell", "dumpsys", "power")
+            awake = "mWakefulness=Awake" in out
+        except DriverError:
+            awake = True
+        if not awake:
+            logger.warning(
+                "Device still not awake. The screen must be on for the walk "
+                "to see anything."
+            )
+        return ok and awake
+
+    def release_device(self) -> None:
+        """Undo the stay-awake hold."""
+        try:
+            _adb(self.serial, "shell", "svc", "power", "stayon", "false")
+        except DriverError:
+            pass
+
     def screen_size(self) -> tuple:
         """(width, height) in pixels, from `wm size`."""
         out = _adb(self.serial, "shell", "wm", "size")
@@ -349,6 +444,53 @@ class U2Driver:
         return value.split("/")[0] if "/" in value else (value or None)
 
 
+
+
+    def prepare_device(self) -> bool:
+        """Wake the screen, dismiss the keyguard, and keep it awake.
+
+        A sleeping device silently destroys a run: the OEM camera swaps its
+        whole UI for a "Tap to show preview" placeholder under
+        .setting.ScreenOffActivity, leaving exactly one element to explore.
+        A walk that began fine and slept partway through simply stops finding
+        anything -- which is a strong candidate for the run-to-run variance
+        (90 to 465 rows on identical code), since the result then depends on
+        *when* the screen happened to time out.
+
+        `svc power stayon true` holds the screen on while charging, and the
+        device is on USB for adb, so this holds for the whole run.
+        """
+        ok = True
+        for args in (
+            ("shell", "input", "keyevent", "KEYCODE_WAKEUP"),
+            ("shell", "wm", "dismiss-keyguard"),
+            ("shell", "svc", "power", "stayon", "true"),
+        ):
+            try:
+                _adb(self.serial, *args)
+            except DriverError as exc:
+                logger.debug("prepare_device step %s failed: %s", args[-1], exc)
+                ok = False
+        time.sleep(self.settle)
+
+        try:
+            out = _adb(self.serial, "shell", "dumpsys", "power")
+            awake = "mWakefulness=Awake" in out
+        except DriverError:
+            awake = True
+        if not awake:
+            logger.warning(
+                "Device still not awake. The screen must be on for the walk "
+                "to see anything."
+            )
+        return ok and awake
+
+    def release_device(self) -> None:
+        """Undo the stay-awake hold."""
+        try:
+            _adb(self.serial, "shell", "svc", "power", "stayon", "false")
+        except DriverError:
+            pass
 
     def screen_size(self) -> tuple:
         """(width, height) in pixels."""

@@ -208,6 +208,7 @@ class ElementTreeWalker:
         self._nav_forward = 0
         self._nav_back = 0
         self._nav_trace: List[Dict] = []
+        self._identify_misses: List[Dict] = []
         self._stem_matches = 0
         self._worklist: Dict[tuple, WorkItem] = {}
         self._screen_elements: Dict[str, List[Element]] = {}
@@ -543,7 +544,24 @@ class ElementTreeWalker:
             score = screen_similarity(elements, here)
             if score > best_score:
                 best, best_score = key, score
-        return best if best_score >= self.return_similarity else None
+
+        if best_score >= self.return_similarity:
+            return best
+
+        # Record the near-miss. Whether identification fails at 0.70 (the
+        # threshold is too strict for a screen whose toggles moved) or at
+        # 0.10 (we are genuinely somewhere else) calls for opposite fixes,
+        # and the distinction is not visible from the failure alone.
+        self._identify_misses.append({
+            "best": best[:10] if best else None,
+            "score": round(best_score, 3),
+            "threshold": self.return_similarity,
+            "here_labels": [e.label for e in here[:8]],
+            "best_labels": [
+                e.label for e in self._screen_elements.get(best, [])[:8]
+            ] if best else [],
+        })
+        return None
 
     def _find_element(
         self, label: str, views: Sequence[Dict], rid: Optional[str] = None
@@ -739,6 +757,11 @@ class ElementTreeWalker:
     def walk(self) -> List[TreeNode]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.driver = make_driver(self.serial, self.backend, self.settle)
+        if not self.driver.prepare_device():
+            logger.warning(
+                "Device could not be woken/unlocked. A sleeping screen "
+                "shows a placeholder instead of the app."
+            )
         ime = self.driver.current_ime_package()
         if ime and ime not in self._exclude:
             self._exclude.append(ime)
@@ -808,6 +831,10 @@ class ElementTreeWalker:
                 "Coverage is partial and the report says so.", remaining,
             )
 
+        try:
+            self.driver.release_device()
+        except Exception:
+            pass
         logger.info("Walk finished: %s", self.stats())
         return self.rows
 
@@ -849,6 +876,7 @@ class ElementTreeWalker:
             "nav_forward": self._nav_forward,
             "nav_back": self._nav_back,
             "nav_trace": self._nav_trace[:60],
+            "identify_misses": self._identify_misses[:40],
             "stem_matches": self._stem_matches,
             "left_app": self._left_app,
             "lost_returns": self._lost,
