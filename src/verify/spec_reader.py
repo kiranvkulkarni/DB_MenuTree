@@ -208,6 +208,98 @@ def read_workbook(path: Path, sheets: Optional[Sequence[str]] = None) -> List[Sp
     return out
 
 
+def inspect_workbook(path: Path,
+                     sheets: Optional[Sequence[str]] = None) -> List[Dict]:
+    """Per-sheet parse diagnostics: what was found, and what was skipped.
+
+    Exists to answer one question without seeing the workbook: **are rows
+    being dropped?** A row is only read if one of the `N Depth` columns holds
+    its label, so if the header scan finds seven depth columns on a sheet
+    that actually has eighteen, every row living in columns 8-18 vanishes
+    silently -- and the result looks like a smaller, shallower app rather
+    than a parse failure.
+
+    Reports no cell contents, only counts and column positions.
+    """
+    from openpyxl import load_workbook
+
+    book = load_workbook(path, data_only=True, read_only=False)
+    out: List[Dict] = []
+    for name in book.sheetnames:
+        if sheets and name not in sheets:
+            continue
+        sheet = book[name]
+        header = _find_header(sheet)
+        if not header:
+            out.append({"sheet": name, "header_row": None, "depth_columns": [],
+                        "read": 0, "skipped": 0, "last_row": sheet.max_row})
+            continue
+
+        depth_columns = header["depth_columns"]
+        read = skipped = 0
+        first_skipped: List[int] = []
+        for excel_row in range(header["row"] + 1, sheet.max_row + 1):
+            has_depth = any(
+                (sheet.cell(row=excel_row, column=col).value is not None
+                 and str(sheet.cell(row=excel_row, column=col).value).strip())
+                for col in depth_columns.values()
+            )
+            if has_depth:
+                read += 1
+                continue
+            # A row with content but nothing in any depth column: either a
+            # spacer, or a row whose label sits in a column we never found.
+            if any(c.value is not None and str(c.value).strip()
+                   for c in sheet[excel_row]):
+                skipped += 1
+                if len(first_skipped) < 10:
+                    first_skipped.append(excel_row)
+
+        out.append({
+            "sheet": name,
+            "header_row": header["row"],
+            "depth_columns": sorted(depth_columns),
+            "depth_column_letters": [
+                sheet.cell(row=header["row"], column=c).column_letter
+                for _, c in sorted(depth_columns.items())
+            ],
+            "read": read,
+            "skipped": skipped,
+            "first_skipped_rows": first_skipped,
+            "last_row": sheet.max_row,
+        })
+    return out
+
+
+def diagnostics(infos: Sequence[Dict]) -> str:
+    """Render inspect_workbook output. Counts and columns only."""
+    lines = ["", "=" * 60, "  PARSE DIAGNOSTICS (numbers only -- safe to share)",
+             "=" * 60]
+    for info in infos:
+        lines.append(f"  sheet {info['sheet']!r}")
+        if info["header_row"] is None:
+            lines.append("      no depth columns found -- sheet skipped entirely")
+            continue
+        depths = info["depth_columns"]
+        lines.append(f"      header row          : {info['header_row']}")
+        lines.append(f"      depth columns found : {len(depths)}  "
+                     f"({'N Depth for N=' + ','.join(map(str, depths)) if depths else 'none'})")
+        lines.append(f"      spreadsheet columns : "
+                     f"{','.join(info.get('depth_column_letters') or [])}")
+        lines.append(f"      last row in sheet   : {info['last_row']}")
+        lines.append(f"      rows READ           : {info['read']}")
+        lines.append(f"      rows SKIPPED        : {info['skipped']}"
+                     "   <- non-empty rows with nothing in any depth column")
+        if info["skipped"]:
+            lines.append("          first few at rows: "
+                         + ", ".join(map(str, info["first_skipped_rows"])))
+            lines.append("          If these are real menu entries, a depth")
+            lines.append("          column was missed -- tell me which columns")
+            lines.append("          hold them and how the header names them.")
+    lines.append("=" * 60)
+    return "\n".join(lines)
+
+
 def health(rows: Sequence[SpecRow]) -> str:
     """Structural check of a parsed workbook, in numbers only.
 

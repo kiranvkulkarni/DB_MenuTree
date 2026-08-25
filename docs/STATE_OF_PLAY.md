@@ -223,7 +223,18 @@ tools/verify_menutree.py --spec MenuTree.xlsx --package <pkg> --serial <serial>
 - Results are written to a **copy** of the workbook. The original is never
   modified.
 
-**Status: built and exercised against a fixture, not against the real sheet.**
+**Status: the reader is validated against a real workbook.** A dry run on
+the S25 Ultra MenuTree (1055 rows, 2 sheets, depth 7) reported `rows with NO
+path: 0`, `path length mismatch: 0`, `empty selector text: 0`, and 2
+duplicate siblings. Path reconstruction to depth 7 is sound on real data.
+
+That run also found a real defect no fixture could have: **3 context rows put
+a precondition on 963 of 1052 rows**, and the verifier was returning `NA` for
+any row with context -- it would have checked 89 rows and skipped the rest.
+Rows with context are now attempted normally; context only explains a miss.
+See ARCHITECTURE 13.
+
+**The walk itself is still only exercised against a fixture.**
 The real workbook cannot leave your infrastructure, so `tests/spec_fixture.xlsx`
 reproduces its shape instead — summary block, header row, depth columns to 7,
 bracketed context rows, `[Title]` / `(On/Off)` annotations, a permission
