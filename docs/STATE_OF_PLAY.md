@@ -101,9 +101,56 @@ Same 120s budget, same device and app, after fixing those three:
 | `await_stable` mean | 1284ms | **642ms** |
 | `current_package` share | 23% of run | 1% |
 
-The largest remaining phase is relaunching (24.5%). `pm clear` is not the
-cost -- clear and no-clear launches measured 3.10s and 3.13s -- so the fix is
-to relaunch less often, which is navigation, not timing.
+### Navigation, and what it exposed
+
+The largest remaining phase was relaunching. `pm clear` is not the cost --
+clear and no-clear launches measured 3.10s and 3.13s -- so the fix is to
+relaunch less often.
+
+The baseline recorded `nav_forward 3, nav_back 3` across **176 clicks**: six
+shortcut navigations in a whole run, with 69 relaunches taking 34.7% of the
+clock. Navigation handled "target is below us" and "target is an ancestor",
+but not a **sibling** -- finish `Flash > On`, now do `Flash > Off` -- which
+is the commonest move in a depth-first walk. Every sibling fell through to a
+relaunch and full replay. It now rises to the deepest shared screen and
+descends, which covers all three cases.
+
+|  | baseline | sibling |
+|---|---|---|
+| elements done | 90 | **109** |
+| coverage % | 26.0 | **34.4** |
+| max depth | 6 | **8** |
+| relaunches/click | 0.39 | **0.33** |
+| lost returns | 57 | **38** |
+
+Honestly, though: rows went the other way (657 to 632) and `nav_sibling` was
+1, so a single successful sibling navigation cannot by itself explain that.
+Given the 90-to-465-row variance above, treat the outcome numbers as one
+sample. What moves consistently is the mechanism itself -- relaunch rate per
+click, and lost returns.
+
+### The real limiter: screen identity
+
+This is the finding that matters most, and it is upstream of everything else.
+
+`back_ok 5` against `back_failed 64`. Shortcuts land where expected about
+**10%** of the time -- and the trace says why. The `SubSet` screen appears
+beneath many different parents carrying the same 26 elements. Element-set
+similarity, which is the entire basis of how this tool decides "same screen",
+cannot tell those instances apart, so "where am I?" returns a plausible wrong
+answer.
+
+A refinement that re-planned the route after each BACK was **rejected on
+evidence** for exactly this reason: one BACK from `filteroff > SubSet` was
+reported as landing on `Front Camera`, a different branch, and
+`identify_misses` hit its cap of 40 in one run against 8 without it.
+Re-planning from a misidentified screen picks a confidently wrong route.
+
+Until identity separates those screens, no path-based navigation can be
+reliable, and a quarter to a third of every run keeps going to relaunches. It
+likely needs something *other* than the element set -- the activity name, the
+scroll position, or the path taken to arrive -- because the element sets are
+genuinely identical.
 
 Also solid: the safety layer — the action guard (with identifier-label
 normalisation), keypad/MMI protection, IME exclusion, ANR detection, per-run
@@ -282,7 +329,15 @@ run does not leave the handset lit and the app open.
    them.
 3. **Discovery-vs-spec diff** — rows the build has that the sheet does not.
    This is discovery's remaining job and it does not need reproducibility.
-4. Event-level two-run diff for discovery, if reproducibility is ever wanted
+4. **Fix screen identity** -- the limiter named in §2. Distinguishing the
+   many identical-looking `SubSet` screens is upstream of navigation,
+   coverage and reproducibility alike, and it is the change most likely to
+   move all three at once.
+5. Event-level two-run diff for discovery, if reproducibility is ever wanted
    for its own sake: log `(screen, element, outcome)` and find where two runs
    first diverge. That is evidence rather than hypothesis, and it is what
    found every real defect in §2.
+
+Use `python tools/compare_runs.py --package <pkg>` for any change touching
+traversal. Three navigation changes here were shipped without that comparison
+and all three made coverage worse.
