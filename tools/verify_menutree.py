@@ -29,6 +29,11 @@ from src.verify.spec_reader import (  # noqa: E402
     read_workbook,
     summarise,
 )
+from src.verify.matching import (  # noqa: E402
+    CONFIDENT,
+    load_aliases,
+    proposed_aliases,
+)
 from src.verify.verifier import FAIL, NA, PASS, MenuTreeVerifier  # noqa: E402
 
 logger = logging.getLogger("verify_menutree")
@@ -57,6 +62,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--guard-extra", default="")
     p.add_argument("--dry-run", action="store_true",
                    help="parse and report the spec only; no device needed")
+    p.add_argument("--aliases", default="",
+                   help="JSON map of sheet wording -> on-screen text, "
+                        "confirmed by a human. Beats any guess. Produce "
+                        "it by reviewing alias_review.json from a run.")
     p.add_argument("--force-lock", action="store_true",
                    help="start even if another run holds this device")
     return p.parse_args()
@@ -149,7 +158,14 @@ def main() -> int:
         print()
         return 1
 
+    aliases = {}
+    if args.aliases:
+        aliases = load_aliases(args.aliases)
+        logger.info("Loaded %d confirmed alias(es) from %s",
+                    len(aliases), args.aliases)
+
     verifier = MenuTreeVerifier(args.package, args.serial, {
+        "aliases": aliases,
         "time_budget": args.time_budget,
         "ready_timeout": args.ready_timeout,
         "settle_seconds": args.settle,
@@ -176,6 +192,13 @@ def main() -> int:
                     "stats": report.stats,
                     "results": [r.to_dict() for r in report.results]},
                    indent=2), encoding="utf-8")
+
+    # Everything matched by guesswork, for a human to confirm once. This is
+    # the durable answer to hand-written labels: no heuristic should stay
+    # permanently responsible for deciding what the sheet's wording meant.
+    review = proposed_aliases(verifier.match_log)
+    review_path = output_dir / "alias_review.json"
+    review_path.write_text(json.dumps(review, indent=2), encoding="utf-8")
 
     filled = write_results(
         spec_path, output_dir / f"{spec_path.stem}_verified.xlsx", report.results)
@@ -207,6 +230,21 @@ def main() -> int:
             print(f"        {item.detail}")
         if len(failures) > 25:
             print(f"    ... and {len(failures) - 25} more")
+
+    weak = [m for m in verifier.match_log if m["score"] < CONFIDENT]
+    inexact = [m for m in verifier.match_log if m["score"] < 1.0]
+    if inexact:
+        print()
+        print(f"  WORDING: {len(inexact)} row(s) matched on approximate wording,")
+        print(f"           {len(weak)} of them weakly enough to need a look.")
+        for m in weak[:10]:
+            print(f"    {m['sheet_row']:<16} sheet {m['spec_label'][:32]!r}")
+            print(f"    {'':<16}   -> screen {m['on_screen'][:32]!r} "
+                  f"({m['why']}, {m['score']:.2f})")
+        if len(weak) > 10:
+            print(f"    ... and {len(weak) - 10} more")
+        print(f"    Review {review_path.name}, set confirmed:false on any that")
+        print("    are wrong, then re-run with --aliases to make them exact.")
 
     print(f"\n  workbook: {filled.resolve()}")
     return 2 if failures else 0

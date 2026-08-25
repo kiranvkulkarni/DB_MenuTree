@@ -73,6 +73,7 @@ ever written over a previous run.
 | File | Responsibility |
 |---|---|
 | `src/verify/spec_reader.py` | Reads the hand-authored workbook back into a tree. Depth is **positional** (the `N Depth` columns); a row's parent is the nearest preceding shallower row. Strips `[Title]`/`(On/Off)` annotations; carries `[bracketed]` rows as **context**, not as clicks. |
+| `src/verify/matching.py` | **The depth columns are not selectors** — they are a tester's English. Scores a spec label against each element's label and resource id, tolerating typos, dropped nouns (`Flash icon`), elisions and paraphrase, while still rejecting `Photo` vs `Video`. Emits `alias_review.json`; `--aliases` feeds confirmed mappings back. |
 | `src/verify/verifier.py` | Walks the spec top to bottom, exploiting shared path prefixes. Position tracked **by index, not by label** — the sheet repeats `ON`, `OK`, `Back key icon` at many depths. Emits `Pass / Fail / NA / NT`. |
 | `tools/verify_menutree.py` | CLI. `--dry-run` parses the spec with no device attached. Writes a **copy** of the workbook; the original is never touched. Exit code 2 on failures. |
 
@@ -98,6 +99,8 @@ All run without a device, in seconds. Run them before any device work.
 |---|---|
 | `tests/test_hierarchy.py` | XML parsing, state-key stability, Compose selectors, selector priority, bounds |
 | `tests/test_run_lock.py` | Mutual exclusion per device, stale-lock takeover, `--force-lock`, corrupt lock files |
+| `tests/test_matching.py` | Sheet-wording drift that must match, different controls that must not, resource-id matching, alias round trip |
+| `tests/test_navigation.py` | The rise-then-descend plan, including the sibling case and the depth invariant |
 | `tests/make_fixture.py` | Writes a synthetic `droidbot_out/` in DroidBot's exact format |
 | `tests/make_spec_fixture.py` | Writes `tests/spec_fixture.xlsx`, shaped like the real workbook — bracketed context rows, annotations, depth to 7 |
 
@@ -174,6 +177,7 @@ comparison and all three made coverage worse. It costs one command.
 | Change what is refused as unsafe | `crawler/action_guard.py` |
 | Change how the authored sheet is read | `verify/spec_reader.py` |
 | Change how a spec row is judged | `verify/verifier.py :: _verify_row` |
+| Change how sheet wording maps to screen text | `verify/matching.py` — and prefer recording an alias over loosening a threshold |
 | Add a device back-end | implement `DeviceDriver` in `device_driver.py`, **including `release_device`** |
 | Add an action type (scroll, text input) | `elements.py` (enumerate) plus `element_tree.py` (`_perform`) plus `uvta_syntax.py` (render) |
 

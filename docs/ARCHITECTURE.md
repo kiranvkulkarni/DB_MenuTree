@@ -856,6 +856,64 @@ key icon` at many points and depths, so `path.index(label)` resolves to the
 first occurrence, which is usually the wrong depth, and corrupts the
 shared-prefix calculation for every subsequent row.
 
+### The depth columns are not selectors
+
+The single most important thing to understand about the workbook.
+
+A depth cell is **how a manual test engineer described the control, in their
+own English, while looking at the phone.** It is not the on-screen text, and
+frequently nothing like it:
+
+| the sheet says | the screen says | |
+|---|---|---|
+| `Flash icon` | `Flash` | describes rather than names |
+| `Back key icon` | `Navigate up` | no shared words at all |
+| `Priorize quality` | `Prioritize quality` | typo |
+| `JEPG format` | `JPEG format` | typo |
+| `High efficiency pitures` | `High efficiency pictures` | typo |
+| `Scene Optimiser` | `Scene optimizer` | spelling variant |
+| `Location tags ...recorded.` | the full sentence | author elided it |
+| `while using this app` | `While using the app` | paraphrase |
+
+Exact matching -- or exact-then-substring, which is what this started with --
+reports **Fail on controls that are present and working**. For a release gate
+that is the worst error available: it manufactures defects, and a gate that
+cries wolf gets switched off.
+
+`src/verify/matching.py` scores a spec label against every element on screen,
+on both the visible label and the resource id (developer English is often
+closer to tester English than the UI text is, and it is the only handle on an
+icon with no text at all). Every match carries a **score and a reason**.
+
+The two errors are not symmetric, and the thresholds reflect that:
+
+- **≥ 0.80 confident** — treated as found.
+- **0.60–0.80** — treated as found, but the workbook comment is prefixed
+  `REVIEW WORDING:` and names what it actually matched.
+- **< 0.60** — not found.
+
+Tolerance must not become blindness. `Photo`/`Video` scores 0.10,
+`12MP`/`50MP` 0.25, `ON`/`OFF` 0.20 — all correctly rejected. The tightest
+real pair is `Front Camera`/`Rear Camera` at **0.56** against a 0.60
+threshold: correctly rejected, but the margin is thin, and pairs like that
+are the best argument for recording an alias rather than trusting the score.
+
+### The durable fix is an alias file, not a better heuristic
+
+No heuristic should stay permanently responsible for deciding that
+"Priorize quality" meant "Prioritize quality". A person should decide once,
+and every run after that should be exact and auditable.
+
+So every inexact match is written to `alias_review.json` in the run folder.
+A reviewer sets `confirmed: false` on anything wrong, and the file is passed
+back with `--aliases` on the next run, where a confirmed alias beats any
+guess outright. Matches below `CONFIDENT` are written with
+`confirmed: false` already set, so a weak guess is never silently promoted
+into a permanent mapping — someone has to say yes.
+
+This is the mechanism by which the tool converges: the first run is fuzzy and
+noisy, and each review makes the next one sharper and quieter.
+
 ### A precondition is not a reason to skip a row
 
 The first version returned `NA` for any row carrying a `[bracketed]`
