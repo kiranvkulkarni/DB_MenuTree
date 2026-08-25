@@ -38,3 +38,14 @@ output/
 smoke_*.log
 recon_*.log
 realme_full.log
+
+# Superseded scratch output. Every back-end now writes into a per-run folder
+# under output/, so these fixed-name directories only ever accumulate.
+tree_out_*/
+reports/
+
+# Your own reference material (the MenuTree spec for a device) stays local:
+# it is company data and must not be committed.
+S25_Ultra_MenuTree/
+*_MenuTree/
+MenuTree*.xlsx
