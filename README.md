@@ -1,8 +1,28 @@
 # MenuTree AutoQA Agent
 
-Autonomously crawls an Android app, reconstructs its **UI Transition Graph**,
-and derives a deterministic UVTA test suite plus a coverage report suitable for
-gating a product release.
+Tooling for the **MenuTree** release gate: an element-by-element,
+depth-ordered inventory of an Android app, exported as the expected workbook
+with a UVTA test case per row.
+
+Two tools, answering different questions:
+
+```bash
+# THE GATE — walk the hand-authored sheet, assert every row is present
+python tools/verify_menutree.py --spec MenuTree.xlsx --package <pkg> --serial <serial>
+
+# DISCOVERY — find UI the sheet does not have yet
+python tools/build_menutree.py --package <pkg> --serial <serial> --time-budget 1500
+```
+
+Verification is what can gate a release: the same rows are walked every run,
+the denominator is fixed by the sheet, and a row that cannot be reached is a
+named Fail rather than silently missing coverage. Discovery is not
+reproducible run to run and should not be used as a gate — see
+[docs/STATE_OF_PLAY.md](docs/STATE_OF_PLAY.md) §3.
+
+The older DroidBot/UTG pipeline (`main.py`) is still here and still works; it
+produces a screen *graph* rather than an element tree, and everything from §1
+onward describes it.
 
 ---
 
@@ -13,15 +33,21 @@ gating a product release.
 | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Before changing anything. Explains *why* the system is shaped this way, what was tried and rejected, and the traps that are easy to fall back into. |
 | **[docs/STATE_OF_PLAY.md](docs/STATE_OF_PLAY.md)** | **Read this first.** Honest status: what works, what does not, the unsolved reproducibility problem, hard platform limits, and the existing tools worth evaluating before investing further. |
 | **[docs/TOOL_EVALUATION.md](docs/TOOL_EVALUATION.md)** | Why Google App Crawler (discontinued) and Firebase Robo (cloud-only, APK-upload) cannot serve this deliverable — and why verifying a known tree beats discovering one. |
-| **[docs/MODULES.md](docs/MODULES.md)** | "Where do I go to change X?" Code map and common tasks. |
+| **[docs/MODULES.md](docs/MODULES.md)** | "Where do I go to change X?" Code map, all four back-ends, device lifecycle rules, common tasks. |
 | This file | Setup, running, reading the report. |
 
-There are two crawler back-ends. **DroidBot is what `main.py` and the gate
-currently use.** A `uiautomator2` replay explorer (`tools/explore_u2.py`) is
-deterministic and self-verifying, and on a head-to-head against the Phone app
-it produced **77 usable test cases to DroidBot's 12** from the same 900s
-budget — see ARCHITECTURE §9.2. It is not yet wired into `main.py`;
-remaining work is in ARCHITECTURE §10.
+There are **four** back-ends, built in that order:
+
+| | Back-end | Entry point | Status |
+|---|---|---|---|
+| A | DroidBot / UTG | `main.py` | superseded |
+| B | replay explorer | `tools/explore_u2.py` | superseded |
+| C | element-tree walker | `tools/build_menutree.py` | works, not reproducible |
+| D | **verifier** | `tools/verify_menutree.py` | **the gate** |
+
+C and D share everything except traversal — element enumeration, the action
+guard, screen identity, the workbook writer. A and B are kept because the
+graph model, path emitter and coverage report still build on them.
 
 ---
 
@@ -129,6 +155,36 @@ required whenever more than one device is attached — `adb devices` to find it.
 
 ## 4. Running
 
+### The MenuTree tools (back-ends C and D)
+
+```bash
+# Check the sheet parses correctly first. No device needed.
+python tools/verify_menutree.py --spec MenuTree.xlsx --package <pkg> --dry-run
+
+# Then the real run. Writes a COPY of the workbook; the original is untouched.
+python tools/verify_menutree.py --spec MenuTree.xlsx --package <pkg> --serial <serial>
+
+# Discovery, to find UI the sheet does not have.
+python tools/build_menutree.py --package <pkg> --serial <serial> \
+    --time-budget 1500 --max-depth 12
+```
+
+Both write to a per-run folder `output/<package>_<YYYYMMDD_HHMMSS_mmm>/`, so
+no run ever overwrites another. `verify_menutree.py` exits 2 if any row fails.
+
+Both take a **run lock** on the device: a second run against the same serial
+is refused, naming the PID that holds it. `--force-lock` overrides. Both
+release the device on exit — dropping the stay-awake hold, force-stopping the
+app and going Home — from a `finally`, so an interrupted run still hands the
+handset back.
+
+> **Safety on a personal device.** The action guard is on by default and
+> refuses destructive, outbound, account and commerce controls; keypad keys
+> are recorded but never pressed (`*2767*3855#` is a factory reset). Do not
+> pass `--no-guard` on a device holding real data.
+
+### The DroidBot pipeline (back-end A)
+
 ```bash
 python main.py                          # crawl -> parse -> emit -> gate
 python main.py --skip-crawl             # re-derive from existing droidbot_out/
@@ -232,12 +288,17 @@ These are real limits of the current pipeline, not aspirations:
 
 ## 7. Development
 
-Two device-free test entry points. Run both before any device work — they take
+Device-free test entry points. Run them before any device work — they take
 seconds and catch most regressions:
 
 ```bash
-python tests/test_hierarchy.py    # XML parsing, state keys, Compose selectors
-python tests/make_fixture.py      # synthetic droidbot_out/ in DroidBot's format
+python tests/test_hierarchy.py     # XML parsing, state keys, Compose selectors
+python tests/test_run_lock.py      # per-device mutual exclusion, stale locks
+python tests/make_spec_fixture.py  # workbook shaped like the real deliverable
+python tools/verify_menutree.py --spec tests/spec_fixture.xlsx \
+    --package com.example --dry-run   # exercises the spec reader end to end
+
+python tests/make_fixture.py       # synthetic droidbot_out/ in DroidBot's format
 # then point config parser.output_dir at ./tests/fixture_out and:
 python main.py --skip-crawl
 ```
@@ -274,6 +335,35 @@ accept the RSA fingerprint prompt.
 
 **`Package 'X' is not installed`** — verify with
 `adb shell pm path <package>`.
+
+**`Device X is already being driven by PID N`** — a run is still live. Two
+runs interleaving their taps on one handset corrupt both, invisibly. Stop the
+named process (`taskkill /PID N /F` on Windows, `kill N` elsewhere) or pass
+`--force-lock` if you are certain it is dead.
+
+**The device keeps acting after a run finished** — check, in this order:
+
+```bash
+tasklist | findstr python                  # an earlier run still going?
+adb shell dumpsys power | findstr mWakefulness
+adb shell dumpsys deviceidle | findstr mScreenOn
+adb shell settings get secure enabled_accessibility_services
+adb shell ps -A | findstr -i "uiautomator atx droidbot monkey"
+```
+
+Two causes, both now fixed but worth knowing:
+
+1. **An orphaned run.** With `--time-budget 7200` a run started two hours ago
+   is still clicking long after you believe it finished. The run lock now
+   prevents the overlap and names the PID.
+2. **The app left open on a lit screen.** A run used to drop only the
+   stay-awake hold, leaving the app in the foreground mid-menu. An OEM camera
+   left open keeps auto-focusing, running scene detection and animating its
+   viewfinder — indistinguishable from the tool still clicking. Release now
+   also force-stops the app and presses Home.
+
+To clean up by hand after an older build:
+`adb shell svc power stayon false && adb shell am force-stop <package>`.
 
 **`installed only as split APKs`** — supply a standalone APK via
 `crawler.apk_path`.

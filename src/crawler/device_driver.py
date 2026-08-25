@@ -36,6 +36,7 @@ class DeviceDriver(Protocol):
     def current_ime_package(self) -> Optional[str]: ...
     def screen_size(self) -> tuple: ...
     def prepare_device(self) -> bool: ...
+    def release_device(self, package: Optional[str] = None) -> None: ...
     def launch_clean(self, package: str, clear: bool = False) -> bool: ...
     def screenshot(self, path: str) -> bool: ...
 
@@ -220,12 +221,25 @@ class AdbDriver:
             )
         return ok and awake
 
-    def release_device(self) -> None:
-        """Undo the stay-awake hold."""
-        try:
-            _adb(self.serial, "shell", "svc", "power", "stayon", "false")
-        except DriverError:
-            pass
+    def release_device(self, package: Optional[str] = None) -> None:
+        """Hand the device back: stop driving it and let it sleep again.
+
+        Dropping `stayon` is not enough on its own. A run that ends leaves the
+        app under test in the foreground, mid-menu, on a screen held awake --
+        and an OEM camera left open keeps auto-focusing, running scene
+        detection and animating its viewfinder. From across the desk that is
+        indistinguishable from the tool still clicking. Force-stopping the app
+        and going Home makes "the run is over" visible.
+        """
+        steps = [("shell", "svc", "power", "stayon", "false")]
+        if package:
+            steps.append(("shell", "am", "force-stop", package))
+        steps.append(("shell", "input", "keyevent", "KEYCODE_HOME"))
+        for args in steps:
+            try:
+                _adb(self.serial, *args)
+            except DriverError as exc:
+                logger.debug("release_device step %s failed: %s", args[-1], exc)
 
     def screen_size(self) -> tuple:
         """(width, height) in pixels, from `wm size`."""
@@ -377,62 +391,6 @@ class U2Driver:
         return (self.current_package() or package) == package
 
 
-    def prepare_device(self) -> bool:
-        """Wake the screen, dismiss the keyguard, and keep it awake.
-
-        A sleeping device silently destroys a run: the OEM camera swaps its
-        whole UI for a "Tap to show preview" placeholder under
-        .setting.ScreenOffActivity, leaving exactly one element to explore.
-        A walk that began fine and slept partway through simply stops finding
-        anything -- which is a strong candidate for the run-to-run variance
-        (90 to 465 rows on identical code), since the result then depends on
-        *when* the screen happened to time out.
-
-        `svc power stayon true` holds the screen on while charging, and the
-        device is on USB for adb, so this holds for the whole run.
-        """
-        ok = True
-        for args in (
-            ("shell", "input", "keyevent", "KEYCODE_WAKEUP"),
-            ("shell", "wm", "dismiss-keyguard"),
-            ("shell", "svc", "power", "stayon", "true"),
-        ):
-            try:
-                _adb(self.serial, *args)
-            except DriverError as exc:
-                logger.debug("prepare_device step %s failed: %s", args[-1], exc)
-                ok = False
-        time.sleep(self.settle)
-
-        try:
-            out = _adb(self.serial, "shell", "dumpsys", "power")
-            awake = "mWakefulness=Awake" in out
-        except DriverError:
-            awake = True
-        if not awake:
-            logger.warning(
-                "Device still not awake. The screen must be on for the walk "
-                "to see anything."
-            )
-        return ok and awake
-
-    def release_device(self) -> None:
-        """Undo the stay-awake hold."""
-        try:
-            _adb(self.serial, "shell", "svc", "power", "stayon", "false")
-        except DriverError:
-            pass
-
-    def screen_size(self) -> tuple:
-        """(width, height) in pixels, from `wm size`."""
-        out = _adb(self.serial, "shell", "wm", "size")
-        for line in out.splitlines():
-            if "size:" in line and "x" in line:
-                dims = line.split(":")[-1].strip()
-                w, _, h = dims.partition("x")
-                return int(w), int(h)
-        raise DriverError(f"could not parse screen size from {out!r}")
-
     def current_ime_package(self) -> Optional[str]:
         """Active keyboard package, so its keys can be excluded from the tree."""
         try:
@@ -485,12 +443,25 @@ class U2Driver:
             )
         return ok and awake
 
-    def release_device(self) -> None:
-        """Undo the stay-awake hold."""
-        try:
-            _adb(self.serial, "shell", "svc", "power", "stayon", "false")
-        except DriverError:
-            pass
+    def release_device(self, package: Optional[str] = None) -> None:
+        """Hand the device back: stop driving it and let it sleep again.
+
+        Dropping `stayon` is not enough on its own. A run that ends leaves the
+        app under test in the foreground, mid-menu, on a screen held awake --
+        and an OEM camera left open keeps auto-focusing, running scene
+        detection and animating its viewfinder. From across the desk that is
+        indistinguishable from the tool still clicking. Force-stopping the app
+        and going Home makes "the run is over" visible.
+        """
+        steps = [("shell", "svc", "power", "stayon", "false")]
+        if package:
+            steps.append(("shell", "am", "force-stop", package))
+        steps.append(("shell", "input", "keyevent", "KEYCODE_HOME"))
+        for args in steps:
+            try:
+                _adb(self.serial, *args)
+            except DriverError as exc:
+                logger.debug("release_device step %s failed: %s", args[-1], exc)
 
     def screen_size(self) -> tuple:
         """(width, height) in pixels."""

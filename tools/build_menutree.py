@@ -22,6 +22,7 @@ from src.generator.menutree_sheet import summarise, write_csv  # noqa: E402
 from src.generator.menutree_workbook import write_workbook  # noqa: E402
 from src.generator.uvta_writer import SuiteValidationError, UVTAWriter  # noqa: E402
 from src.logging_setup import setup_logging  # noqa: E402
+from src.run_lock import DeviceBusy, RunLock  # noqa: E402
 
 logger = logging.getLogger("build_menutree")
 
@@ -85,6 +86,8 @@ def parse_args() -> argparse.Namespace:
                    help="Skip the Excel workbook (CSV is always written).")
     p.add_argument("--skip-walk", action="store_true",
                    help="Re-export an existing menutree_rows.json")
+    p.add_argument("--force-lock", action="store_true",
+                   help="start even if another run holds this device")
     return p.parse_args()
 
 
@@ -103,6 +106,18 @@ def main() -> int:
     setup_logging(log_dir=str(output_dir), level="INFO", run_id=run_id)
     logger.info("Run folder: %s", output_dir.resolve())
     rows_file = output_dir / "menutree_rows.json"
+
+    lock = None
+    if not args.skip_walk:
+        # Refuse to start while another run is already driving this handset.
+        try:
+            lock = RunLock(args.output_root, args.serial).acquire(args.force_lock)
+        except DeviceBusy as exc:
+            logger.error("%s", exc)
+            print()
+            print(f"  {exc}")
+            print()
+            return 1
 
     if not args.skip_walk:
         walker = ElementTreeWalker(args.package, args.serial, {
@@ -129,6 +144,13 @@ def main() -> int:
             logger.error("Walk ended early: %s", exc)
             if not walker.rows:
                 raise
+        finally:
+            # However the walk ended, hand the device back: drop the
+            # stay-awake hold, stop the app and go Home, then release the
+            # lock so the next run can start.
+            walker._release()
+            if lock is not None:
+                lock.release()
         walker.write(rows_file)
 
     if not rows_file.exists():

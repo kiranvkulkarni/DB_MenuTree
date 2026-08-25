@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.crawler.action_guard import DEFAULT_PRESETS, GUARD_PRESETS  # noqa: E402
 from src.logging_setup import setup_logging  # noqa: E402
+from src.run_lock import DeviceBusy, RunLock  # noqa: E402
 from src.verify.spec_reader import read_workbook, summarise  # noqa: E402
 from src.verify.verifier import FAIL, NA, PASS, MenuTreeVerifier  # noqa: E402
 
@@ -50,6 +51,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--guard-extra", default="")
     p.add_argument("--dry-run", action="store_true",
                    help="parse and report the spec only; no device needed")
+    p.add_argument("--force-lock", action="store_true",
+                   help="start even if another run holds this device")
     return p.parse_args()
 
 
@@ -125,6 +128,15 @@ def main() -> int:
               "re-run without --dry-run.")
         return 0
 
+    try:
+        lock = RunLock(args.output_root, args.serial).acquire(args.force_lock)
+    except DeviceBusy as exc:
+        logger.error("%s", exc)
+        print()
+        print(f"  {exc}")
+        print()
+        return 1
+
     verifier = MenuTreeVerifier(args.package, args.serial, {
         "time_budget": args.time_budget,
         "ready_timeout": args.ready_timeout,
@@ -143,6 +155,9 @@ def main() -> int:
         report = getattr(verifier, "_partial", None)
         if report is None:
             return 1
+    finally:
+        verifier._release()
+        lock.release()
 
     (output_dir / "verify_results.json").write_text(
         json.dumps({"package": args.package,
