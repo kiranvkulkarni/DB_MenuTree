@@ -49,9 +49,15 @@ TRAILING_NOTE = re.compile(r"\s*\((?:on|off|on\s*/\s*off|enabled|disabled)\)\s*$
 # A label the author elided rather than transcribing in full.
 ELLIPSIS = re.compile(r"\.\.\.|…")
 
-_PUNCT = re.compile(r"[^\w\s]+")
+_PUNCT = re.compile(r"[^\w\s.]+")
+# A dot with no digit on either side is punctuation; one against a
+# digit is part of the number.
+_LONE_DOT = re.compile(r"(?<![0-9])\.(?![0-9])")
 _SPACES = re.compile(r"\s+")
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+# A number, optionally followed by a unit that is written
+# inconsistently between the sheet and the screen.
+_QUANTITY = re.compile(r"^(\d*\.?\d+)\s*(x|sec|secs|s)?$", re.IGNORECASE)
 
 
 def normalise(text: str) -> str:
@@ -65,8 +71,40 @@ def normalise(text: str) -> str:
     # by word. Some controls expose an internal-style label rather than
     # display text, and those are exactly the ones with no other handle.
     text = text.replace("_", " ")
+    # Keep a decimal point that touches a digit. Stripping it turned "0.6x"
+    # into the two tokens 0 and 6, which then "contained" the 6 of "6x" --
+    # scoring 0.88 between two different zoom levels.
+    text = _LONE_DOT.sub(" ", text)
     text = _PUNCT.sub(" ", text)
     return _SPACES.sub(" ", text).strip().lower()
+
+
+def canonical_number(word: str) -> str:
+    """Fold a quantity written two ways into one form.
+
+    The sheet and the screen agree on the value and disagree on the notation:
+
+        sheet     device     both mean
+        "0.6x"    ".6"       0.6
+        "1x"      "1"        1
+        "2sec"    "2S"       2 seconds
+
+    20 rows differed only by a trailing "x" on a zoom level and 5 more by
+    sec/s on a timer, all reported as missing controls. Comparing the number
+    numerically fixes them without loosening anything else: "1x" and "15x"
+    stay 1 and 15, and "12M" keeps its M so it cannot meet "50M".
+    """
+    match = _QUANTITY.match(word)
+    if not match:
+        return word
+    value, unit = match.group(1), (match.group(2) or "").lower()
+    try:
+        number = format(float(value), "g")
+    except ValueError:
+        return word
+    if unit in ("sec", "secs", "s"):
+        return number + "s"
+    return number          # bare, or a zoom "x" which carries no meaning
 
 
 def stem(word: str) -> str:
@@ -95,7 +133,7 @@ def tokens(text: str, drop_noise: bool = True) -> List[str]:
     kept = [w for w in words if w not in NOISE_WORDS]
     # Never reduce a label to nothing: "Back key icon" is all noise words,
     # and an empty token set matches everything.
-    return [stem(w) for w in (kept or words)]
+    return [stem(canonical_number(w)) for w in (kept or words)]
 
 
 def from_resource_id(resource_id: Optional[str]) -> str:
@@ -133,6 +171,15 @@ def score(spec_label: str, candidate: str) -> Tuple[float, str]:
         return 1.0, "exact"
 
     ta, tb = tokens(spec_label), tokens(candidate)
+
+    # A number is exact. "1x" and "15x" are textually similar -- SequenceMatcher
+    # scores them 0.80 -- but they are different zoom levels, and treating one
+    # as the other is a false Pass on a control nobody checked.
+    if (len(ta) == 1 and len(tb) == 1
+            and _QUANTITY.match(ta[0]) and _QUANTITY.match(tb[0])
+            and ta[0] != tb[0]):
+        return 0.05, "different quantities"
+
     if ta == tb:
         return 0.97, "same words"
     if set(ta) == set(tb):
