@@ -112,6 +112,15 @@ def from_resource_id(resource_id: Optional[str]) -> str:
     return _SPACES.sub(" ", tail.replace("_", " ").replace("-", " ")).strip().lower()
 
 
+def _contains(inner: Sequence[str], outer: Sequence[str]) -> bool:
+    """Is `inner` a contiguous run of whole words inside `outer`?"""
+    if not inner or len(inner) > len(outer):
+        return False
+    span = len(inner)
+    return any(list(outer[i:i + span]) == list(inner)
+               for i in range(len(outer) - span + 1))
+
+
 def score(spec_label: str, candidate: str) -> Tuple[float, str]:
     """How well `candidate` answers `spec_label`, and why. 0.0 to 1.0."""
     if not spec_label or not candidate:
@@ -135,7 +144,14 @@ def score(spec_label: str, candidate: str) -> Tuple[float, str]:
         if head and b.startswith(head):
             return 0.92, "matches the part before the ellipsis"
 
-    if a in b or b in a:
+    # Containment must align on WORD boundaries, not raw characters.
+    #
+    # Raw substring matching produced false passes, which are worse than
+    # false failures: a false Fail is investigated, a false Pass hides a
+    # defect. Measured on the Pro branch -- "On" matched "Exposure monitor"
+    # (on is inside m-on-itor) and "Pro [Tittle]" matched a lone "T". Both
+    # were reported as Pass against controls nobody had checked.
+    if _contains(ta, tb) or _contains(tb, ta):
         return 0.88, "one contains the other"
 
     sa, sb = set(ta), set(tb)

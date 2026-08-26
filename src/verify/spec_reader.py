@@ -43,6 +43,25 @@ ANNOTATION = re.compile(
 # rows beneath them rather than verified.
 CONTEXT_ROW = re.compile(r"^\s*\[.+\]\s*$")
 
+# A documentation shorthand, not a control: "Each mode depth as below" tells
+# a human reader that the modes listed after it are documented at their own
+# depth but reached through the menu this marker sits under.
+#
+# Taken literally it is wrong. The S25 Ultra's main screen offers only
+# PORTRAIT, PHOTO, VIDEO and MORE; Pro, Pro video, NIGHT, FOOD, PANORAMA,
+# SLOW MOTION, HYPERLAPSE, PORTRAIT VIDEO, DUAL REC and SINGLE TAKE all live
+# inside MORE. The sheet lists them at depth 2 anyway, as siblings of Photo,
+# because that is how the tree reads on paper.
+#
+# Reading it literally cost 281 failures across seven modes that scored zero
+# passes -- 35% of every failure in the sheet -- for controls that are
+# present and working one tap further in. The convention is the authors',
+# and it is a reasonable one; the tool is what has to understand it.
+MODE_SHORTHAND = re.compile(r"each\s+mode.*\bdepth\b.*\bbelow\b", re.IGNORECASE)
+
+# A pointer to another sheet rather than a control on screen.
+CROSS_REFERENCE = re.compile(r"^\s*<.+>\s*$")
+
 RESULT_COLUMNS = {
     "test result": "result",
     "result": "result",
@@ -65,6 +84,7 @@ class SpecRow:
     context: List[str] = field(default_factory=list)   # enclosing [bracketed] rows
     is_context: bool = False
     is_root: bool = False
+    is_cross_reference: bool = False   # "<same as Settings sheet>": a pointer
     authored_result: str = ""
     comments: str = ""
 
@@ -121,6 +141,8 @@ def read_sheet(sheet) -> List[SpecRow]:
     ancestors: Dict[int, str] = {}
     context_stack: Dict[int, str] = {}
     multi_cell_rows: List[int] = []
+    # Prepended to every path once the mode shorthand is seen.
+    path_prefix: List[str] = []
 
     for excel_row in range(header["row"] + 1, sheet.max_row + 1):
         # A row usually holds one label, but not always. The authors
@@ -169,6 +191,8 @@ def read_sheet(sheet) -> List[SpecRow]:
                 context_stack.pop(depth, None)
 
             path = [ancestors[d] for d in sorted(ancestors) if d < depth]
+            if path_prefix and not is_root:
+                path = list(path_prefix) + path
             context = [context_stack[d] for d in sorted(context_stack) if d <= depth]
 
             rows.append(SpecRow(
@@ -181,6 +205,7 @@ def read_sheet(sheet) -> List[SpecRow]:
                 context=context,
                 is_context=is_context,
                 is_root=is_root,
+                is_cross_reference=bool(CROSS_REFERENCE.match(label)),
                 authored_result=str(
                     sheet.cell(row=excel_row, column=meta["result"]).value or ""
                 ).strip() if "result" in meta else "",
@@ -188,6 +213,15 @@ def read_sheet(sheet) -> List[SpecRow]:
                     sheet.cell(row=excel_row, column=meta["comments"]).value or ""
                 ).strip() if "comments" in meta else "",
             ))
+
+            if MODE_SHORTHAND.search(label):
+                # Everything after this is reached through the menu the
+                # marker hangs under -- the nearest depth-2 ancestor.
+                via = ancestors.get(2)
+                if via:
+                    path_prefix = [via]
+                    logger.info("sheet %r: rows after row %d are reached via "
+                                "%r (mode shorthand)", sheet.title, excel_row, via)
 
             if is_context:
                 context_stack[depth] = label
