@@ -534,6 +534,16 @@ class MenuTreeVerifier:
         if row.is_context:
             return RowResult(row, NA, "context/precondition row -- not verifiable")
 
+        if getattr(row, "is_cross_reference", False):
+            # "<same as Settings sheet>" points at another sheet; there is no
+            # such control to find, so searching for one and calling the miss
+            # a defect would be inventing a failure.
+            return RowResult(
+                row, NA,
+                f"cross-reference to another sheet ({row.label}) -- "
+                "nothing to assert here",
+            )
+
         # Depth 1 is the application itself. It is satisfied by the app being
         # up, which the launch already established.
         if row.is_root:

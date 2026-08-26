@@ -107,6 +107,20 @@ def main() -> int:
                 score("Quick settings", "Quick controls")[0] < REVIEW,
                 "settings/controls differ in meaning, not in number")
 
+    print("\ncontainment must align on words, not characters")
+    # These were reported as PASS on the device against controls nobody had
+    # checked. A false Pass is worse than a false Fail: a Fail gets
+    # investigated, a Pass hides the defect.
+    ok &= check("'On' is not inside 'Exposure monitor'",
+                score("On", "Exposure monitor")[0] < REVIEW,
+                "'on' appears in m-on-itor")
+    ok &= check("a lone letter matches nothing",
+                score("T", "Pro [Tittle]")[0] < REVIEW)
+    ok &= check("but a real whole word still contains",
+                score("Off", "Video off mode")[0] >= 0.8)
+    ok &= check("and an internal-style label still contains",
+                score("Timer off", "FRONT_TIMER_OFF")[0] >= 0.8)
+
     print("\nresource ids are developer English, often closer than the visible text")
     ok &= check("id is split into words",
                 from_resource_id("com.x:id/flash_auto_button") == "flash auto button")

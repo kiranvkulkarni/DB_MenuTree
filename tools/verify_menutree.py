@@ -62,6 +62,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--guard-extra", default="")
     p.add_argument("--dry-run", action="store_true",
                    help="parse and report the spec only; no device needed")
+    p.add_argument("--from-row", type=int, default=0,
+                   help="skip spec rows before this spreadsheet row. With "
+                        "--max-rows this verifies a slice, so one branch can "
+                        "be re-tested in minutes instead of hours.")
     p.add_argument("--max-rows", type=int, default=0,
                    help="verify only the first N spec rows. For iterating: a "
                         "967-row sheet takes hours, and finding a bug in the "
@@ -132,9 +136,13 @@ def main() -> int:
 
     sheets = [s.strip() for s in args.sheets.split(",") if s.strip()] or None
     spec = read_workbook(spec_path, sheets)
+    if args.from_row:
+        spec = [r for r in spec if r.excel_row >= args.from_row]
+        logger.info("Starting at spreadsheet row %d.", args.from_row)
     if args.max_rows:
         spec = spec[:args.max_rows]
-        logger.info("Limited to the first %d spec row(s).", len(spec))
+    if args.from_row or args.max_rows:
+        logger.info("Verifying %d spec row(s) of the sheet.", len(spec))
     print(summarise(spec))
 
     if args.dry_run:
