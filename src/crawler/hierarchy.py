@@ -210,6 +210,47 @@ def interactive_views(
 _DIALOG_CLASS_HINTS = ("alertdialog", "dialog", "popupwindow", "bottomsheet")
 
 
+def scrollable_container(views: Sequence[Dict]) -> Optional[Dict]:
+    """The tallest scrollable view on screen, or None."""
+    best, best_height = None, 0
+    for view in views:
+        if not view.get("scrollable"):
+            continue
+        box = box_of(view)
+        if not box:
+            continue
+        height = box[3] - box[1]
+        if height >= best_height:
+            best, best_height = view, height
+    return best
+
+
+def swipe_span(container: Dict, width: int, height: int
+               ) -> Optional[tuple]:
+    """Where to start and end a swipe inside this container: (x, low, high).
+
+    Derived from the container's own box rather than a fixed pixel span. A
+    fixed span assumed the list was tall and centred; on a short container
+    near the top of the screen it produced a negative coordinate, which
+    uiautomator2 rejects outright and which killed a two-hour run.
+
+    Shared by the walker and the verifier so that fix lives in one place.
+    """
+    box = box_of(container)
+    if not box:
+        return None
+    x1, y1, x2, y2 = box
+    x = max(1, min(width - 2, (x1 + x2) // 2))
+    # Keep clear of the edges: a swipe starting on the boundary can be taken
+    # for a system gesture rather than a scroll.
+    inset = max(8, (y2 - y1) // 10)
+    low = max(1, min(height - 2, y1 + inset))
+    high = max(1, min(height - 2, y2 - inset))
+    if high - low < 40:
+        return None                    # too short to scroll meaningfully
+    return x, low, high
+
+
 def foreground_package(
     views: Sequence[Dict], exclude_packages: Sequence[str] = _DEFAULT_CHROME
 ) -> str:

@@ -43,6 +43,8 @@ from .elements import (
 )
 from .hierarchy import (
     EMPTY_STATE,
+    scrollable_container,
+    swipe_span,
     center_of,
     foreground_package,
     looks_like_dialog,
@@ -265,6 +267,8 @@ class ElementTreeWalker:
         # one measured run), so throughput *is* coverage -- and the only way
         # to raise it without guessing is to measure the phases.
         self._phases: Dict[str, List[float]] = {}
+        self._scrolls = 0
+        self.max_scrolls = int(config.get("max_scrolls", 8))
         self._settle_polls = 0
         self._package_disagreements = 0
         self._stem_matches = 0
@@ -606,7 +610,7 @@ class ElementTreeWalker:
             return 0
         self._visited_screens.add(screen_key)
 
-        elements = self._elements(views)
+        elements = self._enumerate_scrolled(views)
         self._screen_elements[screen_key] = list(elements)
         self._screen_paths[screen_key] = list(path)
 
@@ -710,6 +714,108 @@ class ElementTreeWalker:
             ] if best else [],
         })
         return None
+
+    def _swipe_span(self, views: Sequence[Dict]):
+        """(x, low, high) for scrolling this screen, or None."""
+        assert self.driver is not None
+        container = scrollable_container(views)
+        if container is None:
+            return None
+        try:
+            width, height = self.driver.screen_size()
+        except Exception:
+            return None
+        return swipe_span(container, width, height)
+
+    def _scroll_once(self, span, down: bool) -> List[Dict]:
+        """One swipe, then wait for the list to settle. Returns fresh views."""
+        assert self.driver is not None
+        x, low, high = span
+        if down:
+            self.driver.swipe(x, high, x, low, 260)
+        else:
+            self.driver.swipe(x, low, x, high, 240)
+        self._scrolls += 1
+        _, views, _ = self._await_stable()
+        return views
+
+    def _enumerate_scrolled(self, views: Sequence[Dict]) -> List[Element]:
+        """Every element on a screen, including what is below the fold.
+
+        A settings list is taller than the display. Enumerating one dump
+        inventories only what happens to be visible -- the Samsung camera's
+        settings screen carries 45 labels and shows about twelve, so three
+        quarters of it would simply be absent from the MenuTree with nothing
+        reporting a gap.
+
+        The screen is left scrolled back to the top, because the next thing
+        the walker does is look for something on it.
+        """
+        assert self.driver is not None
+        found: List[Element] = []
+        seen = set()
+
+        def collect(current: Sequence[Dict]) -> None:
+            for element in self._elements(current):
+                key = (element.label, element.kind, element.resource_id)
+                if key not in seen:
+                    seen.add(key)
+                    found.append(element)
+
+        collect(views)
+        span = self._swipe_span(views)
+        if span is None:
+            return found
+
+        keys = set()
+        for _ in range(self.max_scrolls):
+            key, current, _ = self._await_stable()
+            if key in keys:
+                break                       # the list has stopped moving
+            keys.add(key)
+            current = self._scroll_once(span, down=True)
+            if not current:
+                break
+            collect(current)
+
+        # Rewind, so the caller sees the screen it expects.
+        for _ in range(self.max_scrolls):
+            before, current, _ = self._await_stable()
+            current = self._scroll_once(span, down=False)
+            after, _, _ = self._await_stable()
+            if after == before:
+                break
+        return found
+
+    def _find_element_scrolled(
+        self, label: str, views: Sequence[Dict]
+    ) -> Tuple[Optional[Element], List[Dict]]:
+        """Find an element, scrolling to it if it is below the fold.
+
+        Returns the element and the views it was found in -- the caller must
+        click against the hierarchy now on screen, not the one it started
+        with.
+        """
+        element = self._find_element(label, views)
+        if element is not None:
+            return element, list(views)
+        span = self._swipe_span(views)
+        if span is None:
+            return None, list(views)
+        keys = set()
+        current = list(views)
+        for _ in range(self.max_scrolls):
+            key, seen_views, _ = self._await_stable()
+            if key in keys:
+                break
+            keys.add(key)
+            current = self._scroll_once(span, down=True)
+            if not current:
+                break
+            element = self._find_element(label, current)
+            if element is not None:
+                return element, list(current)
+        return None, list(current)
 
     def _find_element(
         self, label: str, views: Sequence[Dict], rid: Optional[str] = None
@@ -906,7 +1012,10 @@ class ElementTreeWalker:
                            item.label, item.screen_key[:12])
             return
 
-        live = self._find_element(item.label, views)
+        # Scroll to it if need be: a control recorded from further down the
+        # list is still a control, and reporting it unreachable because it is
+        # off-screen would lose exactly the rows scrolling was added to find.
+        live, views = self._find_element_scrolled(item.label, views)
         if live is None and self.clear_between_paths:
             # The element was here a moment ago and is gone. Usually a
             # one-shot dialog: a sibling ("Cancel") already dismissed it, so
@@ -914,7 +1023,7 @@ class ElementTreeWalker:
             # replaying restores first-run state, making it reappear.
             if self._relaunch_and_replay(item.screen_key, item.path, clear=True):
                 _, views, _ = self._await_stable()
-                live = self._find_element(item.label, views)
+                live, views = self._find_element_scrolled(item.label, views)
                 if live is not None:
                     self._dialog_recoveries += 1
                     if row is not None:
@@ -1111,6 +1220,7 @@ class ElementTreeWalker:
             # clock, so the biggest phase is the biggest coverage lever.
             "phase_seconds": self._phase_report(),
             "settle_polls": self._settle_polls,
+            "scrolls": self._scrolls,
             "package_disagreements": self._package_disagreements,
             "identify_misses": self._identify_misses[:40],
             "stem_matches": self._stem_matches,

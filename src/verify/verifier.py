@@ -28,6 +28,8 @@ from ..crawler.device_driver import DeviceDriver, DriverError, make_driver
 from ..crawler.elements import Element, enumerate_elements, screen_similarity
 from ..crawler.hierarchy import (
     box_of,
+    scrollable_container,
+    swipe_span,
     looks_like_dialog,
     EMPTY_STATE,
     center_of,
@@ -208,49 +210,16 @@ class MenuTreeVerifier:
         return match.element if match else None
 
     def _scrollable(self, views: Sequence[Dict]) -> Optional[Dict]:
-        """The tallest scrollable container on screen, if any."""
-        best, best_h = None, 0
-        for view in views:
-            if not view.get("scrollable"):
-                continue
-            centre = center_of(view)
-            if centre is None:
-                continue
-            box = box_of(view)
-            height = (box[3] - box[1]) if box else 0
-            if height >= best_h:
-                best, best_h = view, height
-        return best
+        return scrollable_container(views)
 
     def _swipe_span(self, container: Dict) -> Optional[Tuple[int, int, int]]:
-        """Where to start and end a swipe inside this container.
-
-        Derived from the container's own box rather than a fixed pixel span.
-        A fixed span assumed the list was tall and centred: on a short
-        container near the top of the screen, centre_y - 450 went negative
-        and uiautomator2 asserts y >= 0, which crashed a two-hour run
-        outright. Any app whose scrollable area is small or high up would hit
-        the same thing, so the swipe now lives inside the box it is
-        scrolling and is clamped to the display.
-        """
-        box = box_of(container)
-        if box is None:
-            return None
-        x1, y1, x2, y2 = box
+        assert self.driver is not None
         try:
-            width, height = self.driver.screen_size()   # type: ignore[union-attr]
+            width, height = self.driver.screen_size()
         except Exception:
-            width, height = x2, y2
-
-        x = max(1, min(width - 2, (x1 + x2) // 2))
-        # Keep clear of the very edges: a swipe starting on the boundary can
-        # be taken as a system gesture rather than a scroll.
-        inset = max(8, (y2 - y1) // 10)
-        low = max(1, min(height - 2, y1 + inset))
-        high = max(1, min(height - 2, y2 - inset))
-        if high - low < 40:
-            return None                 # too short to scroll meaningfully
-        return x, low, high
+            box = box_of(container) or (0, 0, 1080, 2340)
+            width, height = box[2], box[3]
+        return swipe_span(container, width, height)
 
     def _match_scrolling(self, text: str,
                          views: Sequence[Dict]) -> Tuple[Optional[Match], List[Dict]]:
