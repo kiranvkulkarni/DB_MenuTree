@@ -59,6 +59,12 @@ def normalise(text: str) -> str:
     if not text:
         return ""
     text = TRAILING_NOTE.sub(" ", text)
+    # Underscore is a word character, so _PUNCT leaves it alone and
+    # "FRONT_TIMER_OFF" stays a single token. That scored 0.33 against
+    # "Timer off" instead of 0.85, because the two never got to compare word
+    # by word. Some controls expose an internal-style label rather than
+    # display text, and those are exactly the ones with no other handle.
+    text = text.replace("_", " ")
     text = _PUNCT.sub(" ", text)
     return _SPACES.sub(" ", text).strip().lower()
 
