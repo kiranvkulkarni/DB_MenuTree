@@ -365,8 +365,20 @@ class MenuTreeVerifier:
 
     # A first-run prompt that stands between a cold launch and the app's
     # real entry screen. Dismissed with the non-committal branch.
+    # Tried in order. Non-committal first: these decline whatever is being
+    # offered, so pressing one cannot enable a setting or accept a term.
     ENTRY_DISMISS = ("cancel", "not now", "no thanks", "later", "deny",
                      "don't allow", "dont allow", "skip")
+
+    # An informational dialog often has no way out but acknowledgement. One
+    # such -- "Location tags and sharing ... OK" -- had no non-committal
+    # option, so it was never dismissed and stranded 53 of 60 rows behind it
+    # while the run relaunched 52 times into the same wall.
+    #
+    # These are tried only after the non-committal labels and after BACK, and
+    # the action guard still applies, so an "OK" that would confirm something
+    # destructive is refused before it is pressed.
+    ENTRY_ACKNOWLEDGE = ("ok", "got it", "dismiss", "close", "continue", "done")
 
     def _dismiss_entry_dialog(self, wanted_first_step: str) -> bool:
         """Clear a first-run prompt blocking the entry screen.
@@ -392,16 +404,41 @@ class MenuTreeVerifier:
         if wanted_first_step and self._match(wanted_first_step, views):
             return False        # the dialog IS the target; leave it alone
 
-        for wanted in self.ENTRY_DISMISS:
-            for element in elements:
-                if element.label.strip().lower() == wanted:
+        def press(labels: Sequence[str], why: str) -> bool:
+            for wanted in labels:
+                for element in elements:
+                    if element.label.strip().lower() != wanted:
+                        continue
+                    blocked = self.guard.blocks("text", element.label)
+                    if blocked:
+                        logger.info("not pressing %r to clear a dialog (%s)",
+                                    element.label, blocked)
+                        continue
                     if self._click(element, views):
                         self._entry_dialogs_dismissed += 1
-                        logger.info("dismissed entry dialog via %r",
-                                    element.label)
+                        logger.info("dismissed dialog via %r (%s)",
+                                    element.label, why)
                         self._await_stable()
                         return True
-        return False
+            return False
+
+        if press(self.ENTRY_DISMISS, "declines the offer"):
+            return True
+
+        # BACK commits to nothing at all, so it is preferred over pressing an
+        # acknowledgement.
+        try:
+            self.driver.press_back(settle=False)
+            self._await_stable()
+        except DriverError:
+            pass
+        _, after, _ = self._await_stable()
+        if after and not looks_like_dialog(after, self.package):
+            self._entry_dialogs_dismissed += 1
+            logger.info("dismissed dialog with BACK")
+            return True
+
+        return press(self.ENTRY_ACKNOWLEDGE, "acknowledges it")
 
     # -- navigation ------------------------------------------------------
     def _navigate(self, path: Sequence[str]) -> Tuple[bool, str]:
