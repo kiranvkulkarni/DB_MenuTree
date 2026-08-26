@@ -75,6 +75,9 @@ ever written over a previous run.
 | `src/verify/spec_reader.py` | Reads the hand-authored workbook back into a tree. Depth is **positional** (the `N Depth` columns); a row's parent is the nearest preceding shallower row. Strips `[Title]`/`(On/Off)` annotations; carries `[bracketed]` rows as **context**, not as clicks. |
 | `src/verify/matching.py` | **The depth columns are not selectors** — they are a tester's English. Scores a spec label against each element's label and resource id, tolerating typos, dropped nouns (`Flash icon`), elisions and paraphrase, while still rejecting `Photo` vs `Video`. Emits `alias_review.json`; `--aliases` feeds confirmed mappings back. |
 | `src/verify/verifier.py` | Walks the spec top to bottom, exploiting shared path prefixes. Position tracked **by index, not by label** — the sheet repeats `ON`, `OK`, `Back key icon` at many depths. Emits `Pass / Fail / NA / NT`. |
+| `src/verify/matching.py` | **The depth columns are not selectors** -- they are a tester's English. Scores a label against each element's text and resource id, tolerating typos, dropped nouns, plurals, quantity notation and elision, while still rejecting `Photo`/`Video`. Emits `alias_review.json`. |
+| `tools/drift_report.py` | Groups failures by branch and classifies each renamed / restructured / absent. Reads a partial checkpoint, so a long run can be triaged while running. |
+| `tools/build_spec_xlsx.py` | Rebuilds the workbook from rows transcribed out of photographs (`tools/menutree_ocr/`), preserving the original row numbers. |
 | `tools/verify_menutree.py` | CLI. `--dry-run` parses the spec with no device attached. Writes a **copy** of the workbook; the original is never touched. Exit code 2 on failures. |
 
 ## Shared downstream

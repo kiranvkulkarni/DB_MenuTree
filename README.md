@@ -33,6 +33,7 @@ onward describes it.
 | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Before changing anything. Explains *why* the system is shaped this way, what was tried and rejected, and the traps that are easy to fall back into. |
 | **[docs/STATE_OF_PLAY.md](docs/STATE_OF_PLAY.md)** | **Read this first.** Honest status: what works, what does not, the unsolved reproducibility problem, hard platform limits, and the existing tools worth evaluating before investing further. |
 | **[docs/TOOL_EVALUATION.md](docs/TOOL_EVALUATION.md)** | Why Google App Crawler (discontinued) and Firebase Robo (cloud-only, APK-upload) cannot serve this deliverable — and why verifying a known tree beats discovering one. |
+| **[docs/METHOD.md](docs/METHOD.md)** | **How this was built and how to extend it.** The method, the mistakes and what each guardrail is scar tissue from. Read before changing matching, thresholds, or anything that turns a Fail into an NA. |
 | **[docs/MODULES.md](docs/MODULES.md)** | "Where do I go to change X?" Code map, all four back-ends, device lifecycle rules, common tasks. |
 | This file | Setup, running, reading the report. |
 
