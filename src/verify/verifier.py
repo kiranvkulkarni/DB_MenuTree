@@ -222,6 +222,36 @@ class MenuTreeVerifier:
                 best, best_h = view, height
         return best
 
+    def _swipe_span(self, container: Dict) -> Optional[Tuple[int, int, int]]:
+        """Where to start and end a swipe inside this container.
+
+        Derived from the container's own box rather than a fixed pixel span.
+        A fixed span assumed the list was tall and centred: on a short
+        container near the top of the screen, centre_y - 450 went negative
+        and uiautomator2 asserts y >= 0, which crashed a two-hour run
+        outright. Any app whose scrollable area is small or high up would hit
+        the same thing, so the swipe now lives inside the box it is
+        scrolling and is clamped to the display.
+        """
+        box = box_of(container)
+        if box is None:
+            return None
+        x1, y1, x2, y2 = box
+        try:
+            width, height = self.driver.screen_size()   # type: ignore[union-attr]
+        except Exception:
+            width, height = x2, y2
+
+        x = max(1, min(width - 2, (x1 + x2) // 2))
+        # Keep clear of the very edges: a swipe starting on the boundary can
+        # be taken as a system gesture rather than a scroll.
+        inset = max(8, (y2 - y1) // 10)
+        low = max(1, min(height - 2, y1 + inset))
+        high = max(1, min(height - 2, y2 - inset))
+        if high - low < 40:
+            return None                 # too short to scroll meaningfully
+        return x, low, high
+
     def _match_scrolling(self, text: str,
                          views: Sequence[Dict]) -> Tuple[Optional[Match], List[Dict]]:
         """Find a control, scrolling the list if it is below the fold.
@@ -243,11 +273,10 @@ class MenuTreeVerifier:
         container = self._scrollable(views)
         if container is None:
             return None, list(views)
-        centre = center_of(container)
-        if centre is None:
+        span = self._swipe_span(container)
+        if span is None:
             return None, list(views)
-
-        x, y = centre
+        x, y_low, y_high = span
         # Rewind to the top of the list before searching down it.
         #
         # Scroll position carries over from the previous row. Searching only
@@ -260,8 +289,7 @@ class MenuTreeVerifier:
         # parked at the bottom.
         for _ in range(self.max_scrolls):
             before, _, _ = self._await_stable()
-            self.driver.swipe(x, y - self.scroll_span // 2,
-                              x, y + self.scroll_span // 2, 220)
+            self.driver.swipe(x, y_low, x, y_high, 220)
             self._scrolls += 1
             after, current, _ = self._await_stable()
             if after == before:
@@ -277,8 +305,7 @@ class MenuTreeVerifier:
             if key in seen:
                 break                       # the list stopped moving
             seen.add(key)
-            self.driver.swipe(x, y + self.scroll_span // 2,
-                              x, y - self.scroll_span // 2, 260)
+            self.driver.swipe(x, y_high, x, y_low, 260)
             self._scrolls += 1
             key, current, _ = self._await_stable()
             if not current:
