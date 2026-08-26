@@ -107,6 +107,24 @@ def main() -> int:
                 score("Quick settings", "Quick controls")[0] < REVIEW,
                 "settings/controls differ in meaning, not in number")
 
+    print("\nquantities: same value must match, different values must not")
+    # The sheet and the screen write quantities differently -- "0.6x" vs ".6",
+    # "2sec" vs "2S" -- and 25 rows were reported as missing controls over
+    # notation alone. But a number is exact: folding notation must not fold
+    # values, and "1x"/"15x" are textually similar enough (0.80 by
+    # SequenceMatcher) to slip through as a false Pass.
+    for spec, screen in [("0.6x", ".6"), ("1x", "1"), ("2x", "2"),
+                         ("Timer 2sec", "BACK_TIMER_2S"),
+                         ("Timer 10sec", "BACK_TIMER_10S")]:
+        ok &= check(f"same value: {spec!r} = {screen!r}",
+                    score(spec, screen)[0] >= REVIEW,
+                    f"{score(spec, screen)[0]:.2f}")
+    for spec, screen in [("1x", "15x"), ("0.6x", "6x"), ("2sec", "5sec"),
+                         ("30", "24"), ("12M", "50M")]:
+        ok &= check(f"different value: {spec!r} is not {screen!r}",
+                    score(spec, screen)[0] < REVIEW,
+                    f"{score(spec, screen)[0]:.2f}")
+
     print("\ncontainment must align on words, not characters")
     # These were reported as PASS on the device against controls nobody had
     # checked. A false Pass is worse than a false Fail: a Fail gets
