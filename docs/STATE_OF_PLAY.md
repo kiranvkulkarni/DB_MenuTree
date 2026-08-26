@@ -223,64 +223,54 @@ tools/verify_menutree.py --spec MenuTree.xlsx --package <pkg> --serial <serial>
 - Results are written to a **copy** of the workbook. The original is never
   modified.
 
-**Status: the reader is validated against a real workbook.** A dry run on
-the S25 Ultra MenuTree (1055 rows, 2 sheets, depth 7) reported `rows with NO
-path: 0`, `path length mismatch: 0`, `empty selector text: 0`, and 2
-duplicate siblings. Path reconstruction to depth 7 is sound on real data.
+**Status: run end to end against the device, and iterated on.**
 
-That run also found a real defect no fixture could have: **3 context rows put
-a precondition on 963 of 1052 rows**, and the verifier was returning `NA` for
-any row with context -- it would have checked 89 rows and skipped the rest.
-Rows with context are now attempted normally; context only explains a miss.
-See ARCHITECTURE 13.
+The spec reader is validated on a real workbook, and the verifier has been
+run against the S25 Ultra repeatedly, fixing what each run reported. Measured
+on the reconstructed S25 Ultra sheet:
 
-**The walk itself is still only exercised against a fixture.**
+| sheet | rows | Pass | Fail | NA | judged | pass rate |
+|---|---|---|---|---|---|---|
+| Settings | 88 | 49 | 28 | 11 | 87% | 63.6% |
+| Modes | 993 | 341 | 632 | 20 | 98% | 35.1% |
 
-### The depth columns are a tester's English, not selectors
+Read the **judged** column before the pass rate. A percentage over a small
+slice of the sheet is not a gate result, and the tool now says so out loud --
+see METHOD.md 3.1 for the run that reported "100%" over 15% of its rows.
 
-Confirmed by the person who owns the sheet, and it changes what matching has
-to do. A depth cell is how a manual engineer described the control while
-looking at the phone: `Flash icon` for `Flash`, `Back key icon` for a
-content-desc of `Navigate up`, `Priorize quality` for `Prioritize quality`,
-`Location tags ...recorded.` for a sentence they did not transcribe.
+Eleven defects were found and fixed by running it and reading what came back.
+They are catalogued with their evidence in **[METHOD.md](METHOD.md)**; the
+short list:
 
-Exact matching reports **Fail on controls that are present and working** --
-for a gate, the worst error there is, because it manufactures defects and
-gets itself switched off.
+| defect | cost |
+|---|---|
+| no plural folding (`settings`/`setting`) | 80 of 88 rows failed at step 1 |
+| shared resource id used as an identifier | clicked Flash instead of Quick controls |
+| failures carried no screen context | every diagnosis was guesswork |
+| stale position after a failed navigation | one failure cascaded into 57 |
+| `launch_clean` never cold-started | 76 relaunches were no-ops |
+| entry dialog blocked the viewfinder | every path failed on its first step |
+| no scrolling | controls below the fold reported missing |
+| scroll never rewound | a control above the current offset was unreachable |
+| a precondition excused a miss | **a 100% pass rate over 15% of the sheet** |
+| containment matched characters, not words | `On` matched `Exposure monitor` |
+| quantities compared by spelling | `0.6x` != `.6` on 25 rows |
 
-`src/verify/matching.py` now scores each spec label against every element's
-visible text *and* its resource id (developer English is often closer to
-tester English, and is the only handle on an icon with no text). Confident
-matches are silent; weak ones are still counted as found but the workbook
-comment is prefixed `REVIEW WORDING:` and names what was actually matched.
+### What the failures actually are
 
-Tolerance without blindness: `Photo`/`Video` 0.10, `12MP`/`50MP` 0.25,
-`ON`/`OFF` 0.20 -- all rejected. The tightest real pair is
-`Front Camera`/`Rear Camera` at 0.56 against a 0.60 threshold. Correct, but
-thin.
+The sheet is `..._1B_NOV_2024.xlsx` and the device runs a much later build,
+so most remaining Fails are genuine drift rather than defects:
 
-**The durable fix is the alias file, not the heuristic.** Every inexact match
-lands in `alias_review.json`; confirm it once, pass it back with `--aliases`,
-and that mapping is exact and auditable from then on. Weak matches arrive
-pre-marked `confirmed: false`, so nothing is silently promoted. The first run
-is fuzzy and noisy; each review makes the next sharper.
-The real workbook cannot leave your infrastructure, so `tests/spec_fixture.xlsx`
-reproduces its shape instead — summary block, header row, depth columns to 7,
-bracketed context rows, `[Title]` / `(On/Off)` annotations, a permission
-dialog with both branches beneath it.
+- **~96 rows** -- the `FN01/FW01/FC01/FG01` filter block, replaced in this
+  build by `Original, Classic film, Crystal, Blanc`.
+- **~220 rows** -- `Quick Settings` sub-trees whose children the build
+  renamed or restructured.
+- **confirmed renames** -- `Grid lines` is now `Composition guide`;
+  `Scan documents and text` moved inside a new `Scanning` submenu.
 
-The next step is yours, and it needs no device:
-
-```
-python tools/verify_menutree.py --spec <your workbook> --package <pkg> --dry-run
-```
-
-That writes `spec_parsed.json` with every row's reconstructed `path` and
-`selector_text`. **Check the paths against the real UI before trusting a
-run.** If the paths are right, the walk is straightforward; if they are
-wrong, everything downstream is wrong in the same way.
-
----
+`tools/drift_report.py` groups these by branch and classifies each as
+renamed / restructured / absent, which is the list to work from when
+updating the sheet.
 
 ## 5. Hard limits, not bugs
 

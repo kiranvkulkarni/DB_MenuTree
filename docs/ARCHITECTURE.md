@@ -5,6 +5,10 @@ comments explain what each piece does; this explains the reasoning, the
 alternatives that were rejected, and the traps that are easy to fall back
 into. Read this before making changes.
 
+**[METHOD.md](METHOD.md) is the companion**: how the system was arrived at,
+the mistakes that shaped it, and what to be careful of when extending it.
+This document is the *what and why*; that one is the *how, and what it cost*.
+
 ---
 
 ## 1. The problem
