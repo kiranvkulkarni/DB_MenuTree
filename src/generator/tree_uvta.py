@@ -109,12 +109,37 @@ def emit_indexed(
         if not label:
             continue
 
+        # Each verify proves the CLICK BEFORE IT landed, by asserting the
+        # thing that click was supposed to reveal.
+        #
+        # This used to click a step and then assert that same step still
+        # existed, which proves nothing either way: a menu item that opens a
+        # submenu is usually replaced by it, so the assertion passed
+        # vacuously when the item happened to stay on screen and failed
+        # spuriously when it did not. Neither outcome said whether the click
+        # worked.
+        #
+        # Chaining it -- click A, verify B; click B, verify C -- means every
+        # step is checked by the step after it, and the final assertion is
+        # the row itself. A test that passes has demonstrably navigated the
+        # whole path.
+        path = list(row.get("path", []))
+        path_selectors = [
+            Selector(k, v) for k, v in (row.get("path_selectors") or [])
+        ]
+        # Older rows files carry labels only; text is the best guess there.
+        if len(path_selectors) != len(path):
+            path_selectors = [Selector("text", a) for a in path]
+
+        targets = path_selectors + [_selector_for(row)]
+
         steps = [uvta.launch(package)]
-        for ancestor in row.get("path", []):
-            step_selector = Selector("text", ancestor)
+        for index, step_selector in enumerate(path_selectors):
             steps.append(uvta.click(step_selector))
-            steps.append(uvta.verify_exists(step_selector))
-        steps.append(uvta.verify_exists(_selector_for(row)))
+            steps.append(uvta.verify_exists(targets[index + 1]))
+        if not path_selectors:
+            # Nothing to click: the row is on the entry screen.
+            steps.append(uvta.verify_exists(_selector_for(row)))
 
         case = TestCase(
             name=_name_for(row, used),
