@@ -279,6 +279,10 @@ class ElementTreeWalker:
         self._blocked_recoveries = 0
         self._requeued = 0
         self._consecutive_unreachable = 0
+        self._screen_aliases: Dict[str, str] = {}
+        self._duplicate_screens = 0
+        self._duplicate_rows = 0
+        self._cycles_refused = 0
         self._foreign_skipped = 0
         self._back_trace: List[Dict] = []
         self._keypad_skipped = 0
@@ -801,6 +805,40 @@ class ElementTreeWalker:
         return (time.time() - self._started) < self.time_budget
 
     # -- worklist --------------------------------------------------------
+    def _equivalent_screen(self, screen_key: str,
+                           elements: Sequence[Element]) -> Optional[str]:
+        """A screen already known to be this one, or None.
+
+        Matched on the element set alone, at `return_similarity` -- the SAME
+        rule `_identify_current` already uses to decide whether navigation
+        landed where it meant to. Registration and navigation disagreeing
+        about what counts as the same screen is itself the bug: the walk
+        would recognise a screen well enough to navigate to it, then enumerate
+        it again as if it were new.
+
+        An earlier version also required the path to match. That never fired
+        once, for the reason that makes this necessary: the camera's quick
+        settings reach each other, so the walk goes
+        Filters -> Flash -> Filters -> Resolution -> ... and every lap has a
+        different path. 552 of 636 rows carried a path that repeated a label,
+        and all 429 rows at depth >= 10 were cycles. `max_depth 18` on a
+        camera was the tell.
+
+        The cost is the known screen-identity limit (METHOD.md 6): two
+        genuinely different menus with near-identical element sets merge into
+        one, and the walk under-reports. That is the safer direction. An
+        over-report invents 157 rows at a depth the app does not have and
+        puts them in the deliverable.
+        """
+        best, best_score = None, 0.0
+        for key, known in self._screen_elements.items():
+            if key == screen_key:
+                continue
+            score = screen_similarity(known, elements)
+            if score > best_score:
+                best, best_score = key, score
+        return best if best_score >= self.return_similarity else None
+
     def _register_screen(
         self, screen_key: str, views: Sequence[Dict], path: List[str], depth: int,
         path_selectors: Optional[List[tuple]] = None
@@ -814,9 +852,31 @@ class ElementTreeWalker:
         """
         if screen_key in self._visited_screens:
             return 0
-        self._visited_screens.add(screen_key)
 
         elements = self._enumerate_scrolled(views)
+
+        # The same logical screen can arrive under a DIFFERENT state key.
+        # The viewfinder's content-description carries the active lens
+        # ("PHOTO Rear Camera preview" vs "... Front Camera ..."), a tip card
+        # appears and leaves, a toggle flips -- and each variant keys
+        # differently. Registered on the key alone, every variant re-enumerated
+        # the whole screen and emitted a second row for each of its controls:
+        # measured at 34 duplicated (depth, path, label) combinations, 68 of
+        # 225 rows, on a single run.
+        #
+        # This also breaks cycles. The quick settings reach each other, so
+        # without it the walk loops Filters -> Flash -> Filters -> ... and
+        # each lap registers a fresh, deeper screen.
+        twin = self._equivalent_screen(screen_key, elements)
+        if twin is not None:
+            self._visited_screens.add(screen_key)
+            self._screen_aliases[screen_key] = twin
+            self._duplicate_screens += 1
+            logger.info("screen %-12s is %s under a drifted key -- not re-listed",
+                        screen_key[:12], twin[:12])
+            return 0
+
+        self._visited_screens.add(screen_key)
         self._screen_elements[screen_key] = list(elements)
         self._screen_paths[screen_key] = list(path)
         path_selectors = list(path_selectors or [])
@@ -829,7 +889,25 @@ class ElementTreeWalker:
         )
 
         queued = 0
+        # Two views on one screen can resolve to the same label AND the same
+        # selector -- the mode strip renders PHOTO twice, the edge panel has a
+        # handle on each side. They are distinct views, but they are not
+        # distinct CONTROLS to a reader of the sheet, and they would emit two
+        # identical UVTA cases clicking the same thing. The worklist already
+        # collapses them (it keys on screen+label+kind), so this only affects
+        # rows; measured at 31 combinations, 62 of 205 rows.
+        #
+        # Keyed on the selector, not the label alone: two genuinely different
+        # controls that happen to share a label resolve differently (a
+        # resource id, an xpath) and both survive.
+        listed: set = set()
         for element in elements:
+            fingerprint = (element.annotated(), element.kind,
+                           element.selector_kind, element.selector_value)
+            if fingerprint in listed:
+                self._duplicate_rows += 1
+                continue
+            listed.add(fingerprint)
             blocked = (
                 self.guard.blocks("text", element.label)
                 if element.interactive else None
@@ -884,12 +962,26 @@ class ElementTreeWalker:
         return [i for i in self._worklist.values() if i.status == "pending"]
 
     def _next_item(self, current_screen: Optional[str]) -> Optional[WorkItem]:
-        """Cheapest pending item.
+        """Cheapest pending item: nearest first, deepest to break a tie.
 
-        Prefer one on the screen already in front of us -- navigation is the
-        dominant cost (a relaunch is ~30s), so exhausting the current screen
-        before moving is worth far more than any traversal-order purity.
-        Otherwise take the shallowest, which keeps replay paths short.
+        Navigation is the dominant cost -- `back_ok 1` against `back_failed
+        75` on one measured run means nearly every move costs a relaunch and
+        replay at ~2.8s. So the item to take next is the one that costs least
+        to reach from where we are standing.
+
+        Descent was always depth-first: clicking an item registers the screen
+        it opens, and the next call prefers that screen, so the walk dives.
+        The flaw was what happened when a screen ran out of work. It took
+        `min(depth)` -- the shallowest pending item anywhere in the tree,
+        which is usually back at the root, i.e. the FURTHEST thing from here
+        and a guaranteed replay. That is the breadth-first half, and it
+        undoes the descent every time a branch finishes.
+
+        Now it rises to the nearest pending work instead: longest shared path
+        prefix wins, and among equals the deepest, which resumes the branch we
+        were in rather than starting a new shallow one. This is the ordinary
+        argument for depth-first on a tree you are paying to walk -- you have
+        already bought the path to where you are, so spend it.
         """
         pending = self._pending_items()
         if not pending:
@@ -898,7 +990,21 @@ class ElementTreeWalker:
             here = [i for i in pending if i.screen_key == current_screen]
             if here:
                 return here[0]
-        return min(pending, key=lambda i: i.depth)
+
+        here_path = list(self._screen_paths.get(current_screen or "", []))
+
+        def shared_prefix(item: WorkItem) -> int:
+            n = 0
+            for a, b in zip(here_path, item.path):
+                if a != b:
+                    break
+                n += 1
+            return n
+
+        # Deepest-first among equally near items, so a branch is finished
+        # before a new one is opened. Without the tie-break this degenerates
+        # back to breadth-first whenever nothing shares a prefix.
+        return max(pending, key=lambda i: (shared_prefix(i), i.depth))
 
     def _identify_current(self, views: Sequence[Dict]) -> Optional[str]:
         """Which known screen are we on? Matched by element overlap."""
@@ -1299,6 +1405,22 @@ class ElementTreeWalker:
                 # it were this app's would be worse than missing it.
                 self._foreign_skipped += 1
                 logger.info("foreign screen %s -- recorded, not walked", after_pkg)
+            elif item.label in item.path:
+                # A path that repeats a label is a cycle, not depth. The
+                # similarity guard catches most of these, but it is a
+                # threshold and a screen that drifts below it registers as
+                # new -- 21 of 245 rows on one run, carrying max_depth to 11
+                # on an app whose deepest menu is 9.
+                #
+                # This one is structural and cannot be tuned wrong: no menu
+                # reaches itself through its own name. The edge is still
+                # recorded (the row exists, the click happened); what is
+                # refused is enumerating the destination AGAIN one level
+                # deeper.
+                self._cycles_refused += 1
+                item.status, item.reason = "done", "cycle: path already visits this label"
+                if row is not None and not row.note:
+                    row.note = "leads back to " + item.label
             else:
                 self._register_screen(
                     after_key, after_views, item.path + [item.label],
@@ -1373,6 +1495,7 @@ class ElementTreeWalker:
         while self._budget_left():
             _, _, current_pkg = (None, None, None)
             here_key, _, _ = self._await_stable()
+            here_key = self._screen_aliases.get(here_key or "", here_key)
             item = self._next_item(here_key)
             if item is None:
                 logger.info("Worklist exhausted -- every element traversed.")
@@ -1482,6 +1605,9 @@ class ElementTreeWalker:
             "dialog_recoveries": self._dialog_recoveries,
             "blocking_dialogs_cleared": self._blocking_dialogs_cleared,
             "blocked_recoveries": self._blocked_recoveries,
+            "duplicate_screens_merged": self._duplicate_screens,
+            "duplicate_rows_collapsed": self._duplicate_rows,
+            "cycles_refused": self._cycles_refused,
             "elements_requeued": self._requeued,
             "foreign_screens_skipped": self._foreign_skipped,
             "clear_between_paths": self.clear_between_paths,

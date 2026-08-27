@@ -468,6 +468,106 @@ dialog's buttons so no future edit can make the affirmative branch reachable.
 
 ---
 
+### 3.10 The traversal order was hiding two bugs
+
+Reported from the delivered workbook, not from any counter: **duplicate rows
+at a depth**, and a suggestion — walk depth-first instead of breadth-first.
+Both were right, they were unrelated, and chasing them turned up a third
+problem that neither would have surfaced alone.
+
+#### Descent was already depth-first. The fallback was not.
+
+Clicking an item registers the screen it opens, and the next pick prefers
+that screen, so the walk dives. The breadth-first half was in one line, taken
+whenever a screen ran out of work:
+
+```python
+return min(pending, key=lambda i: i.depth)     # shallowest item ANYWHERE
+```
+
+The shallowest pending item is almost always back at the root — the
+*furthest* thing from where the walk is standing. With `back_ok 1` against
+`back_failed 75`, every move costs a relaunch, so each finished branch threw
+away the path it had just paid for. Rising only as far as the nearest pending
+work — longest shared path prefix, deepest breaking the tie — moved
+relaunches from 43 to 9 and their share of the budget from 27.9% to 5.8%.
+
+> **Cost model first.** The right traversal order is not a matter of taste
+> here; it follows from a measurement. Navigation is 30-70% of a run, so the
+> question "what do I visit next" is really "what is cheapest to reach from
+> here", and the answer is nearly always *nearby and deep*.
+
+#### Removing the brake exposed the cycle
+
+Coverage rose. So did `max_depth` — to **18**, on a camera:
+
+```
+Filters > Flash > Filters > Resolution > Filters > Flash > Filters > ...
+```
+
+The quick settings reach each other, so the walk laps them and each lap looks
+like a new, deeper screen. **552 of 636 rows carried a path that repeated a
+label, and all 429 rows at depth >= 10 were cycles.** Breadth-first had been
+relaunching to the root so often that it kept resetting the loop; the "worse"
+traversal was accidentally hiding it.
+
+Every counter improved while the deliverable got worse. Again. `max_depth 18`
+on a camera app was the only visible tell, and it looked like good news.
+
+Two guards, deliberately different in kind:
+
+* **Similarity** — a screen is one already known if its element set matches at
+  `return_similarity`, the same rule `_identify_current` uses for navigation.
+  Registration and navigation disagreeing about screen identity was itself a
+  bug: the walk could recognise a screen well enough to navigate to it, then
+  enumerate it again as new.
+* **Structure** — never descend into a label already on the path. No menu
+  reaches itself through its own name. This exists because the first guard is
+  a *threshold*, and a screen that drifts below it registers as new; that let
+  21 of 245 rows through on a later run.
+
+A threshold and a structural rule fail in different ways, which is the point
+of having both.
+
+#### The duplicates had two causes, not one
+
+Only the first was what the traversal work addressed:
+
+1. **The same screen re-listed** — under a drifted state key (the viewfinder's
+   description carries the active lens; tip cards come and go), and once per
+   lap of a cycle. Fixed by the guards above.
+2. **Two views, one control** — the mode strip renders `PHOTO` twice, the edge
+   panel has a handle on each side. Distinct views, but not distinct controls
+   to a reader of the sheet, and they emit two identical UVTA cases clicking
+   the same thing.
+
+The second is collapsed on a fingerprint of label + kind + **selector**, not
+the label alone: two genuinely different controls that share a label resolve
+differently, and both survive. One row remains duplicated in the output and
+should — `Original` appears as static text *and* as a description button,
+which is two elements.
+
+#### What the numbers are worth
+
+| | BFS | DFS, no guards | DFS + both guards |
+|---|---|---|---|
+| coverage | 20.6% | 28.3% | **39.6% - 55.8%** |
+| max depth | 5 | 18 *(fictitious)* | **9 - 11** |
+| cyclic rows | — | 552 / 636 | **0** |
+| duplicate combos | 34 | 75 | **1** *(legitimate)* |
+| relaunches | 43 | 9 | 13 - 16 |
+
+The right-hand column is a *range* because two runs of identical code differ
+that much — see §6 and README §6. A single run's coverage figure is not a
+measurement, which is why the gate is verification.
+
+The result worth trusting is not in the table: **depth settled at 9-11, and
+the hand-authored Modes sheet goes to depth 9.** Nothing in the code knows
+about that sheet. An independent arrival at the same number is better evidence
+than any percentage.
+
+---
+
 ## 4. Guardrails, and what each one is scar tissue from
 
 | guardrail | what happened |
