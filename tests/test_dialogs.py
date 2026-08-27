@@ -18,6 +18,7 @@ Two properties are non-negotiable:
 
     python tests/test_dialogs.py
 """
+import inspect
 import sys
 from pathlib import Path
 
@@ -28,7 +29,7 @@ from src.crawler.hierarchy import (  # noqa: E402
     DECLINE_LABELS,
     pick_dismissal,
 )
-from src.crawler.element_tree import ElementTreeWalker  # noqa: E402
+from src.crawler.element_tree import ElementTreeWalker, WorkItem  # noqa: E402
 from src.verify.verifier import MenuTreeVerifier  # noqa: E402
 
 
@@ -115,6 +116,51 @@ def main() -> int:
     ok &= check("the walker has an escape at all",
                 hasattr(ElementTreeWalker, "_clear_blocking_dialog"),
                 "without it a modal is recorded as the whole app being unreachable")
+
+    print()
+    print("being blocked is detected by evidence, not by recognition")
+    # looks_like_dialog knows a classic modal. It does not know a bottom
+    # sheet, a full-screen consent page, an in-app browser opened by a
+    # "Learn more" link, or a permission prompt that fills the window -- and
+    # each of those blocks a walk just as completely. Waiting until the
+    # overlay can be NAMED is how a run spends its budget recording a healthy
+    # app as unreachable, so the trigger is a streak of write-offs instead.
+    for name in ("_force_unblock", "_requeue_blocked", "_clear_blocking_dialog"):
+        ok &= check(f"walker has {name}", hasattr(ElementTreeWalker, name))
+    sig = inspect.signature(ElementTreeWalker._clear_blocking_dialog)
+    ok &= check("the dialog heuristic can be forced past",
+                "force" in sig.parameters,
+                "an overlay that blocks does not have to look like a dialog")
+
+    body = inspect.getsource(ElementTreeWalker)
+    ok &= check("a streak of write-offs triggers recovery",
+                "_consecutive_unreachable >= self.blocked_after" in body)
+    ok &= check("the streak resets on any outcome that is not a write-off",
+                'if item.status == "unreachable":' in body)
+    clearer = inspect.getsource(ElementTreeWalker._clear_blocking_dialog)
+    ok &= check("decline, then BACK, then acknowledge -- in that order",
+                clearer.index("DECLINE_LABELS") < clearer.index("press_back")
+                < clearer.index("ACKNOWLEDGE_LABELS"),
+                "BACK commits to nothing, so it outranks pressing OK")
+    ok &= check("leaving the app is treated as being blocked",
+                "foreground is %s, not %s" in body,
+                "a Learn more link opens a browser")
+
+    print()
+    print("what was written off while blocked is put back")
+    # Clearing the pop-up only lets the run continue. Every control already
+    # recorded unreachable during the blockage stays wrong in the output --
+    # and those are exactly the rows the pop-up was hiding.
+    ok &= check("requeue is called after a successful unblock",
+                "self._requeue_blocked()" in body)
+    ok &= check("a requeue is bounded, so a genuinely absent control settles",
+                "item.attempts >= 2" in body)
+    ok &= check("an item counts its attempts",
+                "attempts" in inspect.getsource(WorkItem))
+    ok &= check("the run reports how much of this happened",
+                all(k in body for k in ("blocked_recoveries", "elements_requeued",
+                                        "blocking_dialogs_cleared")),
+                "so a low-coverage run can be told from a blocked one")
 
     print()
     print("ALL PASS" if ok else "FAILURES PRESENT")

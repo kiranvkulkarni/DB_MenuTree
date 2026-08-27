@@ -390,6 +390,43 @@ the next run starts from somewhere different. Priority comes from the label
 list rather than screen order, because `Cancel` and `Turn on` sit side by
 side and document order picks whichever the layout placed first.
 
+#### Recognising the overlay is the wrong trigger
+
+The first version of this fix only fired when `looks_like_dialog()` returned
+true and navigation had already failed. That is too narrow, and the narrowness
+is the interesting part: `looks_like_dialog` knows a *classic modal* — a
+dialog class in the tree, or few views with few clickables. It does not know
+a bottom sheet, a full-screen consent page, an in-app browser opened by a
+`Learn more` link, or a permission prompt that fills the window. Every one of
+those blocks a walk just as completely.
+
+**Waiting until the thing in the way can be named is how the run gets stuck
+in the first place.** So the trigger is evidence instead: `blocked_after`
+consecutive write-offs — three by default, because a walk legitimately hits
+one or two dead controls in a row and never three. Nothing has to identify
+the overlay. When the walk is demonstrably stuck, any non-committal button on
+screen is worth pressing, and the escalation runs decline → BACK →
+acknowledge → relaunch, cheapest and least destructive first.
+
+The second gap was subtler. A pop-up that arrives *after* navigation
+succeeded leaves the control present in the tree but covered, so the click
+lands on the scrim and the walker reads it as `element vanished before it
+could be clicked`. That misreading is what turned one prompt into a whole run
+of write-offs.
+
+#### Clearing it is only half the fix
+
+The run continues, but every control already recorded `unreachable` during
+the blockage stays wrong in the output — and those are precisely the rows the
+pop-up was hiding. So a successful unblock puts them back on the worklist.
+Bounded at two attempts per item, so a control that is genuinely absent still
+settles as unreachable rather than cycling forever.
+
+`blocking_dialogs_cleared`, `blocked_recoveries` and `elements_requeued` are
+reported in the run summary. Read them before believing a low coverage
+figure: they are what distinguishes an app that is small from an app that was
+behind a pop-up.
+
 `pick_dismissal()` in `crawler/hierarchy.py` is the single place that
 decides, used by both tools. That is not tidiness: if discovery declines a
 prompt and verification accepts it, the two are measuring different devices
