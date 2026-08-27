@@ -209,12 +209,47 @@ def main() -> int:
     review["aliases"]["Priorize quality"]["confirmed"] = True
     path.write_text(json.dumps(review), encoding="utf-8")
     ok &= check("once confirmed, it loads",
-                load_aliases(path).get("Priorize quality") == "Prioritize quality")
+                load_aliases(path).get("Priorize quality") == ["Prioritize quality"],
+                "a single target still loads, as a one-item list")
 
     plain = Path(tempfile.mkdtemp()) / "plain.json"
     plain.write_text(json.dumps({"A": "B"}), encoding="utf-8")
     ok &= check("a plain {spec: screen} map also loads",
-                load_aliases(plain).get("A") == "B")
+                load_aliases(plain).get("A") == ["B"])
+
+    print()
+    print("one sheet label, several context-specific targets")
+    # The depth columns hold what a human reads off the phone. The XML dump
+    # holds what the developer named the control, and the name is different in
+    # each mode: "12M" is BACK_CAMERA_PICTURE_SIZE_NORMAL in Photo and
+    # BACK_CAMERA_PRO_PICTURE_SIZE_NORMAL in Pro. A single global target
+    # cannot serve both, so an alias maps to a list of alternatives and any
+    # one of them matching is a match.
+    multi = Path(tempfile.mkdtemp()) / "multi.json"
+    multi.write_text(json.dumps({"12M": ["BACK_CAMERA_PICTURE_SIZE_NORMAL",
+                                         "BACK_CAMERA_PRO_PICTURE_SIZE_NORMAL"]}),
+                     encoding="utf-8")
+    loaded = load_aliases(multi)
+    ok &= check("both targets load", len(loaded["12M"]) == 2)
+    photo = [FakeElement("BACK_CAMERA_PICTURE_SIZE_NORMAL"), FakeElement("Flash")]
+    pro = [FakeElement("BACK_CAMERA_PRO_PICTURE_SIZE_NORMAL"), FakeElement("Flash")]
+    for name, screen in (("Photo", photo), ("Pro", pro)):
+        m = best_match("12M", screen, loaded)
+        ok &= check(f"resolves on the {name} screen",
+                    m is not None and m.matched_on == "alias",
+                    f"{m.element.label}" if m else "no match")
+    absent = [FakeElement("BACK_FLASH_ON"), FakeElement("Timer")]
+    m = best_match("12M", absent, loaded)
+    ok &= check("an alias does not invent a match where no target is present",
+                m is None or m.score < REVIEW,
+                f"{m.score:.2f} {m.element.label!r}" if m else "no match")
+
+    idonly = Path(tempfile.mkdtemp()) / "id.json"
+    idonly.write_text(json.dumps({"Shutter": ["shutter button"]}), encoding="utf-8")
+    m = best_match("Shutter", [FakeElement("", resource_id="com.x:id/shutter_button")],
+                   load_aliases(idonly))
+    ok &= check("an alias may target a resource id, for an icon with no text",
+                m is not None and m.matched_on == "alias")
 
     print(f"\nthresholds: confident >= {CONFIDENT}, review >= {REVIEW}")
     print()

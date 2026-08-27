@@ -250,6 +250,94 @@ against a screen before trusting the row count.
 
 ---
 
+### 3.8 Some wording cannot be matched at all, and no threshold fixes it
+
+Tolerant matching handles *drift* — a typo, a dropped noun, a plural. It
+cannot handle a **different vocabulary**. The sheet says `12M`, because that
+is what a human reads off the phone. The XML dump says
+`BACK_CAMERA_PICTURE_SIZE_NORMAL`, because that is what the developer named
+the control. These two strings share no word, no stem and no number. They
+score 0.03.
+
+| the sheet says | the dump exposes | score |
+|---|---|---|
+| `12M` | `BACK_CAMERA_PICTURE_SIZE_NORMAL` | 0.03 |
+| `3:4` | `BACK_CAMERA_PICTURE_RATIO_NORMAL` | 0.03 |
+| `2 sec` | `BACK_TIMER_2S` | 0.11 |
+| `Flash Auto` | `BACK_FLASH_AUTO` | **0.88 — already matches** |
+
+The last row is the point. Most internal constants *do* match, because the
+sheet happens to use the same noun the developer did. Only the rows where
+the sheet names a **value** and the dump names a **tier** are unreachable.
+On the S25 Ultra sheet that is about 40 rows of 1081 — worth fixing, and far
+smaller than it first looks.
+
+**Measure this class before estimating it.** The first estimate here was 262
+failures, taken by counting every failure whose screen showed a constant.
+That was wrong by a factor of six: the camera paints `BACK_TORCH_OFF` and
+`SUPER_VIDEO_STABILIZATION_OFF` onto the quick-settings bar of almost every
+screen, so their presence says nothing about what the row was looking for.
+The real question is not *did a constant appear* but *is this row's label
+itself a value the dump renders as a name*.
+
+**The fix is a recorded alias, not a looser threshold.** Nothing in a scoring
+function should ever be asked to know that `12M` means `NORMAL`; that is
+product knowledge, not string similarity. Loosening enough to bridge 0.03
+would match anything to anything.
+
+#### One label, several targets
+
+An alias maps one sheet label to a **list** of acceptable strings, and any
+one matching is a match. This is not a convenience — it is forced by the
+platform. The same option is named differently depending on the mode it is
+reached through:
+
+```jsonc
+"12M": { "on_screen": ["BACK_CAMERA_PICTURE_SIZE_NORMAL",       // Photo
+                       "BACK_CAMERA_PRO_PICTURE_SIZE_NORMAL"],  // Pro
+         "confirmed": true }
+```
+
+A single global target cannot serve both, and a per-screen alias file would
+have to encode the navigation path, which the sheet does not reliably give.
+Alternatives are the cheapest thing that works. The risk they carry is the
+usual one: **more targets is more chance of a false Pass**, so an alias
+should list the names of the *same option*, never the names of options that
+merely appear together.
+
+Aliases also match against a resource id, because a control the sheet names
+by its value is often an icon with no text at all.
+
+#### What belongs in the file, and what must not
+
+Only labels that **cannot** match on their own. `Flash Auto`, `Timer off` and
+`Metering: Matrix` already reach their constants by ordinary word overlap;
+aliasing them anyway would mean a genuine rename in a future build is
+answered from the file instead of being reported. **An alias is an assertion
+that two strings mean the same thing — every one you add is a rename you can
+no longer detect.**
+
+Before trusting an entry, check its target against a real dump. The shipped
+file records `why` per entry: whether the mapping was confirmed by the sheet's
+author or inferred from the constant family the device exposed. Everything
+inferred is worth one look on a new model.
+
+#### Taking this to another device
+
+`aliases/samsung_camera.json` is keyed on how *this* sheet is worded and what
+*this* build exposes, so treat it as a starting point, not a constant:
+
+1. Run verification once with **no** alias file. The run writes
+   `alias_review.json` listing every inexact match it made.
+2. Anything that failed at a near-zero score with a constant on screen is a
+   vocabulary gap, not a defect — that is the candidate list.
+3. Confirm each against the dump, then re-run with `--aliases`.
+
+Expect the *families* to survive across Samsung models and the *members* not
+to: a model without a 200MP sensor has no `ULTRA_HIGH`, and an alias whose
+targets are all absent simply never fires. That is the safe direction to
+fail.
+
 ---
 
 ## 4. Guardrails, and what each one is scar tissue from

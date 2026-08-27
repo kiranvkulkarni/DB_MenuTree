@@ -148,6 +148,43 @@ that reported 100% over 15% of its rows.
 renamed / restructured / absent, which is the list to work from when the
 sheet is older than the build.
 
+### Wording the matcher cannot bridge
+
+Some sheet labels share no word with what the app exposes. The sheet says
+`12M`; the XML dump says `BACK_CAMERA_PICTURE_SIZE_NORMAL`. That is a
+different vocabulary, not wording drift, and no threshold reaches it.
+
+Those are recorded, not guessed:
+
+```bash
+python tools/verify_menutree.py --spec MenuTree.xlsx --package <pkg>     --serial <serial> --aliases aliases/samsung_camera.json
+```
+
+One label maps to a **list** of targets, because the same option is named
+differently per mode (`..._PICTURE_SIZE_NORMAL` in Photo,
+`..._PRO_PICTURE_SIZE_NORMAL` in Pro). Only labels that cannot match on their
+own belong there — `Flash Auto` already reaches `BACK_FLASH_AUTO` unaided,
+and aliasing it would hide a future rename. See
+[METHOD.md](docs/METHOD.md) §3.8.
+
+## 5a. Running against a different model
+
+Nothing here is specific to one handset. To take it to another device:
+
+1. `adb devices`, then pass the new `--serial`. Confirm the package name —
+   `adb shell pm list packages | grep camera`.
+2. **Run verification once with no `--aliases`.** It writes
+   `alias_review.json` listing every inexact match it made.
+3. Read the failures. A near-zero score against an internal constant is a
+   vocabulary gap; a mid-range score is usually a genuine rename, and belongs
+   in the drift report rather than in an alias file.
+4. Confirm the gaps against a real dump, add them, re-run with `--aliases`.
+
+Expect the constant *families* to carry across Samsung models and their
+*members* not to — a model with no 200MP sensor has no `ULTRA_HIGH`. An alias
+whose targets are all absent never fires, so a stale entry costs a Fail and
+never a false Pass.
+
 ---
 
 ## 6. Known gaps

@@ -815,6 +815,34 @@ into a permanent mapping — someone has to say yes.
 This is the mechanism by which the tool converges: the first run is fuzzy and
 noisy, and each review makes the next one sharper and quieter.
 
+#### An alias maps to a list, because the dump has no single answer
+
+`aliases.get(label)` returns a **list** of acceptable strings, and any one
+matching wins. That is forced by the platform rather than chosen for
+convenience: the camera names the same option differently depending on the
+mode it is reached through — `BACK_CAMERA_PICTURE_SIZE_NORMAL` in Photo,
+`BACK_CAMERA_PRO_PICTURE_SIZE_NORMAL` in Pro — and both are `12M` to the
+author of the sheet. A single global target cannot serve both.
+
+The alias is also tried against each element's resource id, since a control
+the sheet names by its value is frequently an icon carrying no text.
+
+Two constraints keep this from becoming a way to manufacture passes:
+
+* **Only unmatchable wording belongs in the file.** `Flash Auto` already
+  reaches `BACK_FLASH_AUTO` at 0.88 by word overlap. Aliasing it would mean a
+  real rename in a later build is answered from the file rather than
+  reported. Every alias is a rename you can no longer detect.
+* **Alternatives must name the same option**, never options that merely
+  appear on screen together. More targets is more chance of a false Pass.
+
+`aliases/samsung_camera.json` is the checked-in file for
+`com.sec.android.app.camera`. Each entry records whether its mapping was
+confirmed by the sheet's author or inferred from the constant family the
+device exposed, so a reviewer on a different model knows which half to
+re-check. An alias whose targets are all absent on a given build simply never
+fires, which is the safe direction to fail.
+
 ### A precondition is not a reason to skip a row
 
 The first version returned `NA` for any row carrying a `[bracketed]`
