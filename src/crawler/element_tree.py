@@ -29,6 +29,7 @@ import json
 import logging
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
@@ -153,6 +154,9 @@ class TreeNode:
     # Resolved from the XML dump in the order text -> desc -> id -> xpath.
     selector_kind: Optional[str] = None
     selector_value: Optional[str] = None
+    # Which screen listed this row. The sheet's shape is derived from the
+    # screen graph after the walk, so a row has to know its own node.
+    screen_key: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -283,6 +287,13 @@ class ElementTreeWalker:
         self._duplicate_screens = 0
         self._duplicate_rows = 0
         self._cycles_refused = 0
+        # (screen, label) -> the screen that clicking it opened. This is the
+        # graph the sheet's depth is derived from; without it, depth is
+        # whatever route the walk happened to take.
+        self._edges: Dict[tuple, str] = {}
+        self._root_key = ""
+        self._reparented = 0
+        self._orphan_screens = 0
         self._foreign_skipped = 0
         self._back_trace: List[Dict] = []
         self._keypad_skipped = 0
@@ -913,6 +924,7 @@ class ElementTreeWalker:
                 if element.interactive else None
             )
             row = TreeNode(
+                screen_key=screen_key,
                 label=element.annotated(),
                 raw_label=element.label,
                 kind=element.kind,
@@ -1428,10 +1440,101 @@ class ElementTreeWalker:
                     list(item.path_selectors) + ([item.selector] if item.selector else
                                                  [("text", item.label)]),
                 )
+                # The edge is worth recording even when the destination was
+                # already known and nothing was enumerated. That is the case
+                # that yields a SHORT route to a screen first reached the long
+                # way round, and discarding it is why one run put the Settings
+                # menu at depth 10 behind
+                # "Filters > Motion photo > Blanc > Switch to front camera >
+                #  VIDEO > Switch to rear camera > Quick controls".
+                destination = self._screen_aliases.get(after_key, after_key)
+                self._edges[(item.screen_key, item.label)] = destination
         else:
             item.status, item.reason = "done", "selection on the same screen"
             if row is not None:
                 row.note = row.note or "selection"
+
+    def _shape_tree(self) -> List[TreeNode]:
+        """Re-root the rows on the shortest route, and emit them in tree order.
+
+        Two things were wrong in the delivered workbook, and both live here
+        rather than in the walk:
+
+        **Depth was the route taken, not the route that exists.** A click that
+        changes the screen was treated as a descent, so lateral moves --
+        switching lens, switching PHOTO to VIDEO -- pushed everything deeper.
+        One run reached the Settings menu as
+
+            Filters > Motion photo > Blanc > Switch to front camera > VIDEO >
+            Switch to rear camera > Quick controls > Go to Settings
+
+        and listed its contents at **depth 10**. The same menu is two clicks
+        from the viewfinder. Depth is now the shortest observed route: a
+        breadth-first pass over the screen graph, which is what makes it a
+        property of the app rather than of the crawl.
+
+        **Rows came out in discovery order.** Every element of one screen, then
+        every element of the next -- so a parent was separated from its
+        children by the whole rest of its own screen. The sheet is a tree and
+        has to read like one: a row, then its subtree, then the next sibling.
+
+        Only edges the walk actually observed are used. An earlier attempt
+        inferred them from labels -- if `Motion photo` opens screen X
+        somewhere, treat it as opening X everywhere -- which is false: a
+        control's destination depends on the mode it is pressed in, and the
+        root's `Motion photo` was re-parented onto the Filters panel's.
+        """
+        rows_of: Dict[str, List[TreeNode]] = {}
+        for row in self.rows:
+            if row.depth > 1:
+                rows_of.setdefault(row.screen_key, []).append(row)
+
+        # Shortest route to every screen. BFS, so the first time a screen is
+        # reached is by the fewest clicks.
+        route: Dict[str, List[str]] = {self._root_key: []}
+        queue = deque([self._root_key])
+        while queue:
+            screen = queue.popleft()
+            for row in rows_of.get(screen, []):
+                destination = self._edges.get((screen, row.raw_label))
+                if destination and destination not in route:
+                    route[destination] = route[screen] + [row.raw_label]
+                    queue.append(destination)
+
+        ordered: List[TreeNode] = []
+        placed: set = set()
+
+        def emit(screen: str, path: List[str], depth: int) -> None:
+            if screen in placed:
+                return
+            placed.add(screen)
+            for row in rows_of.get(screen, []):
+                if row.path != path:
+                    self._reparented += 1
+                row.path, row.depth = list(path), depth
+                ordered.append(row)
+                destination = self._edges.get((screen, row.raw_label))
+                # Descend only along the shortest route, so a screen appears
+                # once, under the parent that reaches it fastest.
+                if destination and route.get(destination) == path + [row.raw_label]:
+                    emit(destination, path + [row.raw_label], depth + 1)
+
+        if self._root_key in rows_of:
+            emit(self._root_key, [], 2)
+
+        # A screen the walk enumerated but never proved a route to. Keeping it
+        # with its discovered path is honest; dropping it would lose rows, and
+        # promoting it would invent a parent.
+        for screen, rows in rows_of.items():
+            if screen not in placed:
+                self._orphan_screens += 1
+                for row in rows:
+                    if not row.note:
+                        row.note = "route to this screen was not established"
+                ordered.extend(rows)
+
+        head = [r for r in self.rows if r.depth <= 1]
+        return head + ordered
 
     # -- public ----------------------------------------------------------
     def walk(self) -> List[TreeNode]:
@@ -1486,6 +1589,7 @@ class ElementTreeWalker:
                 )
                 return self.rows
 
+        self._root_key = root_key
         self._register_screen(root_key, views, [], 2)
 
         # The worklist loop. Every iteration takes one pending element,
@@ -1534,6 +1638,9 @@ class ElementTreeWalker:
             )
 
         self._release()
+        # Shape before reporting, so the stats describe the tree that is
+        # actually delivered rather than the order it was discovered in.
+        self.rows = self._shape_tree()
         logger.info("Walk finished: %s", self.stats())
         return self.rows
 
@@ -1608,6 +1715,8 @@ class ElementTreeWalker:
             "duplicate_screens_merged": self._duplicate_screens,
             "duplicate_rows_collapsed": self._duplicate_rows,
             "cycles_refused": self._cycles_refused,
+            "rows_reparented": self._reparented,
+            "orphan_screens": self._orphan_screens,
             "elements_requeued": self._requeued,
             "foreign_screens_skipped": self._foreign_skipped,
             "clear_between_paths": self.clear_between_paths,
