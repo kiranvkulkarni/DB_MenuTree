@@ -648,6 +648,93 @@ rows re-parent and the subtree lands where the expected sheet puts it.
 
 ---
 
+### 3.12 Read the reference document before designing the output
+
+The MenuTree convention was never guessed at successfully. It was read, once,
+off the hand-authored S25 Ultra sheet, and four defects fell out of a single
+screenful. Rows 29-40 of `Modes`:
+
+```
+d2  Photo
+d3    Photo [Title]
+d3    Flash icon
+d4      On            <- the options are CHILDREN of Flash
+d4      Off
+d4      Auto
+d3    Resolution
+d4      12M
+d4      50M
+d4      200M
+d3    Motion photo On/Off
+d3    Filters
+```
+
+**A node children are what the click revealed.** The crawler listed every
+element on the destination screen, so a panel opened over the viewfinder
+re-listed `Take picture`, `Switch to front camera`, `Flash`, all of it, and
+one run put the entire viewfinder under `Filters > Blanc` at depth 5. The
+sheet never does that. Children are now the elements the parent screen did not
+already have; the full set is still kept, because screen identification needs
+it.
+
+**An expansion in place is still a descent.** Pressing Flash does not replace
+the screen -- On/Off/Auto appear beside it, so it scores ~0.9 against itself.
+The descent test was `similarity < threshold`, so the press was written off as
+"selection on the same screen" and the three options were recorded nowhere.
+Worse, the cycle guard then merged that near-identical screen into its parent
+and deleted them again. A press that reveals a control the screen did not
+offer before has opened something, whatever the similarity says -- and merging
+now refuses to swallow a screen that offers something new, because a cycle
+returns to one that offers *nothing* new.
+
+**Options are leaves, and pressing them changes the device.** The sheet lists
+`12M / 50M / 200M` without descending, and that is not merely style. When the
+crawler pressed them it *selected 200MP*: the viewfinder changed permanently,
+a tip card appeared, and the root then scored **0.542** against its own stored
+element set, just under the 0.55 identification threshold. The walk could
+never get home. 18 failed returns, worklist exhausted after 149s of a 1300s
+budget, 48 rows where the run before had 512. Exploration must not mutate the
+thing it is measuring.
+
+**A screen is enumerated once, and that dump may be a transient state.** The
+root was captured with the Quick controls panel open, so `Timer`, `Ratio`,
+`Exposure` and `Go to Settings` were recorded as root controls. Every later
+visit found the bare viewfinder and wrote all four off as vanished. They are
+real -- they live one click away under `Quick controls`. A screen element set
+now corrects itself on return, and such a row reports *needs a precondition*
+rather than claiming the control is missing.
+
+### 3.13 An app that restores its last-used state cannot be re-entered
+
+With the shape correct, breadth was still poor: 90 rows, 12 screens, the walk
+exhausting itself in 165s of a 1300s budget with `VIDEO`, `PORTRAIT` and
+`MORE` all unreachable. Those are lateral moves -- clicking VIDEO switches
+mode, it does not descend -- and to get back the walk presses BACK, which
+exits the camera, or relaunches.
+
+**The camera reopens in its last-used mode.** So after visiting VIDEO, every
+recovery relaunch landed in VIDEO, the root was never matched again, and the
+modes -- which are most of the sheet -- were written off.
+
+`pm clear` before a recovery relaunch resets the mode. It existed as
+`--clear-between-paths`, off by default, warned about as dangerous:
+
+| | off | on |
+|---|---|---|
+| rows | 90 | **563** |
+| screens | 12 | **66** |
+| coverage | 60.0% | **78.7%** |
+| max depth | 5 | **7** |
+| VIDEO / PORTRAIT / MORE | unreachable | **all descended** |
+
+It is now on by default, tied to `--no-reset`. The warning was inconsistent
+with the behaviour of the tool itself: a run *already* `pm clear`s at startup,
+so clearing again on a recovery relaunch destroys nothing the run had not
+already destroyed. **A safety flag that guards against something the default
+already does is not protecting anyone -- it is just costing coverage.**
+
+---
+
 ## 4. Guardrails, and what each one is scar tissue from
 
 | guardrail | what happened |

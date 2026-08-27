@@ -287,6 +287,9 @@ class ElementTreeWalker:
         self._duplicate_screens = 0
         self._duplicate_rows = 0
         self._cycles_refused = 0
+        self._inherited_skipped = 0
+        self._options_not_pressed = 0
+        self._preconditioned = 0
         # (screen, label) -> the screen that clicking it opened. This is the
         # graph the sheet's depth is derived from; without it, depth is
         # whatever route the walk happened to take.
@@ -816,6 +819,11 @@ class ElementTreeWalker:
         return (time.time() - self._started) < self.time_budget
 
     # -- worklist --------------------------------------------------------
+    @staticmethod
+    def _fingerprint(element: Element) -> tuple:
+        return (element.annotated(), element.kind,
+                element.selector_kind, element.selector_value)
+
     def _equivalent_screen(self, screen_key: str, elements: Sequence[Element],
                            path: Sequence[str]) -> Optional[str]:
         """A screen already known to be this one, or None.
@@ -854,6 +862,18 @@ class ElementTreeWalker:
                 continue
             if known_path != want and list(known_path) != want[:len(known_path)]:
                 continue
+            # A cycle returns to a screen that offers NOTHING NEW. An inline
+            # expansion -- pressing Flash and having On/Off/Auto appear beside
+            # it -- looks just as similar to its parent, and merging it
+            # deletes exactly the rows the sheet wants: the hand-authored
+            # MenuTree lists On, Off and Auto as the children of "Flash icon".
+            #
+            # So similarity decides *whether these are the same screen*, and
+            # new interactive controls decide *whether anything happened*.
+            offered = {self._fingerprint(e) for e in known if e.interactive}
+            if any(self._fingerprint(e) not in offered
+                   for e in elements if e.interactive):
+                continue
             score = screen_similarity(known, elements)
             if score > best_score:
                 best, best_score = key, score
@@ -861,14 +881,24 @@ class ElementTreeWalker:
 
     def _register_screen(
         self, screen_key: str, views: Sequence[Dict], path: List[str], depth: int,
-        path_selectors: Optional[List[tuple]] = None
+        path_selectors: Optional[List[tuple]] = None,
+        parent_screen: Optional[str] = None,
+        inline: bool = False,
     ) -> int:
-        """Record every element on a screen; queue the actionable ones.
+        """Record what this screen ADDS; queue the actionable ones.
 
-        This is the "list all UI elements of that screen" step. Every element
-        becomes a row immediately (that is the breadth, and the sheet wants
-        titles and static text too). Only the ones worth pressing become
-        pending work.
+        "List all UI elements of that screen" is the wrong step, and the
+        hand-authored MenuTree shows why. A panel opened over the viewfinder
+        still shows Take picture, Switch to front camera, Flash, Filters --
+        the whole chrome -- and listing all of it makes every panel a copy of
+        the viewfinder nested one level deeper. One run put the entire
+        viewfinder under `Filters > Blanc` at depth 5. A person writing the
+        sheet lists what the click *revealed*.
+
+        So a node's children are the elements the parent screen did not
+        already have. `parent_screen` is the screen that was showing when the
+        control was pressed; the full element set is still recorded against
+        the key, because screen identification needs it.
         """
         if screen_key in self._visited_screens:
             return 0
@@ -897,7 +927,22 @@ class ElementTreeWalker:
             return 0
 
         self._visited_screens.add(screen_key)
+        # The FULL set identifies the screen. What gets listed is the
+        # difference -- see the docstring.
         self._screen_elements[screen_key] = list(elements)
+        if parent_screen:
+            already = {self._fingerprint(e)
+                       for e in self._screen_elements.get(parent_screen, [])}
+            fresh = [e for e in elements if self._fingerprint(e) not in already]
+            self._inherited_skipped += len(elements) - len(fresh)
+            if not fresh:
+                # Nothing new to list. Registering an empty screen creates a
+                # node with no content and a key that later navigation will
+                # try, and fail, to return to.
+                del self._screen_elements[screen_key]
+                self._visited_screens.discard(screen_key)
+                return 0
+            elements = fresh
         self._screen_paths[screen_key] = list(path)
         path_selectors = list(path_selectors or [])
         self._screen_path_selectors[screen_key] = path_selectors
@@ -970,6 +1015,22 @@ class ElementTreeWalker:
             elif not element.interactive or element.kind == "back":
                 item.status = "recorded"
                 item.reason = "not interactive" if not element.interactive else "back"
+            elif inline:
+                # An option revealed in place -- On / Off / Auto under Flash,
+                # 12M / 50M / 200M under Resolution. The hand-authored
+                # MenuTree lists these as leaves, and pressing one is not
+                # exploration, it is CHANGING A SETTING.
+                #
+                # Measured, when they were pressed: the walk selected 200MP,
+                # which changed the viewfinder permanently and left a tip card
+                # behind. The root screen then scored 0.542 against its own
+                # stored element set, just under the 0.55 identification
+                # threshold, so the walk could never get home -- 18 failed
+                # returns, and the worklist exhausted after 149s of a 1300s
+                # budget with 48 rows where the previous run had 512.
+                item.status, item.reason = "recorded", "option -- listed, not selected"
+                row.note = row.note or "option (not selected)"
+                self._options_not_pressed += 1
             elif depth >= self.max_depth:
                 item.status, item.reason = "recorded", f"at max_depth {self.max_depth}"
             else:
@@ -1386,10 +1447,28 @@ class ElementTreeWalker:
                 _, views, _ = self._await_stable()
                 live, views = self._find_element_scrolled(item.label, views)
             if live is None or not self._click(live, views):
-                item.status = "unreachable"
-                item.reason = "element vanished before it could be clicked"
+                # Not a failure of the walk -- a fact about the app. A screen
+                # is enumerated ONCE, and if that dump caught a transient
+                # state the stored element set describes a screen that no
+                # longer exists.
+                #
+                # Measured: the root was dumped with the Quick controls panel
+                # open, so Timer, Ratio, Exposure and Go to Settings were
+                # recorded as root controls. Every later visit found the bare
+                # viewfinder, wrote all four off as vanished, and counted them
+                # against coverage. They are real controls -- they live one
+                # click away, under Quick controls -- and the walk reaches
+                # them there.
+                #
+                # So the screen's element set is corrected to what is actually
+                # there, and the row says it needs a precondition rather than
+                # claiming the control is missing.
+                self._screen_elements[item.screen_key] = self._elements(views)
+                item.status = "recorded"
+                item.reason = "not present in this screen's settled state"
+                self._preconditioned += 1
                 if row is not None and not row.note:
-                    row.note = "element vanished before click (one-shot?)"
+                    row.note = "not present once the screen settles -- needs a precondition"
                 return
 
         after_key, after_views, after_pkg = self._await_stable()
@@ -1408,9 +1487,25 @@ class ElementTreeWalker:
         source = self._screen_elements.get(item.screen_key, [])
         similarity = screen_similarity(source, after_probe)
 
-        if similarity < self.similarity_threshold:
-            # A different screen: this element opens a submenu.
-            item.status, item.reason = "done", "opened a screen"
+        # Similarity alone misses the commonest shape in a camera: pressing a
+        # quick setting does not replace the screen, it expands beside it.
+        # Flash stays where it is and On/Off/Auto appear next to it, so the
+        # screen scores ~0.9 against itself and the click was written off as
+        # "selection on the same screen" -- with the three options, which the
+        # hand-authored MenuTree lists as Flash's children, recorded nowhere.
+        #
+        # A press that reveals a control the screen did not offer before has
+        # opened something, whatever the similarity says.
+        offered = {self._fingerprint(e) for e in source if e.interactive}
+        revealed = [e for e in after_probe
+                    if e.interactive and self._fingerprint(e) not in offered]
+
+        if similarity < self.similarity_threshold or revealed:
+            # A different screen, or the same screen with something new on it:
+            # either way this element opened something.
+            item.status, item.reason = "done", (
+                "opened a screen" if similarity < self.similarity_threshold
+                else f"revealed {len(revealed)} control(s) in place")
             if row is not None:
                 row.descended = True
             self._descents += 1
@@ -1448,6 +1543,8 @@ class ElementTreeWalker:
                     item.depth + 1,
                     list(item.path_selectors) + ([item.selector] if item.selector else
                                                  [("text", item.label)]),
+                    parent_screen=item.screen_key,
+                    inline=similarity >= self.similarity_threshold,
                 )
                 # The edge is worth recording even when the destination was
                 # already known and nothing was enumerated. That is the case
@@ -1724,6 +1821,9 @@ class ElementTreeWalker:
             "duplicate_screens_merged": self._duplicate_screens,
             "duplicate_rows_collapsed": self._duplicate_rows,
             "cycles_refused": self._cycles_refused,
+            "inherited_elements_skipped": self._inherited_skipped,
+            "options_listed_not_pressed": self._options_not_pressed,
+            "needs_precondition": self._preconditioned,
             "rows_reparented": self._reparented,
             "orphan_screens": self._orphan_screens,
             "elements_requeued": self._requeued,
