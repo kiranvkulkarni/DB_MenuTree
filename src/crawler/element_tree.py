@@ -816,34 +816,43 @@ class ElementTreeWalker:
         return (time.time() - self._started) < self.time_budget
 
     # -- worklist --------------------------------------------------------
-    def _equivalent_screen(self, screen_key: str,
-                           elements: Sequence[Element]) -> Optional[str]:
+    def _equivalent_screen(self, screen_key: str, elements: Sequence[Element],
+                           path: Sequence[str]) -> Optional[str]:
         """A screen already known to be this one, or None.
 
-        Matched on the element set alone, at `return_similarity` -- the SAME
-        rule `_identify_current` already uses to decide whether navigation
-        landed where it meant to. Registration and navigation disagreeing
-        about what counts as the same screen is itself the bug: the walk
-        would recognise a screen well enough to navigate to it, then enumerate
-        it again as if it were new.
+        Similar element set AND an ancestry relationship. Both halves are
+        load-bearing, and each was learned by removing the other.
 
-        An earlier version also required the path to match. That never fired
-        once, for the reason that makes this necessary: the camera's quick
-        settings reach each other, so the walk goes
-        Filters -> Flash -> Filters -> Resolution -> ... and every lap has a
-        different path. 552 of 636 rows carried a path that repeated a label,
-        and all 429 rows at depth >= 10 were cycles. `max_depth 18` on a
-        camera was the tell.
+        * **Path alone** never fired. Every lap of a cycle has a different
+          path, which is exactly when the check is needed.
+        * **Similarity alone** merged five distinct screens into the ROOT in
+          one run, because in a camera almost every screen carries the same
+          viewfinder chrome -- Flash, Resolution, Motion photo, Filters, Take
+          picture. Descent collapsed: the worklist emptied after 87 rows and 9
+          screens where the same app had yielded 353 rows and 43 screens, and
+          the run declared "every element traversed" in five minutes of a
+          twenty-three minute budget.
 
-        The cost is the known screen-identity limit (METHOD.md 6): two
-        genuinely different menus with near-identical element sets merge into
-        one, and the walk under-reports. That is the safer direction. An
-        over-report invents 157 rows at a depth the app does not have and
-        puts them in the deliverable.
+        So a match requires the known screen to be *this node or an ancestor
+        of it*:
+
+        * equal path -- the same node arriving under a drifted state key
+          (the viewfinder's description carries the active lens; tip cards
+          come and go)
+        * a prefix of this path -- we have looped back to somewhere we came
+          through, which is the cycle
+
+        A sibling menu that merely looks alike is neither, so it survives.
         """
+        want = list(path)
         best, best_score = None, 0.0
         for key, known in self._screen_elements.items():
             if key == screen_key:
+                continue
+            known_path = self._screen_paths.get(key)
+            if known_path is None:
+                continue
+            if known_path != want and list(known_path) != want[:len(known_path)]:
                 continue
             score = screen_similarity(known, elements)
             if score > best_score:
@@ -878,7 +887,7 @@ class ElementTreeWalker:
         # This also breaks cycles. The quick settings reach each other, so
         # without it the walk loops Filters -> Flash -> Filters -> ... and
         # each lap registers a fresh, deeper screen.
-        twin = self._equivalent_screen(screen_key, elements)
+        twin = self._equivalent_screen(screen_key, elements, path)
         if twin is not None:
             self._visited_screens.add(screen_key)
             self._screen_aliases[screen_key] = twin

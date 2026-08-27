@@ -514,10 +514,28 @@ traversal was accidentally hiding it.
 Every counter improved while the deliverable got worse. Again. `max_depth 18`
 on a camera app was the only visible tell, and it looked like good news.
 
+> **A correction, and the cost of getting this exact trade-off wrong.** The
+> first version of the similarity guard dropped the path test entirely. In a
+> camera almost every screen carries the same viewfinder chrome -- Flash,
+> Resolution, Motion photo, Filters, Take picture -- so it merged five
+> genuinely distinct screens into the **root**, and descent collapsed. The
+> worklist emptied after 87 rows and 9 screens, on an app that had yielded
+> 353 rows and 43 screens, and the run announced *"every element traversed"*
+> five minutes into a twenty-three minute budget. All five merge lines named
+> the same target, which should have been the tell. Restoring the constraint
+> as *this node or an ancestor of it* took it to 512 rows across 45 screens
+> at 72.2% coverage.
+>
+> The lesson is not "similarity is bad". It is that a rule which collapses
+> nodes needs a second, independent reason to believe two things are one --
+> and that a guard which fires five times and always names the same target is
+> not deduplicating, it is deleting.
+
 Two guards, deliberately different in kind:
 
-* **Similarity** — a screen is one already known if its element set matches at
-  `return_similarity`, the same rule `_identify_current` uses for navigation.
+* **Similarity plus ancestry** — a screen is one already known if its element
+  set matches at `return_similarity` AND the known screen is this node (equal
+  path, a drifted state key) or an ancestor of it (a prefix -- the cycle).
   Registration and navigation disagreeing about screen identity was itself a
   bug: the walk could recognise a screen well enough to navigate to it, then
   enumerate it again as new.

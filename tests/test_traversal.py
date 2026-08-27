@@ -116,10 +116,10 @@ def main() -> int:
                 "screen_similarity" in src and "return_similarity" in src,
                 "registration and navigation disagreeing about what counts as "
                 "the same screen is itself the bug")
-    ok &= check("equivalence does NOT require the path to match",
-                "_screen_paths.get(key) != want" not in src,
-                "the quick settings reach each other, so every lap of a cycle "
-                "has a different path and a path-keyed rule never fires")
+    ok &= check("equivalence requires this node or an ancestor of it",
+                "want[:len(known_path)]" in src,
+                "similarity alone merged five distinct screens into the root, "
+                "because every camera screen carries the same viewfinder chrome")
     ok &= check("a drifted key is aliased, so the walk still knows where it is",
                 "_screen_aliases" in src)
     ok &= check("the merge is counted, not silent",
@@ -133,7 +133,7 @@ def main() -> int:
     # and 552 of 636 rows whose path repeated a label. Every counter improved
     # while the output got worse.
     ok &= check("landing on a known screen does not extend the path",
-                "return 0" in src.split("_equivalent_screen(screen_key, elements)")[1][:400],
+                "return 0" in src.split("twin = self._equivalent_screen")[1][:400],
                 "re-registering it is what turns a loop into depth")
 
     print()
