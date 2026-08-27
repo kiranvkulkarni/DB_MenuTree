@@ -266,11 +266,13 @@ one by hand mid-run, without killing the run:
 adb -s <serial> shell input keyevent KEYCODE_BACK
 ```
 
-The walk also treats **three consecutive write-offs as being blocked**,
-whatever is in the way — a bottom sheet, a consent page and an in-app browser
-do not look like dialogs but stop a run just as dead. It then escalates
-decline -> BACK -> acknowledge -> relaunch, and puts back what it wrote off
-while stuck.
+Three consecutive write-offs prompt a **look** — cheap, and a bottom sheet or
+a consent page does not look like a dialog while blocking just as completely.
+But the recovery acts only on positive evidence: the foreground package is
+not ours, a modal is recognised, or a non-committal button is genuinely on
+screen. Otherwise it does nothing, because a streak of failures is usually
+the screen-identity problem (METHOD.md §6), and pressing BACK on a hunch
+exits the app. What it did write off while genuinely blocked is put back.
 
 Read `blocking_dialogs_cleared`, `blocked_recoveries` and `elements_requeued`
 before believing a low coverage figure. They are what tells an app that is
