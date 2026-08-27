@@ -266,8 +266,15 @@ one by hand mid-run, without killing the run:
 adb -s <serial> shell input keyevent KEYCODE_BACK
 ```
 
-Check `blocking_dialogs_cleared` before trusting a low-coverage run that
-shows this pattern.
+The walk also treats **three consecutive write-offs as being blocked**,
+whatever is in the way — a bottom sheet, a consent page and an in-app browser
+do not look like dialogs but stop a run just as dead. It then escalates
+decline -> BACK -> acknowledge -> relaunch, and puts back what it wrote off
+while stuck.
+
+Read `blocking_dialogs_cleared`, `blocked_recoveries` and `elements_requeued`
+before believing a low coverage figure. They are what tells an app that is
+small apart from an app that was behind a pop-up.
 
 **Low coverage** — read `phase_seconds` in `menutree_rows.json`. Runs end on
 the time budget, so the largest phase is the biggest coverage lever.

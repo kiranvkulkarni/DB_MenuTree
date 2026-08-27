@@ -116,6 +116,10 @@ class WorkItem:
     selector: Optional[tuple] = None
     status: str = "pending"   # pending | done | unreachable | blocked | recorded
     reason: str = ""
+    # Bumped every time the item is attempted. An item written off while the
+    # app was blocked is put back on the worklist, and this is what stops
+    # that from becoming a loop.
+    attempts: int = 0
 
     @property
     def key(self) -> tuple:
@@ -241,6 +245,12 @@ class ElementTreeWalker:
         # reached -- without it that branch is lost the moment the first
         # option is clicked, with no way back.
         self.clear_between_paths = bool(config.get("clear_between_paths", False))
+        # How many consecutive write-offs mean "blocked" rather than "this
+        # control is genuinely gone". Three, because a run legitimately hits
+        # one or two dead elements in a row -- a one-shot dialog's other
+        # branch, a control that needs a precondition -- but not three, and
+        # certainly not the hundreds a blocking pop-up produces.
+        self.blocked_after = int(config.get("blocked_after", 3))
         # Start every run from a fresh install state. Makes runs
         # comparable, and brings back first-run pop-ups that a previous
         # run would otherwise have permanently dismissed.
@@ -266,6 +276,9 @@ class ElementTreeWalker:
         self._lost = 0
         self._dialog_recoveries = 0
         self._blocking_dialogs_cleared = 0
+        self._blocked_recoveries = 0
+        self._requeued = 0
+        self._consecutive_unreachable = 0
         self._foreign_skipped = 0
         self._back_trace: List[Dict] = []
         self._keypad_skipped = 0
@@ -595,7 +608,7 @@ class ElementTreeWalker:
         except DriverError:
             return False
 
-    def _clear_blocking_dialog(self) -> bool:
+    def _clear_blocking_dialog(self, force: bool = False) -> bool:
         """Clear an app modal that is standing between us and the walk.
 
         `_dismiss_system_dialog` handles ANRs, crashes and USSD -- OS-level
@@ -618,7 +631,16 @@ class ElementTreeWalker:
         """
         assert self.driver is not None
         _, views, _ = self._await_stable()
-        if not views or not looks_like_dialog(views, self.package):
+        if not views:
+            return False
+        # `force` skips the heuristic. looks_like_dialog recognises a classic
+        # modal -- a dialog class, or few views and few clickables. It does
+        # NOT recognise a bottom sheet, a full-screen consent page, or a
+        # pop-up that fills the window, and those block a walk just as
+        # completely. When the caller has independent evidence that we are
+        # stuck, the shape of the overlay stops mattering: any non-committal
+        # button on screen is worth pressing.
+        if not force and not looks_like_dialog(views, self.package):
             return False
         elements = self._elements(views)
 
@@ -646,6 +668,89 @@ class ElementTreeWalker:
             logger.info("cleared blocking dialog with BACK")
             return True
         return press(ACKNOWLEDGE_LABELS, "acknowledges; nothing else offered")
+
+    def _force_unblock(self) -> bool:
+        """Something is standing in front of the app. Get past it.
+
+        Called on evidence rather than on recognition: `blocked_after`
+        consecutive write-offs in a row. That matters, because the thing in
+        the way is not always dialog-shaped -- a bottom sheet, a full-screen
+        consent page, an in-app browser opened by a "Learn more" link and a
+        runtime permission prompt all block a walk completely while looking
+        nothing alike. Waiting until we can *name* the overlay is how a run
+        spends its whole budget recording a healthy app as unreachable.
+
+        The ladder is ordered by how much it costs and how much it destroys:
+
+            1. press a non-committal button, if one is on screen
+            2. BACK, which commits to nothing at all
+            3. acknowledge, when nothing else is offered
+            4. relaunch, which loses our position in the tree
+
+        Never presses an affirmative button before trying the alternatives,
+        and the action guard vetoes throughout, so this cannot accept a term
+        or grant a permission to make progress.
+        """
+        assert self.driver is not None
+        before, views, package = self._await_stable()
+
+        # Out of the app entirely -- a link opened a browser, or a chooser
+        # took over. BACK first; it usually returns us where we were.
+        if package and package != self.package:
+            logger.warning("blocked: foreground is %s, not %s", package, self.package)
+            try:
+                self.driver.press_back()
+                time.sleep(self.settle)
+            except DriverError:
+                pass
+            _, _, now = self._await_stable()
+            if now == self.package:
+                self._blocked_recoveries += 1
+                logger.info("recovered from %s with BACK", package)
+                return True
+
+        if self._clear_blocking_dialog(force=True):
+            self._blocked_recoveries += 1
+            return True
+
+        after, _, _ = self._await_stable()
+        if after != before:
+            # Pressing something changed the screen even if no rule fired.
+            self._blocked_recoveries += 1
+            return True
+
+        logger.warning("blocked and could not clear it -- relaunching")
+        if self._relaunch_and_replay(before or "", [], clear=self.clear_between_paths):
+            self._blocked_recoveries += 1
+            return True
+        return False
+
+    def _requeue_blocked(self) -> int:
+        """Put back what was written off while the app was blocked.
+
+        Without this the fix is half a fix. Clearing the pop-up lets the run
+        continue, but every control already recorded `unreachable` during the
+        blockage stays wrong in the output -- and those are exactly the rows
+        the pop-up was hiding. On the observed S25 FE run that was most of
+        the walk.
+
+        Only items that failed to navigate are eligible, and only twice, so a
+        control that is genuinely absent still settles as unreachable instead
+        of cycling forever.
+        """
+        back = 0
+        for item in self._worklist.values():
+            if item.status != "unreachable" or item.attempts >= 2:
+                continue
+            item.status, item.reason = "pending", ""
+            row = self._row_for.get((item.screen_key, item.label, item.kind))
+            if row is not None and row.note.startswith("NOT TESTED"):
+                row.note = ""
+            back += 1
+        self._requeued += back
+        if back:
+            logger.info("requeued %d element(s) written off while blocked", back)
+        return back
 
     def _click(self, element: Element, views: Sequence[Dict]) -> bool:
         assert self.driver is not None
@@ -1085,6 +1190,7 @@ class ElementTreeWalker:
     def _process(self, item: WorkItem) -> None:
         """Navigate to the item's screen, click it, record what happened."""
         row = self._row_for.get((item.screen_key, item.label, item.kind))
+        item.attempts += 1
         reached, views = self._navigate_to(item)
         if not reached and self._clear_blocking_dialog():
             # Navigation failed with a modal on screen. Everything below this
@@ -1119,11 +1225,20 @@ class ElementTreeWalker:
                         row.note = "recovered via clear+relaunch (one-shot dialog)"
 
         if live is None or not self._click(live, views):
-            item.status = "unreachable"
-            item.reason = "element vanished before it could be clicked"
-            if row is not None and not row.note:
-                row.note = "element vanished before click (one-shot?)"
-            return
+            # Not necessarily gone. A pop-up that arrives *after* navigation
+            # succeeded leaves the control present in the tree but covered,
+            # so the click lands on the scrim and this reads as "vanished".
+            # That misreading is what turned a single prompt into a whole run
+            # of write-offs, so it costs one dump to check.
+            if self._clear_blocking_dialog():
+                _, views, _ = self._await_stable()
+                live, views = self._find_element_scrolled(item.label, views)
+            if live is None or not self._click(live, views):
+                item.status = "unreachable"
+                item.reason = "element vanished before it could be clicked"
+                if row is not None and not row.note:
+                    row.note = "element vanished before click (one-shot?)"
+                return
 
         after_key, after_views, after_pkg = self._await_stable()
         after_probe = self._elements(after_views) if after_views else []
@@ -1239,6 +1354,27 @@ class ElementTreeWalker:
                 break
             self._process(item)
             self._processed += 1
+            # One place decides what a streak is, so a new success path
+            # cannot forget to reset it and leave the walk convinced it is
+            # blocked.
+            if item.status == "unreachable":
+                self._consecutive_unreachable += 1
+            else:
+                self._consecutive_unreachable = 0
+
+            # Detection by evidence, not by recognition. The signal a run is
+            # blocked was never an exception -- it was the shape of the log
+            # changing, INFO lines stopping and WARNING lines starting at a
+            # steady rate. Nothing here has to identify what is in the way.
+            if self._consecutive_unreachable >= self.blocked_after:
+                logger.warning(
+                    "%d element(s) unreachable in a row -- treating the app "
+                    "as blocked rather than empty",
+                    self._consecutive_unreachable,
+                )
+                if self._force_unblock():
+                    self._requeue_blocked()
+                self._consecutive_unreachable = 0
             if self._processed % self.checkpoint_every == 0:
                 self._checkpoint()
 
@@ -1320,6 +1456,8 @@ class ElementTreeWalker:
             "lost_returns": self._lost,
             "dialog_recoveries": self._dialog_recoveries,
             "blocking_dialogs_cleared": self._blocking_dialogs_cleared,
+            "blocked_recoveries": self._blocked_recoveries,
+            "elements_requeued": self._requeued,
             "foreign_screens_skipped": self._foreign_skipped,
             "clear_between_paths": self.clear_between_paths,
             "keypad_keys_skipped": self._keypad_skipped,
