@@ -62,7 +62,7 @@ ever written over a previous run.
 | File | Responsibility |
 |---|---|
 | `src/verify/spec_reader.py` | Reads the hand-authored workbook back into a tree. Depth is **positional** (the `N Depth` columns); a row's parent is the nearest preceding shallower row. Strips `[Title]`/`(On/Off)` annotations; carries `[bracketed]` rows as **context**, not as clicks. |
-| `src/verify/matching.py` | **The depth columns are not selectors** — they are a tester's English. Scores a spec label against each element's label and resource id, tolerating typos, dropped nouns (`Flash icon`), elisions and paraphrase, while still rejecting `Photo` vs `Video`. Emits `alias_review.json`; `--aliases` feeds confirmed mappings back. |
+| `src/verify/matching.py` | **The depth columns are not selectors** — they are a tester's English. Scores a spec label against each element's label and resource id, tolerating typos, dropped nouns (`Flash icon`), elisions and paraphrase, while still rejecting `Photo` vs `Video`. Emits `alias_review.json`; `--aliases` feeds confirmed mappings back. An alias maps one label to a **list** of targets — the same option is named differently per mode — and is tried against the resource id too. |
 | `src/verify/verifier.py` | Walks the spec top to bottom, exploiting shared path prefixes. Position tracked **by index, not by label** — the sheet repeats `ON`, `OK`, `Back key icon` at many depths. Emits `Pass / Fail / NA / NT`. |
 | `src/verify/matching.py` | **The depth columns are not selectors** -- they are a tester's English. Scores a label against each element's text and resource id, tolerating typos, dropped nouns, plurals, quantity notation and elision, while still rejecting `Photo`/`Video`. Emits `alias_review.json`. |
 | `tools/drift_report.py` | Groups failures by branch and classifies each renamed / restructured / absent. Reads a partial checkpoint, so a long run can be triaged while running. |
@@ -167,6 +167,7 @@ comparison and all three made coverage worse. It costs one command.
 | Change how the authored sheet is read | `verify/spec_reader.py` |
 | Change how a spec row is judged | `verify/verifier.py :: _verify_row` |
 | Change how sheet wording maps to screen text | `verify/matching.py` — and prefer recording an alias over loosening a threshold |
+| Add a mapping for wording no score can bridge (`12M` -> `BACK_CAMERA_PICTURE_SIZE_NORMAL`) | `aliases/samsung_camera.json`, then `--aliases`. Only for labels that cannot match on their own — see METHOD.md §3.8 |
 | Add a device driver | implement `DeviceDriver` in `device_driver.py`, **including `release_device`** |
 | Add an action type (scroll, text input) | `elements.py` (enumerate) plus `element_tree.py` (`_perform`) plus `uvta_syntax.py` (render) |
 

@@ -251,10 +251,17 @@ def best_match(spec_label: str,
     if aliases:
         wanted = aliases.get(spec_label) or aliases.get(normalise(spec_label))
         if wanted:
-            target = normalise(wanted)
-            for element in elements:
-                if normalise(element.label) == target:
-                    return Match(element, 1.0, "confirmed alias", "alias")
+            if isinstance(wanted, str):          # tolerate an older caller
+                wanted = [wanted]
+            targets = {normalise(w) for w in wanted}
+            # Visible label first, then the resource id: a control the sheet
+            # names by its value is often an icon whose only handle is an id.
+            for source in ("label", "resource-id"):
+                for element in elements:
+                    text = (element.label if source == "label"
+                            else from_resource_id(getattr(element, "resource_id", None)))
+                    if text and normalise(text) in targets:
+                        return Match(element, 1.0, "confirmed alias", "alias")
 
     # A resource id shared by several elements on one screen is a CLASS name,
     # not an instance name, so it cannot identify which one is meant.
@@ -300,24 +307,41 @@ CONFIDENT = 0.80
 REVIEW = 0.60
 
 
-def load_aliases(path) -> Dict[str, str]:
+def load_aliases(path) -> Dict[str, List[str]]:
     """Read a confirmed spec-label -> on-screen-text map.
 
-    Accepts either {"spec label": "on screen text"} or the review file's
+    A label maps to a *list* of acceptable targets, because the same sheet
+    wording is a different string on different screens. The camera writes the
+    12 megapixel option as `BACK_CAMERA_PICTURE_SIZE_NORMAL` in Photo mode and
+    `BACK_CAMERA_PRO_PICTURE_SIZE_NORMAL` in Pro; both are "12M" to the author
+    of the sheet, so one global alias cannot serve both. Any target matching
+    is a match -- these are alternatives, not a conjunction.
+
+    Accepts {"spec": "text"}, {"spec": ["a", "b"]}, or the review file's
     richer form, so a reviewed file can be fed straight back in.
     """
     import json
     from pathlib import Path
 
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    out: Dict[str, str] = {}
-    for key, value in (data.get("aliases", data) or {}).items():
+    def as_list(value) -> List[str]:
         if isinstance(value, str):
-            out[key] = value
+            return [value]
+        return [v for v in value if isinstance(v, str) and v]
+
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    out: Dict[str, List[str]] = {}
+    for key, value in (data.get("aliases", data) or {}).items():
+        if isinstance(value, (str, list)):
+            targets = as_list(value)
         elif isinstance(value, dict) and value.get("on_screen"):
             # Only honour entries a human marked confirmed.
-            if value.get("confirmed", True):
-                out[key] = value["on_screen"]
+            if not value.get("confirmed", True):
+                continue
+            targets = as_list(value["on_screen"])
+        else:
+            continue
+        if targets:
+            out[key] = targets
     return out
 
 

@@ -1,0 +1,144 @@
+{
+  "_README": [
+    "Sheet wording -> the strings this app actually exposes in the XML dump.",
+    "Pass with:  tools/verify_menutree.py --aliases aliases/samsung_camera.json",
+    "",
+    "Only labels that CANNOT match on their own belong here. 'Flash Auto',",
+    "'Timer off' and 'Metering: Matrix' already reach BACK_FLASH_AUTO,",
+    "BACK_TIMER_OFF and EXPOSURE_METERING_MATRIX by ordinary word overlap, and",
+    "aliasing them would hide a real rename behind a hand-written answer.",
+    "",
+    "on_screen is a LIST of alternatives: any one matching is a match. This is",
+    "how one sheet label covers screens that name the same option differently.",
+    "",
+    "confirmed:false entries are ignored at load time. Set it true only after",
+    "seeing the target on the device."
+  ],
+  "_device": "Samsung camera (com.sec.android.app.camera), verified on S25 Ultra. Expect the families to hold on other Samsung models; check the 'why: inferred' entries against a fresh dump before trusting them.",
+  "aliases": {
+    "12M": {
+      "on_screen": [
+        "BACK_CAMERA_PICTURE_SIZE_NORMAL",
+        "BACK_CAMERA_PRO_PICTURE_SIZE_NORMAL"
+      ],
+      "confirmed": true,
+      "why": "confirmed on the S25 Ultra by the sheet's author",
+      "note": "the sheet names the megapixel value; the dump names the tier. Photo and Pro use different prefixes for the same option, so both are listed."
+    },
+    "50M": {
+      "on_screen": [
+        "BACK_CAMERA_PICTURE_SIZE_HIGH",
+        "BACK_CAMERA_PRO_PICTURE_SIZE_HIGH"
+      ],
+      "confirmed": true,
+      "why": "confirmed on the S25 Ultra by the sheet's author",
+      "note": "the sheet names the megapixel value; the dump names the tier. Photo and Pro use different prefixes for the same option, so both are listed."
+    },
+    "200M": {
+      "on_screen": [
+        "BACK_CAMERA_PICTURE_SIZE_ULTRA_HIGH",
+        "BACK_CAMERA_PRO_PICTURE_SIZE_ULTRA_HIGH"
+      ],
+      "confirmed": true,
+      "why": "inferred from the constant family the device exposed; review on first use",
+      "note": "the sheet names the megapixel value; the dump names the tier. Photo and Pro use different prefixes for the same option, so both are listed."
+    },
+    "3:4": {
+      "on_screen": [
+        "BACK_CAMERA_PICTURE_RATIO_NORMAL"
+      ],
+      "confirmed": true,
+      "why": "inferred from the constant family the device exposed; review on first use",
+      "note": "the sheet names the aspect ratio; the dump names the shape. Still photo, camcorder and Pro video each have their own family."
+    },
+    "9:16": {
+      "on_screen": [
+        "BACK_CAMERA_PICTURE_RATIO_WIDE",
+        "BACK_CAMCORDER_RATIO_WIDE",
+        "BACK_PRO_CAMCORDER_RATIO_WIDE"
+      ],
+      "confirmed": true,
+      "why": "inferred from the constant family the device exposed; review on first use",
+      "note": "the sheet names the aspect ratio; the dump names the shape. Still photo, camcorder and Pro video each have their own family."
+    },
+    "1:1": {
+      "on_screen": [
+        "BACK_CAMERA_PICTURE_RATIO_SQUARE",
+        "BACK_CAMCORDER_RATIO_SQUARE"
+      ],
+      "confirmed": true,
+      "why": "inferred from the constant family the device exposed; review on first use",
+      "note": "the sheet names the aspect ratio; the dump names the shape. Still photo, camcorder and Pro video each have their own family."
+    },
+    "9:21": {
+      "on_screen": [
+        "BACK_PRO_CAMCORDER_RATIO_CINEMA"
+      ],
+      "confirmed": true,
+      "why": "inferred from the constant family the device exposed; review on first use",
+      "note": "the sheet names the aspect ratio; the dump names the shape. Still photo, camcorder and Pro video each have their own family. 21:9 is the cinema ratio."
+    },
+    "09:16": {
+      "on_screen": [
+        "BACK_CAMERA_PICTURE_RATIO_WIDE",
+        "BACK_CAMCORDER_RATIO_WIDE",
+        "BACK_PRO_CAMCORDER_RATIO_WIDE"
+      ],
+      "confirmed": true,
+      "why": "inferred from the constant family the device exposed; review on first use",
+      "note": "Excel read the ratio as a time and stored it as one; the sheet still means the ratio."
+    },
+    "01:01": {
+      "on_screen": [
+        "BACK_CAMERA_PICTURE_RATIO_SQUARE",
+        "BACK_CAMCORDER_RATIO_SQUARE"
+      ],
+      "confirmed": true,
+      "why": "inferred from the constant family the device exposed; review on first use",
+      "note": "Excel read the ratio as a time and stored it as one; the sheet still means the ratio."
+    },
+    "09:21": {
+      "on_screen": [
+        "BACK_PRO_CAMCORDER_RATIO_CINEMA"
+      ],
+      "confirmed": true,
+      "why": "inferred from the constant family the device exposed; review on first use",
+      "note": "Excel read the ratio as a time and stored it as one; the sheet still means the ratio."
+    },
+    "2 sec": {
+      "on_screen": [
+        "BACK_TIMER_2S",
+        "FRONT_TIMER_2S"
+      ],
+      "confirmed": true,
+      "why": "inferred from the constant family the device exposed; review on first use",
+      "note": "the bare value carries no 'timer' token, so nothing links it to the constant"
+    },
+    "5 sec": {
+      "on_screen": [
+        "BACK_TIMER_5S",
+        "FRONT_TIMER_5S"
+      ],
+      "confirmed": true,
+      "why": "inferred from the constant family the device exposed; review on first use",
+      "note": "as above"
+    },
+    "10 sec": {
+      "on_screen": [
+        "BACK_TIMER_10S",
+        "FRONT_TIMER_10S"
+      ],
+      "confirmed": true,
+      "why": "inferred from the constant family the device exposed; review on first use",
+      "note": "as above"
+    },
+    "Metering: Center-weighted": {
+      "on_screen": [
+        "EXPOSURE_METERING_CENTER"
+      ],
+      "confirmed": true,
+      "why": "inferred from the constant family the device exposed; review on first use",
+      "note": "the dump drops the '-weighted' half, which costs enough score to miss. Matrix and Spot already match without help."
+    }
+  }
+}
