@@ -45,7 +45,23 @@ _SKIP_KINDS = {"root", "back"}
 
 
 def _selector_for(row: Dict) -> Selector:
-    """Rows carry on-screen text, so text is the natural selector."""
+    """How a test should address this row, resolved when it was enumerated.
+
+    The order is text -> description -> resource id -> xpath, and which of
+    those a control offers is entirely up to whoever built it. Reading it off
+    the XML dump per element is the only way to know.
+
+    Emitting `text` for everything was wrong and silently so: a row's label is
+    whichever of text or content-desc happened to be non-empty, so every icon
+    -- "Flash icon", "Back key icon", anything with no visible text -- got a
+    `text "Flash"` selector that cannot match at runtime. The suite looked
+    complete and would have failed on execution.
+    """
+    kind = row.get("selector_kind")
+    value = row.get("selector_value")
+    if kind and value:
+        return Selector(kind, str(value))
+    # Older rows files predate selector resolution; text is the best guess.
     return Selector("text", _raw(row))
 
 

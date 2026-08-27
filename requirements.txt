@@ -1,21 +1,11 @@
-# Pipeline
-requests==2.31.0
-python-dotenv==1.0.0
-pyyaml==6.0.1
-pydantic==2.5.3
+# Device automation. The MenuTree tools talk to the phone through
+# uiautomator2, falling back to plain adb where the agent will not run.
+uiautomator2==3.2.5
 
-# MenuTree workbook export
+# The deliverable: the MenuTree workbook, and reading a hand-authored one.
 openpyxl==3.1.5
 
-# Manifest parsing -- supplies the activity-coverage denominator
-androguard==4.1.2
-
-# DroidBot's own runtime deps (installed transitively, pinned here for clarity)
-networkx==3.2.1
-opencv-python==4.9.0.80
-
-# DroidBot itself is not on PyPI in a usable form; install from source:
-#   pip install git+https://github.com/honeynet/droidbot.git
-# Do NOT use MobileLLM/AutoDroid: its installed entrypoint drops the -policy
-# flag and hardcodes the task-directed LLM policy, which cannot do exhaustive
-# coverage. See README section on crawler choice.
+# Reconstructing a workbook from photographs (tools/build_spec_xlsx.py only).
+# Not needed to run a crawl or a verification.
+pypdf==5.1.0
+pillow==11.0.0

@@ -1,6 +1,6 @@
 """Parse a uiautomator hierarchy dump into normalised views and a state key.
 
-Views are normalised to the same dict shape DroidBot produces (`text`,
+Views are normalised to a single dict shape (`text`,
 `content_description`, `resource_id`, `class`, `children`), so selector
 resolution is shared between both crawler back-ends.
 

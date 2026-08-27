@@ -30,7 +30,7 @@ Everything below follows from those two.
 
 ---
 
-## 2. The central decision: the LLM is not in the structural path
+## 2. The central decision: nothing infers the structure
 
 The original pipeline flattened the crawler's output into a linear click
 stream and asked an LLM to infer which clicks belonged to which UI branch.
@@ -41,8 +41,9 @@ stream says whether Resolution was reached from inside the Flash submenu or
 after backing out. The model is being asked to recover information that was
 discarded.
 
-Worse, the information was never missing: DroidBot already computes the graph
-and writes it to `utg.js`.
+Worse, the information was never missing. The traversal knows which screen it
+was on when it pressed a control; discarding that and asking a model to
+reconstruct it is throwing away the answer and then paying to guess it.
 
 So the architecture is:
 
@@ -57,190 +58,49 @@ The same crawl data always produces a **byte-identical** `.uvta` file. This is
 verified: two runs produced the same SHA-256. The suite header deliberately
 contains no run id, timestamp, or absolute path, so CI can diff it.
 
-> **If you change one thing, do not put the LLM back in the structural path.**
-> Use it for names, grouping, and prose. Never for steps.
+> **If you change one thing, do not put a model back in the structural path.**
+> There is no LLM in this codebase and no LLM SDK installed. The structure
+> comes from the traversal, which knows it; a model asked to infer it from a
+> flat stream is being asked to recover what was already discarded.
 
 ---
 
-## 3. Four back-ends
+## 3. One traversal, two questions
 
-Built in this order, each answering the previous one's failure. This section
-and §4–§9 describe the first two, which produce a screen *graph*; §12.5
-describes the element-tree walker and §13 the verifier, which produce the
-element tree the MenuTree deliverable actually wants.
+DroidBot and the replay explorer were the first two attempts and are gone
+from the tree. What replaced them is a single element-tree walk, used two
+ways:
 
-| | Back-end | Question | Status |
-|---|---|---|---|
-| A | DroidBot / `utg_parser` | what screens exist? | superseded |
-| B | replay explorer | what screens exist, deterministically? | superseded |
-| C | element-tree walker (§12.5) | what *elements* exist, by depth? | works, not reproducible |
-| D | **verifier (§13)** | does the build match the authored sheet? | **the gate** |
-
-A and B both produce a `MenuTree`; everything downstream is shared:
-
-| | DroidBot (`utg_parser`) | Replay explorer (`replay_explorer`) |
+| | question | entry point |
 |---|---|---|
-| Status | **working, current gate** | prototype, better architecture |
-| Exploration | greedy DFS + BACK to backtrack | replay a path from a clean launch |
-| Determinism | no — BACK is timing-dependent | yes, by construction |
-| Paths verified | no | yes — each was just executed |
-| State abstraction | fixed, text-sensitive | ours, configurable |
-| Speed | ~1 action/sec, no restarts | slower per action, restarts |
+| Discovery | what is in this build? | `tools/build_menutree.py` |
+| **Verification** | does this build match the sheet? | `tools/verify_menutree.py` |
 
-### 3.1 Why not AutoDroid, Fastbot, or Kea2
+They share every layer except how they choose what to visit: element
+enumeration, selector resolution, the action guard, screen identity, device
+lifecycle and the workbook writer are common. §12.5 describes the walker,
+§13 the verifier.
 
-- **AutoDroid** is a DroidBot fork whose installed entrypoint *removed*
+**Why the first two were dropped.** DroidBot's graph had to be reconstructed
+from `utg.js` plus a directory of event files, and its exploration was
+timing-dependent, so the same build did not give the same graph. The replay
+explorer fixed determinism by replaying each path from a clean launch, but
+still answered the wrong question: it produced a *screen graph*, and the
+MenuTree deliverable is an *element tree by depth*. Both were also a
+dependency and a patch step that the current tool does not need — see §13 for
+what verification made possible that neither could.
+
+Also rejected, and worth not revisiting:
+
+- **AutoDroid** is a DroidBot fork whose installed entrypoint removed
   `-policy` and hardcodes an LLM task-directed policy. It pursues one
-  natural-language goal and stops when it thinks it is done — the opposite of
-  exhaustive coverage. Its exploration policies are otherwise unchanged from
-  DroidBot.
+  natural-language goal and stops when it believes it is done — the opposite
+  of exhaustive coverage.
 - **Fastbot / Kea2** are stability fuzzers. Excellent at shaking out crashes,
-  but stochastic, and (as far as we know) they do not export a consumable
-  transition graph. Stochastic exploration is directly at odds with baseline
-  diffing.
-
-They answer a different question and are worth running *alongside* a MenuTree
-gate, not instead of one.
-
----
-
-## 4. The DroidBot path: reconstruction and repair
-
-`src/parser/utg_parser.py`.
-
-**The join.** `utg.js` edges carry only `event_str` and `event_id`; the view
-that was touched lives in `events/event_<tag>.json`. Both sides compute
-`event_str` with the same function against the same state, so
-`(start_state, stop_state, event_str)` is an **exact** join key. Joining gives
-edges that know both structure and selector.
-
-Then five repairs, each found by running against a real app:
-
-1. **Root selection.** DroidBot's `<FIRST>` state is whatever was on screen
-   when the crawl began — usually the launcher home screen. Its only edge into
-   the app is a launch intent, which paths must never replay (every test
-   already starts with `launch`). Left alone: 11 of 12 states unreachable,
-   zero tests emitted. Root is now the app's entry state.
-2. **Launch-transition frames.** A state can report the app's activity while
-   containing *only* launcher views — captured after ActivityManager switched
-   but before the app rendered. One became the graph root and prefixed every
-   test with a click on a Google at-a-glance widget. Detected by view package
-   and pruned.
-3. **Foreign states.** Launcher and system screens pruned so they cannot
-   inflate app coverage.
-4. **Duplicate transitions.** DFS re-records the same control on each revisit,
-   producing byte-identical tests under different names. Collapsed.
-5. **Compose selectors.** See §6.
-
-**Known unfixable-from-here:** DroidBot names event files with second
-resolution (`event_%Y-%m-%d_%H%M%S.json`), so two events in the same second
-overwrite each other. Observed: 1 edge lost from a 152-event crawl. The parser
-warns when an edge has no matching event record. Mitigate by raising
-`crawler.interval`.
-
----
-
-## 5. The replay explorer: why replay instead of backtrack
-
-`src/crawler/replay_explorer.py`.
-
-```
-frontier = [(path_to_state, unexplored_action), ...]
-for each item:  launch → replay path → act → capture
-```
-
-Backtracking with BACK is stateful and timing-sensitive: it depends on BACK
-landing where you assume and on no drift accumulating. Replay-from-launch
-gives:
-
-- **Reproducibility.** Fixed frontier order (FIFO) and fixed action order
-  (document order) mean the same build yields the same graph.
-- **Verification for free.** Every path in the graph was executed to build the
-  graph. The crawl *is* the replay pass.
-- **Control of capture.** State abstraction and selector resolution happen at
-  capture time rather than being reconstructed and repaired afterwards.
-
-### 5.1 Forward continuation (the performance fix)
-
-Naively, each frontier item pays a full restart plus a replay of its entire
-prefix. Measured: **5 states in 792 seconds.**
-
-The prefix is the expensive part, so once it is paid for, keep walking forward
-from wherever each action lands instead of restarting for the next one.
-Ordering stays fixed, so determinism is preserved — only the restart frequency
-changes. Measured after: **45 states in 901 seconds**, replays 78 → 35.
-
-### 5.2 Replay drift — the dominant failure mode
-
-A replay that does not land where the path was recorded is discarded, and
-that branch is **never revisited**. Nothing else in the output makes this
-obvious: a badly incomplete graph just looks like a small app.
-
-Measured on the Phone app (`com.google.android.dialer`), without clearing:
-**71 of 74 replays drifted.** Result: 9 states, 16 edges. With clearing:
-**3 of 38**, giving 22 states and 77 edges from the same budget.
-
-The cause is worth understanding, because the obvious guess is wrong. It was
-*not* launch-state variance — measured directly, the dialer's launch state is
-stable across `app_start(stop=True)`, `am start` with `CLEAR_TASK`, and
-`pm clear` alike. What actually happened: the dialer shows a one-time
-dismissible banner. The explorer recorded its root *with* the banner, then
-dismissed it during exploration, and the app persisted "dismissed". The
-recorded root became **permanently unreachable**, so everything after it
-drifted.
-
-This generalises to any one-time UI the app records as seen — onboarding, a
-first-run tip, "don't show again". It poisons the root and silently collapses
-the crawl.
-
-`_warn_on_drift()` therefore logs loudly above a 30% drift rate and names the
-fix. **A tool that discards 96% of its work must say so.**
-
-### 5.2.1 One-shot dialogs are the costliest case
-
-A modal like Samsung's "Turn on Location tags?" (Cancel / Turn on / Learn
-more) is a decision point, and a release gate needs **both** branches.
-
-The explorer already enumerates all three buttons and queues all three. The
-mechanism is not the problem. The problem is that the dialog appears **once**:
-answer it either way and it never returns, so replaying back to it fails and
-the untaken branches are discarded as drift, permanently.
-
-**This is not a job for an LLM.** Nothing about it is semantic — the crawler
-knows exactly which buttons exist and wants to press both. It cannot get back
-to the screen. The fix is state restoration (`clear_between_paths`), which
-makes the dialog reappear on every replay.
-
-Where a model *does* help, and is not yet implemented:
-
-- Risk-classifying unfamiliar buttons. The guard is a regex list; it knows
-  `Delete` and `Share` but not `Erase and continue` or vendor-specific
-  phrasing. A model reading the dialog title plus button label generalises
-  where patterns cannot.
-- Choosing which branch to take when state cannot be restored, since only one
-  is possible and they are not equally valuable.
-
-In both the model advises; it never decides structure. See §2.
-
-`looks_like_dialog()` detects modals structurally (dialog class hints, or a
-small in-app view count with few clickables — the location-tags dialog was 35
-views). Dialog states are recorded as decision points and any branch never
-taken is reported as a **known** coverage gap. A silently lost branch is the
-worst outcome for a gate; a named one is actionable.
-
-### 5.3 `--clear-between-paths`
-
-If the app persists UI state across launches (this one remembers a card's
-expand/collapse), a replay from a fresh launch lands somewhere different from
-where the path was recorded. The item is discarded as drift and that branch is
-**lost permanently**.
-
-With `pm clear` before each replay, drift effectively vanishes (0 on the
-sample app, 3/38 on the dialer).
-
-Slower, and it re-triggers first-run flows, but correct. **Treat this as a
-correctness requirement, not a tuning option** — without it results are
-silently wrong rather than merely slower.
+  but stochastic, which is directly at odds with baseline diffing.
+- **Google App Crawler** is discontinued; **Firebase Robo** is cloud-only and
+  needs an uploaded APK, so it cannot reach a preinstalled OEM camera. See
+  [TOOL_EVALUATION.md](TOOL_EVALUATION.md).
 
 ---
 
@@ -259,7 +119,7 @@ Three modes; **`affordance` is the default**:
 
 | mode | includes | use |
 |---|---|---|
-| `content` | all text | closest to DroidBot; explodes on live data |
+| `content` | all text | most precise; explodes on live data |
 | `affordance` | structure + text of interactive elements | default |
 | `structure` | structure only | coarsest; merges distinct screens |
 
@@ -287,27 +147,16 @@ every such screen*, silently merging them into one bogus state. Observed as
 root state `e3b0c44298fc…`. Now returns an explicit sentinel that can never
 become a state.
 
-### 6.1 Comparing crawlers fairly
+### 6.1 Never compare state counts across abstractions
 
-**Do not compare raw state counts between crawlers with different
-abstractions.** DroidBot reported 23 states against the explorer's 5, but
-DroidBot's hash is text-sensitive and inflates.
+Two crawlers, or two settings of `state_key_mode`, will disagree wildly on
+"how many screens" — not because one explored better, but because they are
+counting different things. A text-sensitive key inflates: every price change
+or clock tick is a new state.
 
-DroidBot saves full view hierarchies, so re-hash *its* states with *our*
-abstraction and compare like with like:
-
-```
-scratch: rehash.py → 25 in-app DroidBot states
-  content     → 24 distinct
-  affordance  → 18 distinct   ← the honest target
-  structure   → 16 distinct
-```
-
-That converted a vague "maybe it's just hashing" into a definite "the explorer
-under-explored", which pointed straight at replay drift. **Do this whenever
-comparing crawlers.**
-
----
+If you need to compare, re-hash the *same saved hierarchies* with both keys.
+Comparing the headline numbers from two different runs is meaningless, and
+was the source of one confidently wrong conclusion here.
 
 ## 7. Compose and the selector problem
 
@@ -384,32 +233,6 @@ The target app declares 3 activities, one of which is real; the other two are
 
 ---
 
-### 9.2 Measured comparison: DroidBot vs the replay explorer
-
-Same app (`com.google.android.dialer`), same device, same 900s budget.
-
-| | states | edges | **usable tests** | unreachable |
-|---|---|---|---|---|
-| DroidBot `dfs_greedy` | 68 | 66 | **12** | 66 |
-| replay explorer | 22 | 77 | **77** | 0 |
-
-DroidBot *explored more screens* and still produced far fewer tests. Two
-reasons, both instructive:
-
-1. **Its two output artifacts disagree.** 55 of 95 UTG edge events had no
-   corresponding record in `events/`, so those edges can never be given a
-   selector and can never become a test. This is inherent to reconstructing a
-   graph from two files written separately. The explorer captures state and
-   selector together at the moment of acting, so there is nothing to
-   reconcile.
-2. **55 of its 68 states were `InCallActivity`** — it dialled numbers and
-   explored the in-call screen (see §11 safety note).
-
-The headline number is *usable tests*, not states discovered. A screen you
-reached but cannot generate a reproducible path to is not covered.
-
----
-
 ## 10. Open problems
 
 Honest list, roughly by importance.
@@ -434,7 +257,7 @@ Honest list, roughly by importance.
    Options, in order of preference: run on a test device with clearing on and
    a 30-60 minute budget; or a hybrid that backtracks within a screen and
    only replays when a branch genuinely needs restoring; or simply keep
-   DroidBot for this app, since its backtracking pays no restart cost.
+   a backtracking crawler for this app, since it pays no restart cost.
 
 1. **State-abstraction tuning is unfinished.** The editable-field fix has not
    been measured on a completed run — the emulator died mid-run. Until that
@@ -446,25 +269,22 @@ Honest list, roughly by importance.
    `verify … exists timeout` are confirmed. Everything else in
    `src/generator/uvta_syntax.py` is marked `UNVERIFIED`. **Correct that one
    file before trusting a gate result** — no other module hardcodes UVTA text.
-4. **DroidBot-path tests are still not replayed.** The explorer solves this by
-   construction; the DroidBot path does not. Until then, add a replay pass.
-5. **Semantic input.** DroidBot types `"HelloWorld"` into every field; the
-   explorer does not type at all. Both lose whole subtrees behind validated
-   forms. This is where an LLM genuinely pays off — consult it only when a
-   state has been revisited N times with no new states found.
-6. **Scrolling.** `interactive_views` marks scrollables but the explorer has no
-   scroll action. Content below the fold is invisible to it.
-7. **Split APKs.** androguard cannot read a split set as one file, so
-   activities declared only in splits under-count.
+4. **Semantic input.** Fields are enumerated but never typed into, so whole
+   subtrees behind a validated form are invisible. If a model is ever worth
+   introducing, it is here and nowhere else — and only as a fallback, after a
+   screen has been revisited N times with nothing new found. Never in the
+   structural path.
+5. **Screen identity.** The real limiter; see §12.56. Upstream of navigation,
+   coverage and reproducibility alike.
 
 ---
 
 ## 11. Safety: crawling can perform real actions
 
 An exhaustive crawler presses every button it finds. On the Phone app it
-**dialled numbers** — 55 of DroidBot's 68 discovered states were
-`InCallActivity`. On an emulator the modem is simulated and this is harmless.
-**On a physical device it would place real calls.**
+**dialled numbers** — 55 of 68 discovered states were `InCallActivity`. On an
+emulator the modem is simulated and this is harmless. **On a physical device
+it would place real calls.**
 
 Before crawling on real hardware, consider what the app can do irreversibly:
 place calls or send messages, spend money, send email, delete user data,
@@ -485,12 +305,6 @@ system app tried.
 
 Real time was lost to these.
 
-- **DroidBot will not install on Windows.** Defender blocks read access to
-  `droidbot/resources/DroidBoxTests.apk` and the wheel build dies. Nothing
-  references it — clone, delete it, install the local clone.
-- **DroidBot will not start on androguard 4.x.** It imports
-  `androguard.core.bytecodes.apk`, moved in 4.0. `tools/patch_droidbot.py`
-  fixes this in place; **re-run it after any droidbot reinstall.**
 - **Emulator clock skew wedges the guest.** After a host sleep, the guest clock
   jumped backwards ~80 minutes; logcat timestamps ran backwards and a GC pause
   read `18446744030s` (a uint64 underflow). `system_server` died. `adb reboot`
@@ -985,5 +799,3 @@ re-run the §6.1 re-hash to see the effect on a known corpus *before* spending
   the real deliverable, so the spec reader can be exercised without it. Then
   `python tools/verify_menutree.py --spec tests/spec_fixture.xlsx --package
   com.example --dry-run`.
-- `tests/make_fixture.py` — a synthetic `droidbot_out/` in DroidBot's exact
-  on-disk format.

@@ -1,9 +1,10 @@
-"""Data model for the reconstructed MenuTree.
+"""Data model shared by the MenuTree tools.
 
-A MenuTree is DroidBot's UI Transition Graph (UTG) after we have joined the
-per-event view metadata back onto the edges. Unlike a flat click stream, this
-retains parent/child structure, so a testcase is a *derived graph path* rather
-than something an LLM has to guess.
+`Selector` (how a test addresses a control) and the graph types below are the
+common vocabulary between element enumeration, the UVTA emitter and the
+verifier. A testcase is a *derived path*, never something inferred after the
+fact from a flat click stream -- that distinction is why the emitted suite is
+reproducible.
 """
 from collections import deque
 from dataclasses import dataclass, field
