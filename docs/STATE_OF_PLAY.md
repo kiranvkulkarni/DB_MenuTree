@@ -240,12 +240,24 @@ on the reconstructed S25 Ultra sheet:
 |---|---|---|---|---|---|---|
 | Settings | 88 | 49 | 28 | 11 | 87% | 63.6% |
 | Modes | 993 | 341 | 632 | 20 | 98% | 35.1% |
+| Modes, `--aliases` | 993 | **369** | 604 | 20 | 98% | **37.9%** |
 
 The Modes figure is against a NOV-2024 sheet on a much later build; most of
-those Fails are genuine drift, catalogued by `tools/drift_report.py`. 262 of
-them sit on screens where the build exposes internal constants
-(`BACK_CAMERA_PICTURE_SIZE_NORMAL` for `12M`), which no heuristic can or
-should bridge -- that is what `--aliases` is for.
+those Fails are genuine drift, catalogued by `tools/drift_report.py`.
+
+A separate class is wording the matcher cannot bridge at all: the sheet says
+`12M`, the dump says `BACK_CAMERA_PICTURE_SIZE_NORMAL`, and the two share no
+word, stem or number. `aliases/samsung_camera.json` records those, and the
+run above is what it recovered -- **+28 rows**, every one an aspect ratio,
+picture size, bare timer value or metering mode, plus their knock-on rows.
+
+> **A correction worth keeping.** This class was first estimated at *262*
+> failures, by counting every failure whose screen showed an internal
+> constant. That was wrong by six times: the camera paints `BACK_TORCH_OFF`
+> and `SUPER_VIDEO_STABILIZATION_OFF` onto the quick-settings bar of nearly
+> every screen, so their presence says nothing about what the row wanted.
+> Measured against the sheet instead of the screens, it is ~40 rows of 1081.
+> Count the thing you mean, not the thing that co-occurs with it.
 
 Read the **judged** column before the pass rate. A percentage over a small
 slice of the sheet is not a gate result, and the tool now says so out loud --
@@ -271,6 +283,8 @@ short list:
 | every UVTA step addressed as `text` | ~30% of the suite unmatchable at runtime |
 | `verify` asserted the element just clicked | proved nothing either way |
 | quantities compared by spelling | `0.6x` != `.6` on 25 rows |
+| a modal blocked the app, unrecognised | a whole run of healthy controls recorded `unreachable` |
+| a recovery that never proved it worked | BACK exited to the launcher and counted as success |
 
 ### What the failures actually are
 

@@ -43,7 +43,7 @@ ever written over a previous run.
 
 | File | Responsibility |
 |---|---|
-| `src/crawler/hierarchy.py` | uiautomator XML to normalised views. **`state_key`** (the state abstraction), `foreground_package` (which app is in front, read free from the dump), `EMPTY_STATE`, `looks_like_dialog`, `center_of`. |
+| `src/crawler/hierarchy.py` | uiautomator XML to normalised views. **`state_key`** (the state abstraction), `foreground_package` (which app is in front, read free from the dump), `EMPTY_STATE`, `looks_like_dialog`, `center_of`. Also **`pick_dismissal`** with `DECLINE_LABELS` / `ACKNOWLEDGE_LABELS` — the one place that decides which button clears a modal, shared by both tools so discovery and verification cannot disagree about whether a prompt was accepted. |
 | `src/crawler/elements.py` | `enumerate_elements` — every element, not just clickable ones. `Element.annotated()` renders the sheet's `[Title]` / `(On/Off)` notation. `screen_similarity` for screen identity. |
 | `src/crawler/device_driver.py` | `DeviceDriver` protocol; `U2Driver` (uiautomator2) and `AdbDriver` (no-agent fallback). **Owns device lifecycle**: `prepare_device` / `release_device` / `launch_clean`. |
 | `src/crawler/action_guard.py` | Refuses to click destructive, outbound, account and commerce controls. Presets plus `--guard-extra`. Guarded rows are reported, never pressed. |
@@ -167,6 +167,7 @@ comparison and all three made coverage worse. It costs one command.
 | Change what is refused as unsafe | `crawler/action_guard.py` |
 | Change how the authored sheet is read | `verify/spec_reader.py` |
 | Change how a spec row is judged | `verify/verifier.py :: _verify_row` |
+| Get a run past a pop-up it cannot handle | `crawler/hierarchy.py` for *which button*, `element_tree.py::_force_unblock` for *when to press one*. Read METHOD.md §3.9 first — a streak of failures is not evidence of an overlay, and acting on it exits the app |
 | Change how sheet wording maps to screen text | `verify/matching.py` — and prefer recording an alias over loosening a threshold |
 | Add a mapping for wording no score can bridge (`12M` -> `BACK_CAMERA_PICTURE_SIZE_NORMAL`) | `aliases/samsung_camera.json`, then `--aliases`. Only for labels that cannot match on their own — see METHOD.md §3.8 |
 | Add a device driver | implement `DeviceDriver` in `device_driver.py`, **including `release_device`** |
