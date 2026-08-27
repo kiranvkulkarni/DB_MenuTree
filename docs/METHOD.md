@@ -340,6 +340,64 @@ fail.
 
 ---
 
+### 3.9 The worst failure keeps running
+
+A crash gets noticed. A run that keeps working while producing nothing but
+wrong answers does not.
+
+The Samsung camera raises **"Turn on Location tags?"** partway through a
+walk. Until something presses a button, every tap lands on the modal's scrim.
+The walker does not stop, does not error and does not slow down — it keeps
+navigating, keeps timing out, and records control after control as
+`unreachable` against an app that is entirely healthy:
+
+```
+12:44:24 | INFO    | screen af7cca60da9c depth 4  Quick controls > PORTRAIT
+12:45:39 | WARNING | unreachable: 'MORE' on a5458bbf723d
+12:45:51 | WARNING | unreachable: 'Ultra wide lens' on 8b8ea5531983
+12:46:09 | WARNING | unreachable: 'Wide-angle lens' on 8b8ea5531983
+        ... every line for the rest of the run
+```
+
+Every one of those controls was present and working. The output is a
+coverage figure, a worklist and a `menutree_rows.json` — all the right
+shape, all wrong.
+
+**Relaunching cannot fix it**, which is what makes it durable: these prompts
+are shown per launch, so the recovery path lands on the same wall it was
+trying to escape. The existing `SYSTEM_DIALOGS` handler did not catch it
+either, because that list is ANR, crash and USSD — OS interruptions. An
+ordinary app modal offering a choice was nobody's job.
+
+Three things came out of this worth keeping:
+
+**Detect blocked, not broken.** The signal was never an exception. It was a
+*change in the shape of the log* — INFO lines stopping and WARNING lines
+starting, at a steady rate. Health checks that look for errors miss this
+entirely; the run is not failing, it is succeeding at the wrong thing.
+
+**Clear only what is in the way.** The escape runs *after* navigation has
+already failed, never before. That ordering is the whole design: a dialog
+reached as a work item in the normal way is enumerated and both its branches
+walked, because it is legitimate tree content — Modes rows 9-26 of the sheet
+*are* this prompt. Dismissing on sight would delete real rows from the tree.
+
+**Always press the non-committal branch.** `Cancel`, `Not now`, `Deny` —
+never `Turn on`, `Allow`, `OK` unless nothing else is offered. A crawler that
+clears prompts by accepting them enables location tagging, grants
+permissions and accepts terms; it changes the device it is measuring, and
+the next run starts from somewhere different. Priority comes from the label
+list rather than screen order, because `Cancel` and `Turn on` sit side by
+side and document order picks whichever the layout placed first.
+
+`pick_dismissal()` in `crawler/hierarchy.py` is the single place that
+decides, used by both tools. That is not tidiness: if discovery declines a
+prompt and verification accepts it, the two are measuring different devices
+and their numbers cannot be compared. `tests/test_dialogs.py` pins the real
+dialog's buttons so no future edit can make the affirmative branch reachable.
+
+---
+
 ## 4. Guardrails, and what each one is scar tissue from
 
 | guardrail | what happened |

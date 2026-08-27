@@ -255,5 +255,19 @@ adb shell am force-stop <package>
 first. If it exists the run is still going, and what you are reading is a
 mid-run checkpoint rather than a result.
 
+**The log turns into nothing but `unreachable` warnings** — a modal is
+blocking the app, most often a first-run prompt like "Turn on Location
+tags?". The run is not stuck; it is walking a screen it cannot touch and
+recording healthy controls as missing. Both tools now decline such a prompt
+themselves (`blocking_dialogs_cleared` in the summary counts it). To clear
+one by hand mid-run, without killing the run:
+
+```bash
+adb -s <serial> shell input keyevent KEYCODE_BACK
+```
+
+Check `blocking_dialogs_cleared` before trusting a low-coverage run that
+shows this pattern.
+
 **Low coverage** — read `phase_seconds` in `menutree_rows.json`. Runs end on
 the time budget, so the largest phase is the biggest coverage lever.
