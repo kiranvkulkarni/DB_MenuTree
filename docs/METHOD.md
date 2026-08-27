@@ -215,6 +215,41 @@ meant `Prioritize quality`. Every inexact match is written to
 `alias_review.json`; a person confirms it once and from then on the mapping
 is exact and auditable.
 
+### 3.7 Check the artefact where it is used, not where it is made
+
+Two faults sat in the emitted UVTA suite for the whole project and were
+invisible to every measurement taken:
+
+- **Every control was addressed as `text`.** A row's label is whichever of
+  `text` or `content-desc` was non-empty, so each icon got
+  `verify text "Back key icon" exists` -- a selector that cannot match
+  anything at runtime. About 30% of the suite.
+- **Every `verify` asserted the element that had just been clicked.** A menu
+  item that opens a submenu is usually replaced by it, so the assertion
+  passed vacuously when the item happened to remain and failed spuriously
+  when it did not. It never established what it existed to establish: that
+  the click worked.
+
+Neither showed up in row counts, depth, coverage, or any test. The workbook
+was right. The suite was the right *size*. Every number said the deliverable
+was fine, because **every number measured the tree, and the bug was in the
+translation from tree to test.**
+
+Both were found by a person reading the output and asking what a line would
+actually do on a device. That question is not answerable from the metrics,
+and no amount of instrumenting the walk would have surfaced it.
+
+> Measure the thing you produce, at the point someone consumes it. A
+> deliverable that is the right shape and the right size can still be
+> uniformly wrong.
+
+Concretely, for this repo: `tests/test_uvta.py` now asserts that no `verify`
+checks the element just clicked, and that an icon is addressed by its
+description. If the emitter changes, run a case from the suite mentally
+against a screen before trusting the row count.
+
+---
+
 ---
 
 ## 4. Guardrails, and what each one is scar tissue from
@@ -300,7 +335,24 @@ different layout hits them.
   Check `output/.run-lock-<serial>` first; if it exists, the run is still
   going.
 
-### 5.6 Where the spec's conventions live
+### 5.6 Selectors: one place decides, and it is not the emitter
+
+`src/parser/selectors.py` owns the order -- **text, description, resource id,
+xpath** -- and is the only place it is decided. Which handle a control offers
+is entirely up to whoever built it, so it has to be read off the XML dump per
+element; xpath is structural and always available, which is why it is the
+final fallback rather than one of the priority keys.
+
+The resolved selector is carried from enumeration through `Element` ->
+`TreeNode` -> `menutree_rows.json` -> the emitter. If you add a step to that
+chain, carry it: the emitter re-deciding the selector from a label is exactly
+the bug described in §3.7.
+
+Path steps carry their own selectors too, captured as the walk descends -- a
+child screen's path selectors are its parent's plus the element actually
+pressed to reach it.
+
+### 5.7 Where the spec's conventions live
 
 `MODE_SHORTHAND` in `spec_reader.py` encodes *this team's* sheet convention,
 not a universal one. On another sheet it simply will not fire. A different

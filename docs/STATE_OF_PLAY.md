@@ -75,8 +75,15 @@ The last three moved the numbers measurably on the Realme:
 | before | 306 | 40 | 57 |
 | after | 400 | 4 | 22 |
 
-Best measured run: **465 rows, depth 8, 29 screens, 79 elements traversed**.
-Starting point was 102 rows at depth 4.
+Best measured run on the S25 Ultra camera: **1925 rows, depth 8, 68 screens,
+43.8% coverage**, with a 2000-case UVTA suite, from one hour. The first run on
+that app produced 734 rows at depth 7; the difference is scrolling (discovery
+used to inventory only the visible part of every list) plus the throughput
+work below.
+
+Discovery run-to-run variance remains large -- 465 / 291 / 90 rows on the
+Realme from identical code -- which is why it is not the gate. Treat a single
+run's row count as one sample.
 
 ### Throughput, because runs die on the clock
 
@@ -234,6 +241,12 @@ on the reconstructed S25 Ultra sheet:
 | Settings | 88 | 49 | 28 | 11 | 87% | 63.6% |
 | Modes | 993 | 341 | 632 | 20 | 98% | 35.1% |
 
+The Modes figure is against a NOV-2024 sheet on a much later build; most of
+those Fails are genuine drift, catalogued by `tools/drift_report.py`. 262 of
+them sit on screens where the build exposes internal constants
+(`BACK_CAMERA_PICTURE_SIZE_NORMAL` for `12M`), which no heuristic can or
+should bridge -- that is what `--aliases` is for.
+
 Read the **judged** column before the pass rate. A percentage over a small
 slice of the sheet is not a gate result, and the tool now says so out loud --
 see METHOD.md 3.1 for the run that reported "100%" over 15% of its rows.
@@ -254,6 +267,9 @@ short list:
 | scroll never rewound | a control above the current offset was unreachable |
 | a precondition excused a miss | **a 100% pass rate over 15% of the sheet** |
 | containment matched characters, not words | `On` matched `Exposure monitor` |
+| discovery could not scroll | three quarters of a settings list never inventoried |
+| every UVTA step addressed as `text` | ~30% of the suite unmatchable at runtime |
+| `verify` asserted the element just clicked | proved nothing either way |
 | quantities compared by spelling | `0.6x` != `.6` on 25 rows |
 
 ### What the failures actually are
