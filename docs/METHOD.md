@@ -568,6 +568,68 @@ than any percentage.
 
 ---
 
+### 3.11 The tree in the sheet is not the order it was discovered in
+
+Found by a reader comparing the generated workbook against a hand-written
+`MenuTree_Expected` sheet, cell block F12:J39. Two defects, neither visible in
+any counter, both in how the tree is **shaped after the walk**.
+
+**Depth was the route taken, not the route that exists.** Any click that
+changed the screen counted as a descent. But most screen changes in a camera
+are *lateral* -- switching lens, PHOTO to VIDEO, front to rear -- and they
+return you to a viewfinder, a sibling rather than a child. So wandering
+inflated depth. One run reached the Settings menu as
+
+```
+Filters > Motion photo > Blanc > Switch to front camera > VIDEO >
+Switch to rear camera > Quick controls > Go to Settings
+```
+
+and listed its contents at **depth 10**. The same menu is two clicks from the
+viewfinder. `Max depth 18` on a camera app was the visible symptom.
+
+Depth is now the shortest **observed** route -- a breadth-first pass over the
+screen graph -- which makes it a property of the app rather than of the crawl.
+
+**Rows came out in discovery order.** Every element of one screen, then every
+element of the next, so a parent was separated from its children by the whole
+rest of its own screen. A MenuTree has to read as a tree: a row, then its
+subtree, then the next sibling. Emission is now pre-order.
+
+#### The enabling fact: the walk knew paths but not edges
+
+It recorded *how it got somewhere* and never *what a control opens*. Worse, it
+threw away the most valuable case: a click landing on a screen it already
+knew. That is precisely the observation that yields a **short** route to
+something first reached the long way round, and it was discarded because
+nothing needed enumerating.
+
+#### The inference that looked right and was not
+
+The tempting shortcut: if `Motion photo` opens screen X somewhere, treat it as
+opening X everywhere. It collapses depth beautifully -- 18 to 6 on real data.
+It is also wrong. **A control's destination depends on the mode it is pressed
+in.** On real data it re-parented the viewfinder's `Motion photo` onto the
+Filters panel's, dragging the entire filter list underneath it. The label was
+even unambiguous by the obvious test -- it had exactly one known destination
+-- because the root's own click had never been observed. *Absence of a
+counter-example is not evidence.*
+
+Only observed edges are used. A screen with no established route keeps its
+discovered path and is marked, rather than being given an invented parent:
+`orphan_screens` counts them, `rows_reparented` counts what moved.
+
+#### What this does not fix
+
+If the walk never clicks a control successfully, no edge exists and the short
+route cannot be known. In the run that prompted this, the root's own
+`Go to Settings` failed with *element vanished before click*, so even the
+corrected code leaves that subtree deep. **Shaping can only expose structure
+the walk observed; it cannot supply it.** Supplied that one edge by hand, 49
+rows re-parent and the subtree lands where the expected sheet puts it.
+
+---
+
 ## 4. Guardrails, and what each one is scar tissue from
 
 | guardrail | what happened |
