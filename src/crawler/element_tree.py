@@ -106,6 +106,11 @@ class WorkItem:
     kind: str
     path: List[str]
     depth: int
+    # One (kind, value) per entry in `path`, so an emitted test can address
+    # each navigation step the way that control is actually addressable
+    # rather than assuming its label is visible text.
+    path_selectors: List[tuple] = field(default_factory=list)
+    selector: Optional[tuple] = None
     status: str = "pending"   # pending | done | unreachable | blocked | recorded
     reason: str = ""
 
@@ -132,6 +137,7 @@ class TreeNode:
     kind: str
     depth: int
     path: List[str] = field(default_factory=list)
+    path_selectors: List[tuple] = field(default_factory=list)
     raw_label: str = ""   # the on-screen text, usable as a selector
     interactive: bool = False
     descended: bool = False
@@ -147,6 +153,7 @@ class TreeNode:
             "raw_label": self.raw_label or self.label,
             "selector_kind": self.selector_kind,
             "selector_value": self.selector_value,
+            "path_selectors": [list(s) for s in self.path_selectors],
             "kind": self.kind,
             "depth": self.depth,
             "path": self.path,
@@ -280,6 +287,7 @@ class ElementTreeWalker:
         self._worklist: Dict[tuple, WorkItem] = {}
         self._screen_elements: Dict[str, List[Element]] = {}
         self._screen_paths: Dict[str, List[str]] = {}
+        self._screen_path_selectors: Dict[str, List[tuple]] = {}
         self._row_for: Dict[tuple, TreeNode] = {}
 
     # -- capture ---------------------------------------------------------
@@ -602,7 +610,8 @@ class ElementTreeWalker:
 
     # -- worklist --------------------------------------------------------
     def _register_screen(
-        self, screen_key: str, views: Sequence[Dict], path: List[str], depth: int
+        self, screen_key: str, views: Sequence[Dict], path: List[str], depth: int,
+        path_selectors: Optional[List[tuple]] = None
     ) -> int:
         """Record every element on a screen; queue the actionable ones.
 
@@ -618,6 +627,8 @@ class ElementTreeWalker:
         elements = self._enumerate_scrolled(views)
         self._screen_elements[screen_key] = list(elements)
         self._screen_paths[screen_key] = list(path)
+        path_selectors = list(path_selectors or [])
+        self._screen_path_selectors[screen_key] = path_selectors
 
         logger.info(
             "screen %-12s depth %-2d  %-38s  %d element(s)",
@@ -637,6 +648,7 @@ class ElementTreeWalker:
                 kind=element.kind,
                 depth=depth,
                 path=list(path),
+                path_selectors=list(path_selectors),
                 interactive=element.interactive,
                 blocked=blocked,
                 selector_kind=element.selector_kind,
@@ -653,6 +665,9 @@ class ElementTreeWalker:
                 kind=element.kind,
                 path=list(path),
                 depth=depth,
+                path_selectors=list(path_selectors),
+                selector=((element.selector_kind, element.selector_value)
+                          if element.selector_kind else None),
             )
 
             if KEYPAD_KEY.fullmatch(element.label.strip()):
@@ -1079,7 +1094,10 @@ class ElementTreeWalker:
                 logger.info("foreign screen %s -- recorded, not walked", after_pkg)
             else:
                 self._register_screen(
-                    after_key, after_views, item.path + [item.label], item.depth + 1
+                    after_key, after_views, item.path + [item.label],
+                    item.depth + 1,
+                    list(item.path_selectors) + ([item.selector] if item.selector else
+                                                 [("text", item.label)]),
                 )
         else:
             item.status, item.reason = "done", "selection on the same screen"
