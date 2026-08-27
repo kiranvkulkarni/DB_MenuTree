@@ -283,6 +283,9 @@ short list:
 | every UVTA step addressed as `text` | ~30% of the suite unmatchable at runtime |
 | `verify` asserted the element just clicked | proved nothing either way |
 | quantities compared by spelling | `0.6x` != `.6` on 25 rows |
+| breadth-first fallback after a branch | 43 relaunches, 28% of the budget |
+| cycles registered as depth | `max_depth 18` on a camera; 552 of 636 rows |
+| the same screen re-listed under a drifted key | 68 of 225 rows duplicated |
 | a modal blocked the app, unrecognised | a whole run of healthy controls recorded `unreachable` |
 | a recovery that never proved it worked | BACK exited to the launcher and counted as success |
 

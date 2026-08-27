@@ -212,6 +212,8 @@ python tests/test_hierarchy.py     # XML parsing, state keys, selector priority
 python tests/test_matching.py      # sheet wording vs screen text, both directions
 python tests/test_navigation.py    # the rise-then-descend plan
 python tests/test_run_lock.py      # one run per device
+python tests/test_traversal.py     # visit order, cycle guards, one control one row
+python tests/test_dialogs.py       # getting out of a modal that is in the way
 python tests/make_spec_fixture.py  # a workbook shaped like the real deliverable
 ```
 

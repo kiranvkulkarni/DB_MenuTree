@@ -89,6 +89,7 @@ All run without a device, in seconds. Run them before any device work.
 |---|---|
 | `tests/test_hierarchy.py` | XML parsing, state-key stability, Compose selectors, selector priority, bounds |
 | `tests/test_run_lock.py` | Mutual exclusion per device, stale-lock takeover, `--force-lock`, corrupt lock files |
+| `tests/test_traversal.py` | What the walk visits next (nearest-first, deepest to break a tie), cycle guards, and one-control-one-row |
 | `tests/test_dialogs.py` | Getting out of a modal that is in the way: declines rather than accepts, label priority beats screen order, guard veto, walker and verifier agree |
 | `tests/test_matching.py` | Sheet-wording drift that must match, different controls that must not, resource-id matching, alias round trip |
 | `tests/test_navigation.py` | The rise-then-descend plan, including the sibling case and the depth invariant |
@@ -167,6 +168,8 @@ comparison and all three made coverage worse. It costs one command.
 | Change what is refused as unsafe | `crawler/action_guard.py` |
 | Change how the authored sheet is read | `verify/spec_reader.py` |
 | Change how a spec row is judged | `verify/verifier.py :: _verify_row` |
+| Change what the walk visits next | `element_tree.py::_next_item`. Navigation is 30-70% of a run, so this is a cost question, not a style one — METHOD.md §3.10 |
+| Stop the walk looping through a menu | `_equivalent_screen` (threshold) and the `item.label in item.path` guard (structural). Keep both; they fail differently |
 | Get a run past a pop-up it cannot handle | `crawler/hierarchy.py` for *which button*, `element_tree.py::_force_unblock` for *when to press one*. Read METHOD.md §3.9 first — a streak of failures is not evidence of an overlay, and acting on it exits the app |
 | Change how sheet wording maps to screen text | `verify/matching.py` — and prefer recording an alias over loosening a threshold |
 | Add a mapping for wording no score can bridge (`12M` -> `BACK_CAMERA_PICTURE_SIZE_NORMAL`) | `aliases/samsung_camera.json`, then `--aliases`. Only for labels that cannot match on their own — see METHOD.md §3.8 |
