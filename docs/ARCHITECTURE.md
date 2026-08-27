@@ -566,6 +566,89 @@ arrive -- because the element sets are genuinely identical.
 
 ---
 
+## 12.57 Selectors, and what the emitted suite must say
+
+### Which handle a control offers is not our choice
+
+Whoever built the app decided whether a control exposes visible text, a
+content-description, a resource id, or nothing at all. So a selector is
+*read* per element from the XML dump, in the confirmed order:
+
+```
+1. text        2. description        3. resource id        4. xpath
+```
+
+xpath is structural and always available, which is why it is the final
+fallback rather than one of the priority keys.
+`src/parser/selectors.py` is the only place this order is decided, and the
+resolved selector travels `Element` -> `TreeNode` -> `menutree_rows.json` ->
+the emitter. Path steps carry their own, captured as the walk descends: a
+child screen's path selectors are its parent's plus the element actually
+pressed to reach it.
+
+**Why it must travel rather than be re-derived.** A row's label is whichever
+of text or content-desc was non-empty. An emitter that turns a label back
+into `text "<label>"` produces, for every icon, a selector that cannot match
+anything — `verify text "Back key icon" exists` against a control whose only
+handle is `desc "Navigate up"`. That was about 30% of a 2000-case suite, and
+nothing in the row count, depth or coverage showed it.
+
+### A verify must prove the click before it
+
+The emitter used to click a step and then assert that same step still
+existed:
+
+```
+click text "Quick settings"
+verify text "Quick settings" exists      <-- proves nothing
+```
+
+A menu item that opens a submenu is usually replaced by it, so this passed
+vacuously when the item happened to stay on screen and failed spuriously when
+it did not. Neither outcome establishes the one thing the step exists for:
+that the click worked.
+
+Assertions are chained instead — click A, verify B; click B, verify C — so
+each one proves the preceding click landed by asserting what that click was
+supposed to reveal:
+
+```
+launch "com.sec.android.app.camera"
+click desc "Quick controls"
+verify text "Filters" exists
+click text "Filters"
+verify desc "Take picture" exists
+```
+
+A case that passes has demonstrably walked its whole path.
+`tests/test_uvta.py` asserts both properties, including that no verify checks
+the element just clicked.
+
+---
+
+## 12.58 Discovery scrolls, or it inventories only the visible part
+
+The walker enumerated one hierarchy dump per screen, so a list taller than
+the display was recorded only as far as it happened to be visible — the
+Samsung camera's settings screen carries 45 labels and shows about twelve.
+
+Two halves, and doing only one is worse than neither:
+
+- `_enumerate_scrolled` collects elements at each scroll position,
+  deduplicated, then **rewinds to the top** so the caller sees the screen it
+  expects.
+- `_find_element_scrolled` scrolls to reach a control when the walker returns
+  to press it. Without this, rows below the fold are recorded and then
+  reported *unreachable* — losing exactly the rows scrolling was added to
+  find, while making the coverage figure look worse.
+
+The swipe geometry lives in `hierarchy.py` (`scrollable_container`,
+`swipe_span`) and is shared with the verifier. That sharing is deliberate: a
+fixed-span swipe produced a negative coordinate on a short container and
+killed a two-hour run, and one copy of that fix is enough to maintain.
+
+---
+
 ## 12.6 Device lifecycle and concurrency
 
 Two rules that are easy to get wrong and expensive to debug, because both
