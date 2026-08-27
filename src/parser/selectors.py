@@ -3,7 +3,7 @@
 Shared by both crawler back-ends. Every view is normalised to the same dict
 shape first -- keys `text`, `content_description`, `resource_id`, `class`,
 `children` (indices into the state's view list) -- so this logic is written
-once regardless of whether the hierarchy came from DroidBot or uiautomator.
+once, regardless of which back-end produced the hierarchy.
 """
 from typing import Dict, List, Optional, Sequence, Tuple
 

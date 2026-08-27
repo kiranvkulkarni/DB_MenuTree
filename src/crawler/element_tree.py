@@ -137,11 +137,16 @@ class TreeNode:
     descended: bool = False
     blocked: Optional[str] = None
     note: str = ""
+    # Resolved from the XML dump in the order text -> desc -> id -> xpath.
+    selector_kind: Optional[str] = None
+    selector_value: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
             "label": self.label,
             "raw_label": self.raw_label or self.label,
+            "selector_kind": self.selector_kind,
+            "selector_value": self.selector_value,
             "kind": self.kind,
             "depth": self.depth,
             "path": self.path,
@@ -634,6 +639,8 @@ class ElementTreeWalker:
                 path=list(path),
                 interactive=element.interactive,
                 blocked=blocked,
+                selector_kind=element.selector_kind,
+                selector_value=element.selector_value,
             )
             self.rows.append(row)
             self._row_for[(screen_key, element.label, element.kind)] = row

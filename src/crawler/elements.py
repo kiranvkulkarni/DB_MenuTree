@@ -18,6 +18,8 @@ knowledge rather than anything observable on screen.
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
+from ..parser.selectors import SelectorResolver
+
 # Content-descriptions Android uses for up/back affordances.
 _BACK_HINTS = ("navigate up", "back", "go back", "close", "dismiss")
 
@@ -47,6 +49,13 @@ class Element:
     checked: Optional[bool] = None
     selected: bool = False
     bounds: str = ""
+    # How a test should address this element, resolved from the XML dump in
+    # the confirmed order text -> description -> resource id -> xpath. The
+    # label alone is not enough: it is whichever of text or content-desc was
+    # non-empty, so emitting `text "Flash"` for an icon whose label came from
+    # its content-desc produces a selector that cannot match at runtime.
+    selector_kind: Optional[str] = None    # text | desc | id | xpath | class
+    selector_value: Optional[str] = None
 
     def annotated(self) -> str:
         """Label with a type annotation, in the sheet's style."""
@@ -95,6 +104,16 @@ def _kind_of(view: Dict, label: str, is_first_text: bool) -> str:
     if is_first_text:
         return "title"
     return "text"
+
+
+# Resolves each view into a selector, in the confirmed order:
+#   1. text   2. description   3. resource id   4. xpath
+#
+# Which of these a control offers is entirely up to whoever built it -- some
+# expose text, some only a content-desc, some only an id, and some nothing at
+# all, which is what the structural xpath fallback is for. Reading it off the
+# XML dump per element is the only way to know.
+_RESOLVER = SelectorResolver()
 
 
 def enumerate_elements(
@@ -154,6 +173,7 @@ def enumerate_elements(
         if kind in ("title", "text", "subtitle"):
             seen_text = True
 
+        selector = _RESOLVER.resolve(view, list(views))
         elements.append(
             Element(
                 label=label,
@@ -164,6 +184,8 @@ def enumerate_elements(
                 checked=view.get("checked") if view.get("checkable") else None,
                 selected=bool(view.get("selected")),
                 bounds=view.get("bounds", ""),
+                selector_kind=selector.strategy if selector else None,
+                selector_value=selector.value if selector else None,
             )
         )
     return elements

@@ -4,42 +4,31 @@ Where each thing lives and what it is responsible for. Pair with
 [ARCHITECTURE.md](ARCHITECTURE.md), which explains *why*, and
 [STATE_OF_PLAY.md](STATE_OF_PLAY.md), which says what currently works.
 
-There are **four** back-ends in the tree, built in this order. Only the last
-two matter for the deliverable; A and B are kept because their downstream
-(coverage, path emission, the graph model) is still shared.
+One traversal, used two ways. DroidBot and the replay explorer were the
+first two attempts and have been removed from the tree, along with the LLM
+naming pass — see ARCHITECTURE §3 for why.
 
-| | Back-end | Question it answers | Status |
-|---|---|---|---|
-| A | DroidBot | what screens exist? | superseded |
-| B | replay explorer | what screens exist, deterministically? | superseded |
-| C | element-tree walker | what *elements* exist, by depth? | works, not reproducible |
-| D | **verifier** | does the build match the authored sheet? | **the gate** |
+| | tool | question |
+|---|---|---|
+| Discovery | `tools/build_menutree.py` | what is in this build? |
+| **Verification** | `tools/verify_menutree.py` | **does this build match the sheet?** |
 
-C and D share every layer except traversal. That is the whole design: the
-expensive, hard-won parts — element enumeration, the action guard, screen
-identity, the workbook writer — are traversal-agnostic.
+They share every layer except how they choose what to visit: element
+enumeration, selector resolution, the action guard, screen identity, device
+lifecycle and the workbook writer are common to both.
 
 ## Data flow
 
 ```
-   +--------- back-ends A/B: graph discovery (superseded) ------------+
-   device -> droidbot -> utg.js -> utg_parser.py ---+
-   device -> replay_explorer.py -> menutree.json ---+-> MenuTree -> path_emitter
-                                                    |            -> coverage.py
-   +------------------------------------------------+
+   device ─► element_tree.py ──► menutree_rows.json ──┬─► menutree_workbook.py ─► .xlsx
+                                                      └─► tree_uvta.py ────────► .uvta
 
-   +--------- back-end C: element discovery --------------------------+
-   device -> element_tree.py -> menutree_rows.json --+
-                                                     |
-   +--------- back-end D: verification (the gate) ----+---------------+
-   MenuTree.xlsx -> spec_reader.py -> SpecRow[] -> verifier.py -> RowResult[]
-                                                     |
-                                                     v
-                             menutree_workbook.py -> output/<run>/*.xlsx
-                             tree_uvta.py         -> output/<run>/*.uvta
+   MenuTree.xlsx ─► spec_reader.py ─► SpecRow[] ─► verifier.py ─► RowResult[]
+                                                        │            └─► drift_report.py
+                                                        └─► a COPY of the workbook
 ```
 
-Both C and D write into a **per-run folder**, `output/<package>_<stamp>/` or
+Both write into a per-run folder, `output/<package>_<stamp>/` or
 `output/verify_<package>_<stamp>/`, stamped to the millisecond. Nothing is
 ever written over a previous run.
 
@@ -47,10 +36,10 @@ ever written over a previous run.
 
 | File | Responsibility |
 |---|---|
-| `src/parser/menu_tree.py` | `MenuTree`, `MenuState`, `Transition`, `Selector`. BFS from root, reachability, dead ends, ambiguity classification. **Back-end agnostic.** |
-| `src/parser/selectors.py` | `SelectorResolver` — view to selector, in the required priority **text, description, resource id, xpath**, including Compose descendant-label resolution. |
+| `src/parser/menu_tree.py` | `Selector` and the shared graph types. The common vocabulary between enumeration, the emitter and the verifier. |
+| `src/parser/selectors.py` | **Selector priority: text → description → resource id → xpath.** Which handle a control offers is up to whoever built it, so this reads it off the XML dump per element. The only place that order is decided. |
 
-## Device layer — shared by C and D
+## Device layer — shared by discovery and verification
 
 | File | Responsibility |
 |---|---|
@@ -60,7 +49,7 @@ ever written over a previous run.
 | `src/crawler/action_guard.py` | Refuses to click destructive, outbound, account and commerce controls. Presets plus `--guard-extra`. Guarded rows are reported, never pressed. |
 | `src/run_lock.py` | **One run per device.** A live lock refuses a second run and names the PID; a stale one is taken over. |
 
-## Back-end C — element-tree walker (discovery)
+## Discovery — the element-tree walker
 
 | File | Responsibility |
 |---|---|
@@ -68,7 +57,7 @@ ever written over a previous run.
 | `tools/build_menutree.py` | CLI. Per-run folder, guard flags, `--clear-between-paths`, `--no-reset`, `--skip-walk`. |
 | `tools/compare_runs.py` | Two-run comparison: metrics side by side with better/worse markers, plus where the clock went. Warns when a run is still live, because a mid-run checkpoint reads as a finished result. |
 
-## Back-end D — verifier (the gate)
+## Verification — the gate
 
 | File | Responsibility |
 |---|---|
@@ -86,12 +75,10 @@ ever written over a previous run.
 |---|---|
 | `src/generator/menutree_workbook.py` | The deliverable: single sheet, depth columns, `Needs Manual Test`, UVTA in the last column, result dropdowns. |
 | `src/generator/menutree_sheet.py` | The depth-column layout itself, shared by the workbook writer and the verifier's write-back. |
-| `src/generator/tree_uvta.py` | Element-tree rows to UVTA test cases (back-ends C/D). |
-| `src/generator/path_emitter.py` | Graph paths to `TestCase`s (back-ends A/B). Deterministic ordering. |
+| `src/generator/tree_uvta.py` | Element-tree rows to UVTA test cases . |
+| `src/generator/path_emitter.py` | `TestCase`, the shared shape the writer consumes. |
 | `src/generator/uvta_syntax.py` | **Every piece of UVTA surface syntax.** Change output here and nowhere else. Verified against the cheat sheet; unconfirmed forms marked `UNVERIFIED`. |
 | `src/generator/uvta_writer.py` | Writes and structurally validates the suite. Refuses to write an empty suite. |
-| `src/analysis/coverage.py` | Coverage report, baseline diffing, gate evaluation. |
-| `src/llm/inference.py` | Optional. **Naming and grouping only** — never in the structural path. |
 | `src/logging_setup.py` | Timestamped stream plus per-run file logging. |
 
 ## Tests
@@ -104,7 +91,6 @@ All run without a device, in seconds. Run them before any device work.
 | `tests/test_run_lock.py` | Mutual exclusion per device, stale-lock takeover, `--force-lock`, corrupt lock files |
 | `tests/test_matching.py` | Sheet-wording drift that must match, different controls that must not, resource-id matching, alias round trip |
 | `tests/test_navigation.py` | The rise-then-descend plan, including the sibling case and the depth invariant |
-| `tests/make_fixture.py` | Writes a synthetic `droidbot_out/` in DroidBot's exact format |
 | `tests/make_spec_fixture.py` | Writes `tests/spec_fixture.xlsx`, shaped like the real workbook — bracketed context rows, annotations, depth to 7 |
 
 ```bash
@@ -181,7 +167,7 @@ comparison and all three made coverage worse. It costs one command.
 | Change how the authored sheet is read | `verify/spec_reader.py` |
 | Change how a spec row is judged | `verify/verifier.py :: _verify_row` |
 | Change how sheet wording maps to screen text | `verify/matching.py` — and prefer recording an alias over loosening a threshold |
-| Add a device back-end | implement `DeviceDriver` in `device_driver.py`, **including `release_device`** |
+| Add a device driver | implement `DeviceDriver` in `device_driver.py`, **including `release_device`** |
 | Add an action type (scroll, text input) | `elements.py` (enumerate) plus `element_tree.py` (`_perform`) plus `uvta_syntax.py` (render) |
 
 ## Config
