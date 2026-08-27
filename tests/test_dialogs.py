@@ -147,6 +147,36 @@ def main() -> int:
                 "a Learn more link opens a browser")
 
     print()
+    print("a streak of failures is weak evidence, and is treated as weak")
+    # Three write-offs in a row says the walk is not getting anywhere. It does
+    # NOT say why, and in this app it is usually the screen-identity problem
+    # rather than an overlay. A version that assumed otherwise pressed BACK on
+    # the streak; BACK on the camera's root screen exits to the launcher, and
+    # the run spent 38% of its budget relaunching. Coverage fell 22.8% -> 18.9%.
+    unblock = inspect.getsource(ElementTreeWalker._force_unblock)
+    ok &= check("does nothing when there is no evidence of an overlay",
+                "return False" in unblock.split("leaving it alone")[0][-200:]
+                or "leaving it alone" in unblock,
+                "a navigation problem is not fixed by pressing things")
+    ok &= check("leaving the app counts as evidence",
+                "foreground is %s, not %s" in unblock)
+    ok &= check("an overlay with a way out is cleared even if not dialog-shaped",
+                "pick_dismissal" in unblock,
+                "bottom sheets and consent pages block just as completely")
+    ok &= check("BACK is not pressed speculatively",
+                unblock.count("press_back") == 1
+                and "foreground is" in unblock.split("press_back")[0],
+                "the only BACK is the one that returns us from another app")
+
+    print()
+    print("a recovery must not count leaving the app as success")
+    ok &= check("the dialog clearer verifies the package after BACK",
+                "after_pkg == self.package" in clearer,
+                "exiting to the launcher changes the screen key too")
+    ok &= check("and verifies the screen actually changed",
+                "after_key != before_key" in clearer)
+
+    print()
     print("what was written off while blocked is put back")
     # Clearing the pop-up only lets the run continue. Every control already
     # recorded unreachable during the blockage stays wrong in the output --

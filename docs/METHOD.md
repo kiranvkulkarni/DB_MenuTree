@@ -390,29 +390,62 @@ the next run starts from somewhere different. Priority comes from the label
 list rather than screen order, because `Cancel` and `Turn on` sit side by
 side and document order picks whichever the layout placed first.
 
-#### Recognising the overlay is the wrong trigger
+#### Recognising the overlay is not enough, and a streak is not evidence
 
-The first version of this fix only fired when `looks_like_dialog()` returned
-true and navigation had already failed. That is too narrow, and the narrowness
-is the interesting part: `looks_like_dialog` knows a *classic modal* — a
-dialog class in the tree, or few views with few clickables. It does not know
-a bottom sheet, a full-screen consent page, an in-app browser opened by a
-`Learn more` link, or a permission prompt that fills the window. Every one of
-those blocks a walk just as completely.
+The first fix only fired when `looks_like_dialog()` returned true. That is too
+narrow: it knows a *classic modal* — a dialog class in the tree, or few views
+with few clickables — and not a bottom sheet, a full-screen consent page, an
+in-app browser opened by a `Learn more` link, or a permission prompt that
+fills the window. Each of those blocks a walk completely.
 
-**Waiting until the thing in the way can be named is how the run gets stuck
-in the first place.** So the trigger is evidence instead: `blocked_after`
-consecutive write-offs — three by default, because a walk legitimately hits
-one or two dead controls in a row and never three. Nothing has to identify
-the overlay. When the walk is demonstrably stuck, any non-committal button on
-screen is worth pressing, and the escalation runs decline → BACK →
-acknowledge → relaunch, cheapest and least destructive first.
+The obvious generalisation is to stop trying to recognise the thing at all
+and trigger on the symptom instead: N consecutive write-offs means blocked.
+**That was wrong, and the way it was wrong is the lesson.**
 
-The second gap was subtler. A pop-up that arrives *after* navigation
-succeeded leaves the control present in the tree but covered, so the click
-lands on the scrim and the walker reads it as `element vanished before it
-could be clicked`. That misreading is what turned one prompt into a whole run
-of write-offs.
+Three write-offs in a row is not evidence of an overlay in this app. It is
+the ordinary signature of the screen-identity problem (§6) — `back_ok 1`
+against `back_failed 75` in one measured run. The detector fired constantly,
+on a condition that has nothing to do with pop-ups, and then pressed BACK.
+BACK on the camera's root screen exits to the launcher:
+
+| | recognise-only | streak + BACK | streak + evidence |
+|---|---|---|---|
+| rows discovered | 189 | 88 | **225** |
+| max depth | 4 | 4 | **5** |
+| screens visited | 9 | 4 | **10** |
+| relaunches | 51 | 58 | **43** |
+| left the app | yes | yes | **no** |
+
+The middle column spent 38% of its budget relaunching after its own
+recoveries. Worse, the check meant to prevent exactly this — *did the press
+change the screen?* — was **satisfied** by leaving the app. The most
+destructive available outcome registered as success, which is the false-green
+failure of §3.1 wearing a different hat.
+
+**A symptom with more than one cause is not a diagnosis.** The streak is
+still what prompts a look, because it is nearly free, but the recovery now
+acts only on positive evidence that something is actually in the way:
+
+1. the foreground package is not ours — unambiguous
+2. `looks_like_dialog` recognises a modal
+3. a non-committal button is genuinely on screen — the bottom-sheet and
+   consent-page case, and the reason the general path exists at all
+
+If none hold it does nothing and logs that it did nothing. **Doing nothing is
+the correct response to a navigation problem.** There is exactly one BACK
+left in that path — the one that returns from another app — and every
+dismissal re-checks the foreground package afterwards, because a recovery
+that ends outside the app has not recovered anything.
+
+A second, subtler gap: a pop-up arriving *after* navigation succeeded leaves
+the control present but covered, so the click lands on the scrim and reads as
+`element vanished before it could be clicked`. That misreading is what turns
+one prompt into a run of write-offs, so that path costs one dump to check.
+
+> Discovery is not reproducible (§6, README §6): 465, 291 and 90 rows from
+> identical code. Three runs cannot prove an improvement. What they do
+> establish is the safety property — no blind presses, no app exits — and
+> that is what the numbers above are offered as.
 
 #### Clearing it is only half the fix
 

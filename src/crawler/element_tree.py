@@ -630,7 +630,7 @@ class ElementTreeWalker:
         legitimate tree content. This clears it only when it is in the way.
         """
         assert self.driver is not None
-        _, views, _ = self._await_stable()
+        before_key, views, _ = self._await_stable()
         if not views:
             return False
         # `force` skips the heuristic. looks_like_dialog recognises a classic
@@ -660,42 +660,54 @@ class ElementTreeWalker:
         # acknowledgement.
         try:
             self.driver.press_back()
+            time.sleep(self.settle)
         except DriverError:
             pass
-        _, after, _ = self._await_stable()
-        if after and not looks_like_dialog(after, self.package):
+        after_key, after, after_pkg = self._await_stable()
+        # The press has to PROVE it did something. Testing only that the
+        # result is not a dialog is trivially true on a healthy screen, so
+        # under `force` -- where there may be no dialog at all -- every BACK
+        # reported a successful recovery. Measured: 17 detections, 16 of them
+        # claiming to have cleared a dialog, 1 that actually pressed
+        # anything. Each false success requeued work that failed again, and
+        # the run spent its budget going round.
+        if (after and after_key != before_key
+                and after_pkg == self.package
+                and not looks_like_dialog(after, self.package)):
             self._blocking_dialogs_cleared += 1
             logger.info("cleared blocking dialog with BACK")
             return True
         return press(ACKNOWLEDGE_LABELS, "acknowledges; nothing else offered")
 
     def _force_unblock(self) -> bool:
-        """Something is standing in front of the app. Get past it.
+        """Something is standing in front of the app. Get past it -- or admit
+        that nothing is, and do nothing.
 
-        Called on evidence rather than on recognition: `blocked_after`
-        consecutive write-offs in a row. That matters, because the thing in
-        the way is not always dialog-shaped -- a bottom sheet, a full-screen
-        consent page, an in-app browser opened by a "Learn more" link and a
-        runtime permission prompt all block a walk completely while looking
-        nothing alike. Waiting until we can *name* the overlay is how a run
-        spends its whole budget recording a healthy app as unreachable.
+        The trigger for calling this is a streak of write-offs, which is
+        cheap evidence and *weak* evidence. It says the walk is not getting
+        anywhere; it does not say why. In this app it is usually the
+        screen-identity problem (METHOD.md 6) rather than an overlay, and a
+        recovery that assumes otherwise does real damage.
 
-        The ladder is ordered by how much it costs and how much it destroys:
+        Measured, on the version that assumed otherwise: it pressed BACK
+        whenever the streak fired, BACK on the camera's root screen exits to
+        the launcher, and the run then spent 38% of its budget relaunching.
+        Coverage fell from 22.8% to 18.9% and screens visited from 9 to 4.
+        Worse, "the screen changed" counted that as a successful recovery --
+        leaving the app entirely looked like progress.
 
-            1. press a non-committal button, if one is on screen
-            2. BACK, which commits to nothing at all
-            3. acknowledge, when nothing else is offered
-            4. relaunch, which loses our position in the tree
-
-        Never presses an affirmative button before trying the alternatives,
-        and the action guard vetoes throughout, so this cannot accept a term
-        or grant a permission to make progress.
+        So this acts only on POSITIVE evidence that something is in the way,
+        and returns False otherwise. Doing nothing is the correct answer to a
+        navigation problem, and the caller then leaves the write-offs alone
+        rather than requeueing work that will fail the same way.
         """
         assert self.driver is not None
-        before, views, package = self._await_stable()
+        _, views, package = self._await_stable()
+        if not views:
+            return False
 
-        # Out of the app entirely -- a link opened a browser, or a chooser
-        # took over. BACK first; it usually returns us where we were.
+        # Evidence 1: we are not in the app at all. A link opened a browser,
+        # a chooser took over, or an earlier BACK escaped. Unambiguous.
         if package and package != self.package:
             logger.warning("blocked: foreground is %s, not %s", package, self.package)
             try:
@@ -708,21 +720,34 @@ class ElementTreeWalker:
                 self._blocked_recoveries += 1
                 logger.info("recovered from %s with BACK", package)
                 return True
+            if self._relaunch_and_replay("", [], clear=self.clear_between_paths):
+                self._blocked_recoveries += 1
+                return True
+            return False
 
-        if self._clear_blocking_dialog(force=True):
+        # Evidence 2: a modal is on screen and the heuristic recognises it.
+        if looks_like_dialog(views, self.package):
+            if self._clear_blocking_dialog():
+                self._blocked_recoveries += 1
+                return True
+
+        # Evidence 3: the overlay is not dialog-shaped -- a bottom sheet, a
+        # consent page, a tip card -- but it offers a way out. Pressing a
+        # non-committal button that is actually on screen is safe whatever
+        # the thing turns out to be. This is the case looks_like_dialog
+        # misses, and it is the reason this method exists.
+        elements = self._elements(views)
+        choice = pick_dismissal(DECLINE_LABELS, elements,
+                                lambda text: self.guard.blocks("text", text))
+        if choice is not None and self._click(choice, views):
+            time.sleep(self.settle)
             self._blocked_recoveries += 1
+            logger.info("cleared what was in the way via %r", choice.label)
             return True
 
-        after, _, _ = self._await_stable()
-        if after != before:
-            # Pressing something changed the screen even if no rule fired.
-            self._blocked_recoveries += 1
-            return True
-
-        logger.warning("blocked and could not clear it -- relaunching")
-        if self._relaunch_and_replay(before or "", [], clear=self.clear_between_paths):
-            self._blocked_recoveries += 1
-            return True
+        # No evidence of an overlay. This is a navigation problem, and
+        # pressing anything here is how the run ends up on the launcher.
+        logger.info("write-offs are not from a blocked screen -- leaving it alone")
         return False
 
     def _requeue_blocked(self) -> int:
