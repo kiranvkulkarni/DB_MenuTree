@@ -286,6 +286,11 @@ short list:
 | breadth-first fallback after a branch | 43 relaunches, 28% of the budget |
 | cycles registered as depth | `max_depth 18` on a camera; 552 of 636 rows |
 | the same screen re-listed under a drifted key | 68 of 225 rows duplicated |
+| every panel re-listed the whole viewfinder | the viewfinder nested at depth 5 |
+| an expansion in place not counted as a descent | Flash On/Off/Auto recorded nowhere |
+| options pressed, not just listed | selected 200MP; the root became unrecognisable |
+| a screen enumerated once, in a transient state | 4 real controls written off as vanished |
+| last-used mode not reset on relaunch | VIDEO/PORTRAIT/MORE unreachable; 90 rows vs 563 |
 | a modal blocked the app, unrecognised | a whole run of healthy controls recorded `unreachable` |
 | a recovery that never proved it worked | BACK exited to the launcher and counted as success |
 

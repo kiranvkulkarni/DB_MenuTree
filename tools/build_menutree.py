@@ -70,12 +70,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--guard-extra", default="")
     p.add_argument(
         "--clear-between-paths", action="store_true",
-        help="pm clear the app before a relaunch when a sibling element has "
-             "vanished (the one-shot-dialog case: an earlier option already "
-             "dismissed it). Required to reach BOTH branches of a dialog like "
-             "'Turn on Location tags? Cancel / Turn on'. Resets the app's "
-             "saved preferences every time it fires -- only use on a "
-             "disposable test device, never on one with real user data.",
+        help="pm clear the app before a recovery relaunch. ON by default, "
+             "because a run already starts with a pm clear; --no-reset turns "
+             "both off together. It is what lets the walk get home: the "
+             "camera reopens in its LAST-USED mode, so after visiting VIDEO "
+             "every relaunch lands in VIDEO and the root is never matched "
+             "again. Measured, off vs on: 90 rows / 12 screens / 60 pct "
+             "coverage against 563 rows / 66 screens / 78.7 pct, with VIDEO, "
+             "PORTRAIT and MORE unreachable in the first and all descended "
+             "in the second.",
     )
     p.add_argument("--uvta-output", default=None,
                    help="Path for the UVTA suite. Defaults to "
@@ -134,8 +137,12 @@ def main() -> int:
             "guard_enabled": not args.no_guard,
             "guard_presets": [g for g in args.guard_presets.split(",") if g],
             "guard_extra_patterns": [g for g in args.guard_extra.split(",") if g],
-            "clear_between_paths": args.clear_between_paths,
             "reset_before_start": not args.no_reset,
+            # Follows --no-reset rather than standing alone: a run that
+            # already clears at startup is not made riskier by clearing on a
+            # recovery relaunch, and without it the walk cannot return to the
+            # root of an app that restores its last-used state.
+            "clear_between_paths": args.clear_between_paths or not args.no_reset,
         })
         try:
             walker.walk()

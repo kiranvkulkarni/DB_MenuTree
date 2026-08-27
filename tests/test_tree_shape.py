@@ -131,6 +131,33 @@ def main() -> int:
                 out5[0].depth == 1 and len(out5) == 2)
 
     print()
+    print("a node's children are what the click revealed")
+    # Learned by reading the hand-authored S25 Ultra MenuTree. It lists On,
+    # Off and Auto as the children of "Flash icon", and it never re-lists the
+    # viewfinder inside a panel opened over it. The crawler did both wrong:
+    # pressing Flash expands in place, scoring ~0.9 against its own screen, so
+    # it was written off as a "selection" and the three options were recorded
+    # nowhere; and every panel re-listed Take picture, Switch to front camera
+    # and the rest, putting the whole viewfinder under Filters > Blanc at
+    # depth 5.
+    import inspect
+    walk = inspect.getsource(ElementTreeWalker)
+    ok &= check("a press that reveals a new control counts as opening something",
+                "similarity < self.similarity_threshold or revealed" in walk,
+                "an inline expansion scores ~0.9 against its own screen")
+    ok &= check("only NEW controls count, not new text",
+                "if e.interactive and self._fingerprint(e) not in offered" in walk,
+                "a tip card appearing is not a menu")
+    ok &= check("a screen lists what it adds to its parent",
+                "parent_screen" in walk and "_inherited_skipped" in walk)
+    ok &= check("the full element set is still kept for identification",
+                "self._screen_elements[screen_key] = list(elements)" in walk,
+                "identification needs everything; only the listing is filtered")
+    ok &= check("merging refuses to swallow a screen that offers something new",
+                "offered = {self._fingerprint(e) for e in known if e.interactive}" in walk,
+                "otherwise the cycle guard deletes Flash's On/Off/Auto")
+
+    print()
     print("ALL PASS" if ok else "FAILURES PRESENT")
     return 0 if ok else 1
 
