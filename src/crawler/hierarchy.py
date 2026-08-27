@@ -282,6 +282,52 @@ def foreground_package(
     return max(counts.items(), key=lambda kv: kv[1])[0]
 
 
+# How to get out of a modal that is in the way, in order of preference.
+#
+# Non-committal first: every one of these DECLINES whatever is being offered,
+# so pressing one cannot enable a setting, accept a term or grant a
+# permission. A walk that clears dialogs by pressing the affirmative branch
+# changes the device it is measuring.
+DECLINE_LABELS = ("cancel", "not now", "no thanks", "later", "deny",
+                  "don't allow", "dont allow", "skip")
+
+# An informational dialog often has no way out but acknowledgement --
+# "Location tags and sharing ... OK" had no non-committal option at all, and
+# stranded 53 of 60 rows behind it while the run relaunched 52 times into the
+# same wall. Tried only after the declines and after BACK, and the action
+# guard still applies, so an "OK" that would confirm something destructive is
+# refused before it is pressed.
+ACKNOWLEDGE_LABELS = ("ok", "got it", "dismiss", "close", "continue", "done")
+
+
+def pick_dismissal(labels: Sequence[str], elements: Sequence,
+                   blocked=None) -> Optional[object]:
+    """The element to press to get out of a modal, or None.
+
+    One place decides which button clears a dialog, because both the walker
+    and the verifier have to make this choice and they must not drift apart:
+    a discovery run that declines a prompt and a verification run that
+    accepts it are measuring two different devices.
+
+    Priority is `labels` order, not screen order. That matters -- "Cancel"
+    and "Turn on" sit side by side and document order would pick whichever
+    the layout happened to place first, which on a right-to-left locale is
+    the affirmative one.
+
+    `blocked(label) -> reason or falsy` lets the action guard veto a press
+    before it happens, so an "OK" that would confirm something destructive is
+    skipped and the next candidate tried instead.
+    """
+    for wanted in labels:
+        for element in elements:
+            if getattr(element, "label", "").strip().lower() != wanted:
+                continue
+            if blocked and blocked(element.label):
+                continue
+            return element
+    return None
+
+
 def looks_like_dialog(views: Sequence[Dict], package: Optional[str] = None) -> bool:
     """Heuristic: is this screen a modal decision point?
 

@@ -89,6 +89,7 @@ All run without a device, in seconds. Run them before any device work.
 |---|---|
 | `tests/test_hierarchy.py` | XML parsing, state-key stability, Compose selectors, selector priority, bounds |
 | `tests/test_run_lock.py` | Mutual exclusion per device, stale-lock takeover, `--force-lock`, corrupt lock files |
+| `tests/test_dialogs.py` | Getting out of a modal that is in the way: declines rather than accepts, label priority beats screen order, guard veto, walker and verifier agree |
 | `tests/test_matching.py` | Sheet-wording drift that must match, different controls that must not, resource-id matching, alias round trip |
 | `tests/test_navigation.py` | The rise-then-descend plan, including the sibling case and the depth invariant |
 | `tests/make_spec_fixture.py` | Writes `tests/spec_fixture.xlsx`, shaped like the real workbook — bracketed context rows, annotations, depth to 7 |

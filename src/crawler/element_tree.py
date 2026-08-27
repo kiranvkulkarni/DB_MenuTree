@@ -47,7 +47,10 @@ from .hierarchy import (
     swipe_span,
     center_of,
     foreground_package,
+    ACKNOWLEDGE_LABELS,
+    DECLINE_LABELS,
     looks_like_dialog,
+    pick_dismissal,
     parse_hierarchy,
     state_key,
 )
@@ -262,6 +265,7 @@ class ElementTreeWalker:
         self._exclude = list(CHROME_PACKAGES)
         self._lost = 0
         self._dialog_recoveries = 0
+        self._blocking_dialogs_cleared = 0
         self._foreign_skipped = 0
         self._back_trace: List[Dict] = []
         self._keypad_skipped = 0
@@ -430,6 +434,12 @@ class ElementTreeWalker:
             if dialog:
                 self._dismiss_system_dialog(landed, views, dialog)
                 continue
+            # An app modal swallows BACK: the press dismisses the dialog and
+            # we are still on the screen we were trying to leave, so without
+            # this the attempt is spent and the next one repeats it.
+            if key != target_key and views and looks_like_dialog(views, self.package):
+                if self._clear_blocking_dialog():
+                    continue
             overlap = (
                 screen_similarity(target_elements, landed)
                 if target_elements is not None else -1.0
@@ -584,6 +594,58 @@ class ElementTreeWalker:
             return True
         except DriverError:
             return False
+
+    def _clear_blocking_dialog(self) -> bool:
+        """Clear an app modal that is standing between us and the walk.
+
+        `_dismiss_system_dialog` handles ANRs, crashes and USSD -- OS-level
+        interruptions. It does not handle an ordinary app modal offering a
+        choice, and that gap is expensive: the Samsung camera raises "Turn on
+        Location tags? / Cancel / Turn on" partway through a run, and until
+        something presses a button EVERY subsequent tap lands on the scrim.
+        The walk does not stop -- it keeps working, recording control after
+        control as `unreachable` while the app sits there perfectly healthy.
+        A 3000s budget was spent producing false negatives, which is worse
+        than crashing: a crash gets noticed.
+
+        Relaunching does not help. These prompts are shown per launch, so a
+        recovery relaunch lands on the same wall it was trying to escape.
+
+        Only called once navigation has ALREADY failed. That ordering is what
+        keeps discovery honest: a dialog reached as a work item in the normal
+        way is enumerated and both its branches are walked, because it is
+        legitimate tree content. This clears it only when it is in the way.
+        """
+        assert self.driver is not None
+        _, views, _ = self._await_stable()
+        if not views or not looks_like_dialog(views, self.package):
+            return False
+        elements = self._elements(views)
+
+        def press(labels: Sequence[str], why: str) -> bool:
+            choice = pick_dismissal(
+                labels, elements, lambda text: self.guard.blocks("text", text))
+            if choice is None or not self._click(choice, views):
+                return False
+            time.sleep(self.settle)
+            self._blocking_dialogs_cleared += 1
+            logger.info("cleared blocking dialog via %r (%s)", choice.label, why)
+            return True
+
+        if press(DECLINE_LABELS, "declines the offer"):
+            return True
+        # BACK commits to nothing at all, so it is preferred over pressing an
+        # acknowledgement.
+        try:
+            self.driver.press_back()
+        except DriverError:
+            pass
+        _, after, _ = self._await_stable()
+        if after and not looks_like_dialog(after, self.package):
+            self._blocking_dialogs_cleared += 1
+            logger.info("cleared blocking dialog with BACK")
+            return True
+        return press(ACKNOWLEDGE_LABELS, "acknowledges; nothing else offered")
 
     def _click(self, element: Element, views: Sequence[Dict]) -> bool:
         assert self.driver is not None
@@ -1024,6 +1086,11 @@ class ElementTreeWalker:
         """Navigate to the item's screen, click it, record what happened."""
         row = self._row_for.get((item.screen_key, item.label, item.kind))
         reached, views = self._navigate_to(item)
+        if not reached and self._clear_blocking_dialog():
+            # Navigation failed with a modal on screen. Everything below this
+            # point would have been recorded unreachable against a healthy
+            # app, so the one retry is worth far more than it costs.
+            reached, views = self._navigate_to(item)
         if not reached or not views:
             item.status = "unreachable"
             item.reason = "could not navigate to the parent screen"
@@ -1252,6 +1319,7 @@ class ElementTreeWalker:
             "left_app": self._left_app,
             "lost_returns": self._lost,
             "dialog_recoveries": self._dialog_recoveries,
+            "blocking_dialogs_cleared": self._blocking_dialogs_cleared,
             "foreign_screens_skipped": self._foreign_skipped,
             "clear_between_paths": self.clear_between_paths,
             "keypad_keys_skipped": self._keypad_skipped,
