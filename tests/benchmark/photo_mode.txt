@@ -4,6 +4,11 @@
 # gestures or physical keys and cannot appear in an XML dump -- they are
 # listed so the comparison can say so out loud rather than counting them
 # as misses.
+#
+# 24MP was dropped on the sheet author's instruction: this build exposes
+# three picture sizes, NORMAL / HIGH / ULTRA_HIGH, and nothing else. The
+# benchmark records what the device has, not what a sheet once listed --
+# otherwise every run reports a miss for a control that does not exist.
 2 Photo
 3   Photo [Title]
 3   Flash icon
@@ -12,7 +17,6 @@
 4     Auto
 3   Resolution
 4     12MP
-4     24MP
 4     50MP
 4     200MP
 3   Motion Photos
