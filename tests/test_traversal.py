@@ -165,6 +165,18 @@ def main() -> int:
     ok &= check("collapsing is counted", "duplicate_rows_collapsed" in src)
 
     print()
+    print("a swipe that changes the screen was not a scroll")
+    # Spans became axis-aware so a horizontal filter carousel could be read.
+    # scrollable_container then started returning the MODE STRIP on the
+    # viewfinder, and every enumeration swiped it -- switching PHOTO to VIDEO,
+    # collecting another mode into this node, and stranding the walk. 216
+    # scrolls, 16 failed returns, benchmark 35/55 -> 17/55.
+    ok &= check("scrolling stops when the screen stops being the same screen",
+                "scrolls_that_changed_screen" in src
+                and "baseline" in src,
+                "scrolling reveals more of one screen; anything else is navigation")
+
+    print()
     print("ALL PASS" if ok else "FAILURES PRESENT")
     return 0 if ok else 1
 

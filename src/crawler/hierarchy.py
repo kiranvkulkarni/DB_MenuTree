@@ -227,28 +227,51 @@ def scrollable_container(views: Sequence[Dict]) -> Optional[Dict]:
 
 def swipe_span(container: Dict, width: int, height: int
                ) -> Optional[tuple]:
-    """Where to start and end a swipe inside this container: (x, low, high).
+    """How to scroll inside this container: (axis, fixed, low, high).
 
-    Derived from the container's own box rather than a fixed pixel span. A
-    fixed span assumed the list was tall and centred; on a short container
-    near the top of the screen it produced a negative coordinate, which
-    uiautomator2 rejects outright and which killed a two-hour run.
+    `axis` is "v" or "h", `fixed` the coordinate that does not move, and
+    low/high the two ends of the swipe.
 
-    Shared by the walker and the verifier so that fix lives in one place.
+    **The axis is read from the container box, not assumed.** Every span this
+    produced used to be vertical, so a horizontal list was swiped up and down
+    and never moved. The Samsung camera's filter carousel is 1080x198 -- it
+    shows Original, Classic film, Crystal and Blanc, and hides Pop film, Aura
+    film, Retro film, Modern film, Vivid film, Dawn, Monotone and Noir film
+    off to the right. Eight of twelve filters were simply absent from the
+    MenuTree, and nothing reported a gap.
+
+    Derived from the container box rather than a fixed pixel span. A fixed
+    span assumed the list was tall and centred; on a short container near the
+    top of the screen it produced a negative coordinate, which uiautomator2
+    rejects outright and which killed a two-hour run.
+
+    Shared by the walker and the verifier so that both fixes live in one
+    place.
     """
     box = box_of(container)
     if not box:
         return None
     x1, y1, x2, y2 = box
-    x = max(1, min(width - 2, (x1 + x2) // 2))
-    # Keep clear of the edges: a swipe starting on the boundary can be taken
-    # for a system gesture rather than a scroll.
-    inset = max(8, (y2 - y1) // 10)
-    low = max(1, min(height - 2, y1 + inset))
-    high = max(1, min(height - 2, y2 - inset))
+    horizontal = (x2 - x1) > (y2 - y1)
+
+    if horizontal:
+        fixed = max(1, min(height - 2, (y1 + y2) // 2))
+        inset = max(8, (x2 - x1) // 10)
+        low = max(1, min(width - 2, x1 + inset))
+        high = max(1, min(width - 2, x2 - inset))
+        axis = "h"
+    else:
+        fixed = max(1, min(width - 2, (x1 + x2) // 2))
+        # Keep clear of the edges: a swipe starting on the boundary can be
+        # taken for a system gesture rather than a scroll.
+        inset = max(8, (y2 - y1) // 10)
+        low = max(1, min(height - 2, y1 + inset))
+        high = max(1, min(height - 2, y2 - inset))
+        axis = "v"
+
     if high - low < 40:
         return None                    # too short to scroll meaningfully
-    return x, low, high
+    return axis, fixed, low, high
 
 
 def foreground_package(

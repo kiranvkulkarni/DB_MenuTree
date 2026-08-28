@@ -315,6 +315,10 @@ class ElementTreeWalker:
         # to raise it without guessing is to measure the phases.
         self._phases: Dict[str, List[float]] = {}
         self._scrolls = 0
+        self._scroll_left_screen = 0
+        # Only a near-total change means the swipe navigated.
+        self.scroll_abort_similarity = float(
+            config.get("scroll_abort_similarity", 0.30))
         self.max_scrolls = int(config.get("max_scrolls", 8))
         self._settle_polls = 0
         self._package_disagreements = 0
@@ -1118,7 +1122,7 @@ class ElementTreeWalker:
         return None
 
     def _swipe_span(self, views: Sequence[Dict]):
-        """(x, low, high) for scrolling this screen, or None."""
+        """(axis, fixed, low, high) for scrolling this screen, or None."""
         assert self.driver is not None
         container = scrollable_container(views)
         if container is None:
@@ -1130,16 +1134,16 @@ class ElementTreeWalker:
         return swipe_span(container, width, height)
 
     def _scroll_once(self, span, down: bool) -> List[Dict]:
-        """One swipe, then wait for the list to settle. Returns fresh views."""
+        """One swipe along the container's own axis, then let it settle."""
         assert self.driver is not None
-        x, low, high = span
-        if down:
-            self.driver.swipe(x, high, x, low, 260)
+        axis, fixed, low, high = span
+        start, end = (high, low) if down else (low, high)
+        if axis == "h":
+            self.driver.swipe(start, fixed, end, fixed, 260)
         else:
-            self.driver.swipe(x, low, x, high, 240)
+            self.driver.swipe(fixed, start, fixed, end, 260)
         self._scrolls += 1
-        _, views, _ = self._await_stable()
-        return views
+        return self._await_stable()[1]
 
     def _enumerate_scrolled(self, views: Sequence[Dict]) -> List[Element]:
         """Every element on a screen, including what is below the fold.
@@ -1168,6 +1172,7 @@ class ElementTreeWalker:
         span = self._swipe_span(views)
         if span is None:
             return found
+        baseline = self._elements(views)
 
         keys = set()
         for _ in range(self.max_scrolls):
@@ -1177,6 +1182,27 @@ class ElementTreeWalker:
             keys.add(key)
             current = self._scroll_once(span, down=True)
             if not current:
+                break
+            # A swipe that CHANGES the screen was not a scroll. Once spans
+            # could be horizontal, `scrollable_container` started returning
+            # the mode strip on the viewfinder, and every enumeration swiped
+            # it -- which switches PHOTO to VIDEO. The walk then collected
+            # another mode's controls into this node and could not find its
+            # way back: 216 scrolls, 16 failed returns, and the benchmark
+            # score fell from 35 of 55 to 17.
+            #
+            # Scrolling reveals more of the same screen. Anything else is
+            # navigation wearing a swipe.
+            #
+            # The bar is DELIBERATELY low. At the ordinary threshold this
+            # aborted the scroll it exists to permit: dragging the filter
+            # carousel applies each filter as it passes, so the preview and a
+            # label or two change and similarity dips well below 0.6 on a
+            # screen the walk has not left at all. Six of twelve filters came
+            # back. A mode switch replaces almost everything, so it is caught
+            # far below that.
+            if screen_similarity(baseline, self._elements(current)) < self.scroll_abort_similarity:
+                self._scroll_left_screen += 1
                 break
             collect(current)
 
@@ -1822,6 +1848,7 @@ class ElementTreeWalker:
             "phase_seconds": self._phase_report(),
             "settle_polls": self._settle_polls,
             "scrolls": self._scrolls,
+            "scrolls_that_changed_screen": self._scroll_left_screen,
             "package_disagreements": self._package_disagreements,
             "identify_misses": self._identify_misses[:40],
             "stem_matches": self._stem_matches,
