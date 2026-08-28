@@ -83,6 +83,10 @@ def main() -> int:
     print()
     print("options are listed, never pressed")
     visit = inspect.getsource(RecursiveWalker._visit)
+    ok &= check("a caption revealed by a press belongs to that press",
+                "appeared = [e for e in after" in visit,
+                "only pressable elements counted as revealed, so titles and "
+                "descriptions were listed as siblings of the control")
     ok &= check("an expansion in place lists its options",
                 "option -- listed, not selected" in visit)
     ok &= check("and marks them handled, so the loop never presses one",

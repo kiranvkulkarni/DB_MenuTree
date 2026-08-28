@@ -488,19 +488,34 @@ class RecursiveWalker(ElementTreeWalker):
                 continue
 
             moved = screen_similarity(current, after) < self.similarity_threshold
-            revealed = [e for e in after
-                        if self._fingerprint(e) not in before and e.interactive]
+            # Everything the press brought onto the screen, and separately the
+            # part of it that is pressable.
+            #
+            # Only the pressable half used to be treated as revealed, so the
+            # title and the explanatory line a panel brings with it fell
+            # through to this node's own listing and were recorded as
+            # siblings of the control that opened them: "Select picture to
+            # use as filter" and "Filter Name edit" came out at depth 3 under
+            # PHOTO, where the sheet has them at 5 and 6.
+            #
+            # A caption arrives because of the press, exactly as a button
+            # does, and belongs to the same node.
+            appeared = [e for e in after if self._fingerprint(e) not in before]
+            revealed = [e for e in appeared if e.interactive]
 
             if not moved and revealed:
                 # An expansion in place: Flash stays put and On/Off/Auto
                 # appear beside it. The sheet lists them as children of Flash
                 # and does not select one, because selecting one changes the
                 # camera rather than exploring it.
-                for option in self._dedupe(revealed):
+                for option in self._dedupe(appeared):
+                    why = self._worth_pressing(option)
                     self._emit(option, depth + 1, child_path, child_selectors,
-                               note="option -- listed, not selected")
-                    self._options_listed += 1
-                for option in revealed:
+                               note=("option -- listed, not selected"
+                                     if why is None else why))
+                    if why is None:
+                        self._options_listed += 1
+                for option in appeared:
                     listed.add(self._fingerprint(option))
                     handled.add(self._fingerprint(option))
                 continue
