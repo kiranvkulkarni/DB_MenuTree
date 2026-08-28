@@ -40,6 +40,7 @@ from typing import Dict, List, Optional, Sequence, Set
 
 from .element_tree import ElementTreeWalker, TreeNode
 from .elements import Element, screen_similarity
+from .hierarchy import box_of, scrollable_container
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,7 @@ class RecursiveWalker(ElementTreeWalker):
         self._options_listed = 0
         self._loops_refused = 0
         self._reused_screens = 0
+        self._strips_not_swiped = 0
         self._documented = {}
         # The tab strip is drawn on EVERY screen the app has. Once its members
         # are nodes at depth 2 they must never be entered again from anywhere
@@ -278,6 +280,41 @@ class RecursiveWalker(ElementTreeWalker):
             if len(group) > len(best):
                 best = group
         return best
+
+    def _swipe_span(self, views):
+        """Refuse to swipe a navigation strip.
+
+        A horizontal container is usually a carousel of content -- the filter
+        list, which hides eight of its twelve entries off-screen. It is
+        sometimes a row of TABS, and swiping that switches mode.
+
+        Detecting the damage afterwards is too late, and was tried: the walk
+        counted 108 swipes that changed the screen, but each had already
+        moved PHOTO to VIDEO before it was noticed, poisoning the node it was
+        enumerating. Benchmark 35 of 55 down to 16.
+
+        So the strip is excluded before the swipe. Anything holding a control
+        that is already a tab is navigation, and navigation is walked by
+        pressing it, never by dragging it.
+        """
+        span = super()._swipe_span(views)
+        if span is None or span[0] != "h" or not self._tab_labels:
+            return span
+        container = scrollable_container(views)
+        box = box_of(container) if container is not None else None
+        if not box:
+            return span
+        for element in self._elements(views):
+            if element.label.strip().lower() not in self._tab_labels:
+                continue
+            if not (0 <= element.view_index < len(views)):
+                continue
+            inner = box_of(views[element.view_index])
+            if inner and (box[0] - 2 <= inner[0] and inner[2] <= box[2] + 2
+                          and box[1] - 2 <= inner[1] and inner[3] <= box[3] + 2):
+                self._strips_not_swiped += 1
+                return None
+        return span
 
     def _dedupe(self, elements: Sequence[Element]) -> List[Element]:
         """One control per label. The mode strip is rendered twice."""
@@ -525,5 +562,6 @@ class RecursiveWalker(ElementTreeWalker):
             "options_listed_not_pressed": self._options_listed,
             "loops_refused": self._loops_refused,
             "screens_already_documented": self._reused_screens,
+            "tab_strips_not_swiped": self._strips_not_swiped,
         })
         return base

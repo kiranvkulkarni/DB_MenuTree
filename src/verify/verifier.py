@@ -215,7 +215,7 @@ class MenuTreeVerifier:
     def _scrollable(self, views: Sequence[Dict]) -> Optional[Dict]:
         return scrollable_container(views)
 
-    def _swipe_span(self, container: Dict) -> Optional[Tuple[int, int, int]]:
+    def _swipe_span(self, container: Dict) -> Optional[tuple]:
         assert self.driver is not None
         try:
             width, height = self.driver.screen_size()
@@ -248,7 +248,15 @@ class MenuTreeVerifier:
         span = self._swipe_span(container)
         if span is None:
             return None, list(views)
-        x, y_low, y_high = span
+        axis, fixed, low, high = span
+
+        def swipe(start, end):
+            # Along the container's own axis. The filter carousel is wider
+            # than it is tall, and swiping it vertically moves nothing.
+            if axis == "h":
+                self.driver.swipe(start, fixed, end, fixed, 220)
+            else:
+                self.driver.swipe(fixed, start, fixed, end, 220)
         # Rewind to the top of the list before searching down it.
         #
         # Scroll position carries over from the previous row. Searching only
@@ -261,7 +269,7 @@ class MenuTreeVerifier:
         # parked at the bottom.
         for _ in range(self.max_scrolls):
             before, _, _ = self._await_stable()
-            self.driver.swipe(x, y_low, x, y_high, 220)
+            swipe(low, high)
             self._scrolls += 1
             after, current, _ = self._await_stable()
             if after == before:
@@ -277,7 +285,7 @@ class MenuTreeVerifier:
             if key in seen:
                 break                       # the list stopped moving
             seen.add(key)
-            self.driver.swipe(x, y_high, x, y_low, 260)
+            swipe(high, low)
             self._scrolls += 1
             key, current, _ = self._await_stable()
             if not current:
