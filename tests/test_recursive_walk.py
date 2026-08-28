@@ -145,6 +145,10 @@ def main() -> int:
     print("a common menu is documented once")
     ok &= check("a screen already listed elsewhere is not listed again",
                 "_already_documented" in whole_src)
+    ok &= check("screens are only compared within the same branch",
+                "if branch != context" in whole_src,
+                "Quick Control under Photo is not Quick Control under Video: "
+                "merging them gave Portrait 108 rows and Photo zero")
     ok &= check("the threshold is far above the navigation one",
                 "documented_similarity" in whole_src,
                 "Photo and Video are both viewfinders; 0.55 would merge them")
