@@ -289,7 +289,8 @@ class RecursiveWalker(ElementTreeWalker):
                 out.append(element)
         return out
 
-    def _already_documented(self, signature: Set[tuple]) -> Optional[str]:
+    def _already_documented(self, signature: Set[tuple],
+                            context: str) -> Optional[str]:
         """Where this screen was listed before, if it was.
 
         A common menu is documented ONCE. The deliverable proves that every
@@ -300,8 +301,26 @@ class RecursiveWalker(ElementTreeWalker):
         land where I meant". Photo and Video are both viewfinders and share
         most of their chrome; at 0.55 Video would be skipped as already
         covered, losing a genuine branch.
+
+        `context` is the branch the screen was reached through, and screens
+        are only ever compared within the same one. A panel that carries the
+        same NAME under two modes is not the same panel: Quick Control offers
+        Motion photo in Photo, and Super steady, Video size, Dual recording
+        and Auto framing in Video. They overlap far past 0.9 on the features
+        they share, so comparing across branches merged all three into
+        whichever mode happened to be walked first.
+
+        Measured, before this: PORTRAIT was walked first and took 108 rows
+        under its Quick Control -- including Motion photo, which belongs to
+        Photo -- while PHOTO ended with **zero**, and Auto framing was never
+        recorded at all.
+
+        "Covered once" means once per place it genuinely exists, not once per
+        name.
         """
-        for where, seen in self._documented.items():
+        for (branch, where), seen in self._documented.items():
+            if branch != context:
+                continue
             overlap = len(signature & seen) / max(1, len(signature | seen))
             if overlap >= self.documented_similarity:
                 return where
@@ -345,13 +364,14 @@ class RecursiveWalker(ElementTreeWalker):
         node = Node(path[-1] if path else self.package, depth, path,
                     path_selectors, elements, signature, entering, parent)
         here = node.where
-        seen_at = self._already_documented(signature)
+        context = path[0] if path else ""
+        seen_at = self._already_documented(signature, context)
         if seen_at is not None:
             logger.info("visit  depth %-2d  %-38s  already listed under %s",
                         depth, here, seen_at)
             self._reused_screens += 1
             return
-        self._documented[here] = signature
+        self._documented[(context, here)] = signature
 
         self._nodes_visited += 1
         logger.info("visit  depth %-2d  %-38s  %d element(s)",
