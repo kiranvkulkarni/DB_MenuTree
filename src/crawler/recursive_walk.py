@@ -100,6 +100,7 @@ class RecursiveWalker(ElementTreeWalker):
         self._loops_refused = 0
         self._reused_screens = 0
         self._strips_not_swiped = 0
+        self._left_unopened = 0
         self._documented = {}
         # The tab strip is drawn on EVERY screen the app has. Once its members
         # are nodes at depth 2 they must never be entered again from anywhere
@@ -389,10 +390,14 @@ class RecursiveWalker(ElementTreeWalker):
             if len(strip) >= 2:
                 self._tab_labels |= {t.label.strip().lower() for t in strip}
                 for tab in strip:
-                    self._emit(tab, depth, path, path_selectors)
-                for tab in strip:
                     if not self._budget_left():
                         return
+                    # Each tab, then everything inside it, before the next
+                    # tab. Emitting all four first put PORTRAIT, PHOTO, VIDEO
+                    # and MORE on consecutive rows, with PORTRAIT's contents
+                    # beginning below its own siblings instead of directly
+                    # beneath it.
+                    self._emit(tab, depth, path, path_selectors)
                     self._enter_tab(tab, depth, path, path_selectors, ancestors,
                                     parent)
                 return
@@ -422,121 +427,135 @@ class RecursiveWalker(ElementTreeWalker):
         chrome = {self._fingerprint(e) for e in elements if is_tab(e)}
         chrome |= {self._fingerprint(e)
                    for e in self._tab_strip(elements, views)}
-        listed = set(chrome)
         handled = set(chrome)
 
-        def list_new(current):
-            for element in current:
-                fingerprint = self._fingerprint(element)
-                if fingerprint in listed:
-                    continue
-                if is_tab(element):
-                    listed.add(fingerprint)
-                    handled.add(fingerprint)
-                    continue
-                listed.add(fingerprint)
-                why = self._worth_pressing(element)
-                self._emit(element, depth, path, path_selectors,
+        try:
+            while self._budget_left():
+                _, views, _ = self._await_stable()
+                if not views:
+                    break
+                current = self._enumerate_scrolled(views)
+
+                # Still on this screen? A stray dialog, a QR overlay, a mode that
+                # changed underneath -- without this check their contents are
+                # listed as if they belonged here. One run absorbed a QR scanner
+                # into the root as depth-2 siblings.
+                if screen_similarity(elements, current) < self.similarity_threshold:
+                    if not self._return_to(node):
+                        logger.warning("drifted off %s and could not get back", here)
+                        return
+                    _, views, _ = self._await_stable()
+                    current = self._enumerate_scrolled(views) if views else []
+                    if not current:
+                        return
+
+                target = next((e for e in current
+                               if self._fingerprint(e) not in handled), None)
+                if target is None:
+                    break
+                handled.add(self._fingerprint(target))
+
+                # Emitted AT THE MOMENT it is reached, so whatever it opens lands
+                # on the rows directly beneath it. Listing the whole screen first
+                # and appending children afterwards is what put Flash's
+                # On/Off/Auto nineteen rows below Flash under "Edge panels", and
+                # Go to Settings under a title rather than under Quick controls.
+                # The sheet reads top to bottom: a row, then its subtree, then the
+                # next sibling.
+                why = self._worth_pressing(target)
+                self._emit(target, depth, path, path_selectors,
                            note="" if why is None else why)
                 if why is not None:
-                    handled.add(fingerprint)
+                    continue
 
-        list_new(elements)
+                before = self._signature(current)
+                if not self._click(target, views):
+                    continue
+                _, after_views, after_pkg = self._await_stable()
+                if not after_views:
+                    continue
+                after = self._elements(after_views)
+                child_path = path + [target.label]
+                child_selectors = list(path_selectors) + [
+                    (target.selector_kind, target.selector_value)
+                    if target.selector_kind else ("text", target.label)]
 
-        while self._budget_left():
-            _, views, _ = self._await_stable()
-            if not views:
-                break
-            current = self._enumerate_scrolled(views)
+                if after_pkg and after_pkg != self.package:
+                    self._foreign_skipped += 1
+                    logger.info("foreign screen %s -- recorded, not walked", after_pkg)
+                    self._return_to(node)
+                    continue
 
-            # Still on this screen? A stray dialog, a QR overlay, a mode that
-            # changed underneath -- without this check their contents are
-            # listed as if they belonged here. One run absorbed a QR scanner
-            # into the root as depth-2 siblings.
-            if screen_similarity(elements, current) < self.similarity_threshold:
+                moved = screen_similarity(current, after) < self.similarity_threshold
+                # Everything the press brought onto the screen, and separately the
+                # part of it that is pressable.
+                #
+                # Only the pressable half used to be treated as revealed, so the
+                # title and the explanatory line a panel brings with it fell
+                # through to this node's own listing and were recorded as
+                # siblings of the control that opened them: "Select picture to
+                # use as filter" and "Filter Name edit" came out at depth 3 under
+                # PHOTO, where the sheet has them at 5 and 6.
+                #
+                # A caption arrives because of the press, exactly as a button
+                # does, and belongs to the same node.
+                appeared = [e for e in after if self._fingerprint(e) not in before]
+                revealed = [e for e in appeared if e.interactive]
+
+                if not moved and revealed:
+                    # An expansion in place: Flash stays put and On/Off/Auto
+                    # appear beside it. The sheet lists them as children of Flash
+                    # and does not select one, because selecting one changes the
+                    # camera rather than exploring it.
+                    for option in self._dedupe(appeared):
+                        why = self._worth_pressing(option)
+                        self._emit(option, depth + 1, child_path, child_selectors,
+                                   note=("option -- listed, not selected"
+                                         if why is None else why))
+                        if why is None:
+                            self._options_listed += 1
+                    for option in appeared:
+                        handled.add(self._fingerprint(option))
+                    continue
+
+                if not moved:
+                    continue        # the press did nothing visible
+
+                self._descents += 1
+                child_signature = self._signature(after)
+                if any(len(child_signature & seen) / max(1, len(child_signature | seen))
+                       >= self.return_similarity
+                       for seen in ancestors + [signature]):
+                    self._loops_refused += 1
+                    self._return_to(node)
+                    continue
+
+                self._visit(depth + 1, child_path, child_selectors,
+                            ancestors + [signature], entering=target, parent=node)
                 if not self._return_to(node):
-                    logger.warning("drifted off %s and could not get back", here)
+                    logger.warning("could not step back to depth %d (%s)", depth, here)
                     return
-                _, views, _ = self._await_stable()
-                current = self._enumerate_scrolled(views) if views else []
-                if not current:
-                    return
-
-            list_new(current)
-            target = next((e for e in current
-                           if self._fingerprint(e) not in handled), None)
-            if target is None:
-                break
-            handled.add(self._fingerprint(target))
-
-            before = self._signature(current)
-            if not self._click(target, views):
-                continue
-            _, after_views, after_pkg = self._await_stable()
-            if not after_views:
-                continue
-            after = self._elements(after_views)
-            child_path = path + [target.label]
-            child_selectors = list(path_selectors) + [
-                (target.selector_kind, target.selector_value)
-                if target.selector_kind else ("text", target.label)]
-
-            if after_pkg and after_pkg != self.package:
-                self._foreign_skipped += 1
-                logger.info("foreign screen %s -- recorded, not walked", after_pkg)
-                self._return_to(node)
-                continue
-
-            moved = screen_similarity(current, after) < self.similarity_threshold
-            # Everything the press brought onto the screen, and separately the
-            # part of it that is pressable.
+        finally:
+            # Whatever this screen had that the walk never got to. The loop
+            # emits each row as it reaches it, which is what puts a control's
+            # children directly beneath it -- but it also means an early exit
+            # loses everything after the point it stopped. `MORE > Filters`
+            # was entered with 36 elements on it and recorded none, because a
+            # drift check ended the node before the first emit.
             #
-            # Only the pressable half used to be treated as revealed, so the
-            # title and the explanatory line a panel brings with it fell
-            # through to this node's own listing and were recorded as
-            # siblings of the control that opened them: "Select picture to
-            # use as filter" and "Filter Name edit" came out at depth 3 under
-            # PHOTO, where the sheet has them at 5 and 6.
-            #
-            # A caption arrives because of the press, exactly as a button
-            # does, and belongs to the same node.
-            appeared = [e for e in after if self._fingerprint(e) not in before]
-            revealed = [e for e in appeared if e.interactive]
-
-            if not moved and revealed:
-                # An expansion in place: Flash stays put and On/Off/Auto
-                # appear beside it. The sheet lists them as children of Flash
-                # and does not select one, because selecting one changes the
-                # camera rather than exploring it.
-                for option in self._dedupe(appeared):
-                    why = self._worth_pressing(option)
-                    self._emit(option, depth + 1, child_path, child_selectors,
-                               note=("option -- listed, not selected"
-                                     if why is None else why))
-                    if why is None:
-                        self._options_listed += 1
-                for option in appeared:
-                    listed.add(self._fingerprint(option))
-                    handled.add(self._fingerprint(option))
-                continue
-
-            if not moved:
-                continue        # the press did nothing visible
-
-            self._descents += 1
-            child_signature = self._signature(after)
-            if any(len(child_signature & seen) / max(1, len(child_signature | seen))
-                   >= self.return_similarity
-                   for seen in ancestors + [signature]):
-                self._loops_refused += 1
-                self._return_to(node)
-                continue
-
-            self._visit(depth + 1, child_path, child_selectors,
-                        ancestors + [signature], entering=target, parent=node)
-            if not self._return_to(node):
-                logger.warning("could not step back to depth %d (%s)", depth, here)
-                return
+            # Order first, completeness guaranteed: the leftovers go in at
+            # this depth, in document order, saying plainly that they were
+            # seen and not opened.
+            for element in elements:
+                fingerprint = self._fingerprint(element)
+                if fingerprint in handled:
+                    continue
+                handled.add(fingerprint)
+                why = self._worth_pressing(element)
+                self._emit(element, depth, path, path_selectors,
+                           note=why or "listed, not opened -- "
+                                       "the walk left this screen first")
+                self._left_unopened += 1
 
     def _enter_tab(self, tab, depth, path, path_selectors, ancestors, parent=None):
         """Switch to a tab and walk what is inside it.
@@ -578,5 +597,6 @@ class RecursiveWalker(ElementTreeWalker):
             "loops_refused": self._loops_refused,
             "screens_already_documented": self._reused_screens,
             "tab_strips_not_swiped": self._strips_not_swiped,
+            "listed_but_not_opened": self._left_unopened,
         })
         return base

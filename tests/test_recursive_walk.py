@@ -98,8 +98,15 @@ def main() -> int:
     ok &= check("each pass re-enumerates before choosing",
                 visit.count("self._enumerate_scrolled") >= 2,
                 "a stale snapshot is what produced 'needs a precondition'")
-    ok &= check("newly appeared elements are listed too",
-                "def list_new" in visit)
+    ok &= check("a row is emitted the moment it is reached, before pressing",
+                visit.index("self._emit(target") < visit.index("self._click(target"),
+                "listing the screen first put Flash On/Off/Auto nineteen rows "
+                "below Flash, under a later sibling")
+    ok &= check("each tab is walked before the next is emitted",
+                "self._emit(tab, depth, path, path_selectors)" in visit
+                and visit.index("self._emit(tab") < visit.index("self._enter_tab(tab"),
+                "all four modes were emitted first, so PORTRAIT contents began "
+                "below its own siblings")
 
     print()
     print("rows come out in tree order by construction")
