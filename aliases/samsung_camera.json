@@ -12,7 +12,8 @@
     "how one sheet label covers screens that name the same option differently.",
     "",
     "confirmed:false entries are ignored at load time. Set it true only after",
-    "seeing the target on the device."
+    "seeing the target on the device.",
+    "Both '12M' and '12MP' appear across sheet versions. Alias keys are exact strings, so a spelling that is not listed simply does not fire -- which reads as a missing control, not as a missing alias. Add the variant."
   ],
   "_device": "Samsung camera (com.sec.android.app.camera), verified on S25 Ultra. Expect the families to hold on other Samsung models; check the 'why: inferred' entries against a fresh dump before trusting them.",
   "aliases": {
@@ -139,6 +140,33 @@
       "confirmed": true,
       "why": "inferred from the constant family the device exposed; review on first use",
       "note": "the dump drops the '-weighted' half, which costs enough score to miss. Matrix and Spot already match without help."
+    },
+    "12MP": {
+      "on_screen": [
+        "BACK_CAMERA_PICTURE_SIZE_NORMAL",
+        "BACK_CAMERA_PRO_PICTURE_SIZE_NORMAL"
+      ],
+      "confirmed": true,
+      "why": "confirmed on the S25 Ultra by the sheet's author",
+      "note": "the newer sheet writes the megapixel value with 'MP'; the older one wrote '12M'. Same control, same dump constant."
+    },
+    "50MP": {
+      "on_screen": [
+        "BACK_CAMERA_PICTURE_SIZE_HIGH",
+        "BACK_CAMERA_PRO_PICTURE_SIZE_HIGH"
+      ],
+      "confirmed": true,
+      "why": "confirmed on the S25 Ultra by the sheet's author",
+      "note": "the newer sheet writes the megapixel value with 'MP'; the older one wrote '12M'. Same control, same dump constant."
+    },
+    "200MP": {
+      "on_screen": [
+        "BACK_CAMERA_PICTURE_SIZE_ULTRA_HIGH",
+        "BACK_CAMERA_PRO_PICTURE_SIZE_ULTRA_HIGH"
+      ],
+      "confirmed": true,
+      "why": "inferred from the constant family the device exposed; review on first use",
+      "note": "the newer sheet writes the megapixel value with 'MP'; the older one wrote '12M'. Same control, same dump constant."
     }
   }
 }

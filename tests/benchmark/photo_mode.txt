@@ -1,0 +1,67 @@
+# Photo mode, transcribed from the hand-authored benchmark sheet.
+# Indentation is depth: 2 = the mode, 3 = its controls, 4+ = deeper.
+# This is the shape the crawler is aiming at. Lines marked (manual) describe
+# gestures or physical keys and cannot appear in an XML dump -- they are
+# listed so the comparison can say so out loud rather than counting them
+# as misses.
+2 Photo
+3   Photo [Title]
+3   Flash icon
+4     On
+4     Off
+4     Auto
+3   Resolution
+4     12MP
+4     24MP
+4     50MP
+4     200MP
+3   Motion Photos
+4     ON
+4     OFF
+3   Filters
+4     Original
+4     Classic film
+4     Crystal
+4     Blanc
+4     Pop film
+4     Aura film
+4     Retro film
+4     Modern film
+4     Vivid film
+4     Dawn
+4     Monotone
+4     Noir film
+4     Long tap on filter to reoder            (manual)
+4     Download filters >
+5       Download filters from Galaxy app
+4     Create filter
+5       Select picture to use as filter
+5       All photos
+5       Create
+6         View original [Title]
+6         Previous
+6         Filter Name edit
+7           Name filed
+7           Cancel
+7           Rename
+6         Done
+4     Created filters
+5       Long tap on filter to Delete          (manual)
+5       Tap on -- icon on filter
+3   Cover Screen
+4     ON
+4     Open Your phone to take selfies with the rear camera
+3   Change lens button
+4     Ultrawide [0.5x]
+4     Wide lens[1X]
+4     Digital zoom[2x]
+4     Tele lens[3X]
+3   Zoom
+4     Zoom in/out by finger                   (manual)
+4     Zoom in/out by volume key               (manual)
+3   Quick take video
+4     Long press the shutter button           (manual)
+5       capture
+5       pause/stop
+5       Lens (0.6x, 1x, 2x, 3x)
+5       Take snapshot
