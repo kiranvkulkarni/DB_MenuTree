@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.crawler.action_guard import DEFAULT_PRESETS, GUARD_PRESETS  # noqa: E402
 from src.crawler.element_tree import ElementTreeWalker  # noqa: E402
+from src.crawler.recursive_walk import RecursiveWalker  # noqa: E402
 from src.generator import tree_uvta  # noqa: E402
 from src.generator.menutree_sheet import summarise, write_csv  # noqa: E402
 from src.generator.menutree_workbook import write_workbook  # noqa: E402
@@ -68,6 +69,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--guard-presets", default=",".join(DEFAULT_PRESETS),
                    help=f"available: {', '.join(sorted(GUARD_PRESETS))}")
     p.add_argument("--guard-extra", default="")
+    p.add_argument(
+        "--worklist-walk", action="store_true",
+        help="Use the older worklist walker, which navigates to each screen "
+             "by replaying a path from the root. The default is a recursive "
+             "descent that never jumps: it stays on the screen it is working "
+             "on and steps back exactly one level, so a control can no longer "
+             "be reported unreachable because a replay missed, nor written "
+             "off against a screen snapshot taken minutes earlier.",
+    )
     p.add_argument(
         "--clear-between-paths", action="store_true",
         help="pm clear the app before a recovery relaunch. ON by default, "
@@ -124,7 +134,8 @@ def main() -> int:
             return 1
 
     if not args.skip_walk:
-        walker = ElementTreeWalker(args.package, args.serial, {
+        build = ElementTreeWalker if args.worklist_walk else RecursiveWalker
+        walker = build(args.package, args.serial, {
             "output_dir": str(output_dir),
             "time_budget": args.time_budget,
             "max_depth": args.max_depth,

@@ -1643,7 +1643,13 @@ class ElementTreeWalker:
         return head + ordered
 
     # -- public ----------------------------------------------------------
-    def walk(self) -> List[TreeNode]:
+    def _start(self):
+        """Bring the device up and read the launch screen.
+
+        Shared by both walkers: the element-tree walk and the recursive walk
+        differ only in how they choose what to visit, never in how the device
+        is prepared. Returns (root_key, views) or (None, None).
+        """
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.driver = make_driver(self.serial, self.backend, self.settle)
         if not self.driver.prepare_device():
@@ -1673,7 +1679,7 @@ class ElementTreeWalker:
         root_key, views, current = self._await_stable()
         if not root_key or root_key == EMPTY_STATE or not views:
             logger.error("Could not read a launch screen for %s", self.package)
-            return self.rows
+            return None, None
 
         # Refuse to root the tree in another app. If something else is in
         # front at launch -- a leftover Gallery, a share sheet, whatever the
@@ -1693,8 +1699,14 @@ class ElementTreeWalker:
                     "Cannot start %s: %s is in the foreground. Refusing to "
                     "root the tree in another app.", self.package, current,
                 )
-                return self.rows
+                return None, None
 
+        return root_key, views
+
+    def walk(self) -> List[TreeNode]:
+        root_key, views = self._start()
+        if not root_key:
+            return self.rows
         self._root_key = root_key
         self._register_screen(root_key, views, [], 2)
 
