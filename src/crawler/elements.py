@@ -116,6 +116,49 @@ def _kind_of(view: Dict, label: str, is_first_text: bool) -> str:
 _RESOLVER = SelectorResolver()
 
 
+
+# How far up to look for a row's clickable container. A settings row is
+# typically TextView -> LinearLayout(clickable) or one level more; beyond
+# that the search starts reaching the page itself.
+_ANCESTOR_LIMIT = 4
+
+# System chrome that is drawn over every app and belongs to none of them.
+# The Samsung Edge panel handle sits on top of the camera, the gallery and
+# the launcher alike; listing it makes it look like a camera menu item and it
+# appeared on nearly every screen the walk visited. A MenuTree is the app's
+# tree, so this is not the app's row.
+_SYSTEM_CHROME = ("edge panels",)
+
+
+def _pressable_via(views, index):
+    """Index of the nearest clickable ancestor of `index`, or None.
+
+    An Android list row is clickable on its CONTAINER, and the text you can
+    see is a child with `clickable="false"`. Reading each view's own
+    attributes therefore reports every settings row as un-pressable, and a
+    walk that believes it never opens any of them.
+
+    Measured on the camera's Settings screen: `Photo enhancer`,
+    `Custom filters`, `Photo format`, `Watermark`, `Video format`,
+    `Shooting methods` and thirty more were all listed and none pressed, so
+    the tree stopped dead at depth 5 where the hand-authored sheet carries
+    on to depth 8 -- 129 rows that no run could ever have produced.
+
+    The tap lands on the label's own centre, which is inside the container,
+    so nothing about clicking has to change; only the judgement of what can
+    be clicked.
+    """
+    seen = 0
+    parent = views[index].get("parent")
+    while parent is not None and seen < _ANCESTOR_LIMIT:
+        view = views[parent]
+        if view.get("clickable") or view.get("long_clickable"):
+            return parent
+        parent = view.get("parent")
+        seen += 1
+    return None
+
+
 def enumerate_elements(
     views: Sequence[Dict],
     package: Optional[str] = None,
@@ -133,6 +176,7 @@ def enumerate_elements(
     """
     elements: List[Element] = []
     seen_text = False
+    pressed_containers = set()
 
     for index, view in enumerate(views):
         view_package = view.get("package")
@@ -151,8 +195,28 @@ def enumerate_elements(
             or view.get("checkable")
             or view.get("editable")
         )
-
         label = _visible_label(view)
+
+        if not interactive and label:
+            # A label inside a clickable row is pressable, and the row is the
+            # menu item. Only the FIRST label under a given container counts:
+            # a settings row carries a title and a summary line, and both
+            # would otherwise press the same row twice.
+            #
+            # Claimed only once the view is known to HAVE a label. Claiming
+            # it earlier let the row's unlabelled wrappers -- RelativeLayout,
+            # LinearLayout, LinearLayout -- take the container in document
+            # order and then be discarded for having no label, so the real
+            # title arrived to find its own row already spoken for and stayed
+            # unpressable. Every settings row failed this way.
+            container = _pressable_via(views, index)
+            if container is not None and container not in pressed_containers:
+                pressed_containers.add(container)
+                interactive = True
+
+        if label and label.strip().lower() in _SYSTEM_CHROME:
+            continue
+
         if not label:
             # No visible label. An unlabelled *control* still deserves a row
             # -- the user can press it -- so fall back to its resource-id.
