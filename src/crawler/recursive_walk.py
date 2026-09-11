@@ -87,6 +87,25 @@ class Node:
 # Controls that leave a screen. Checked against the label, lowercased.
 BACK_LABELS = ("navigate up", "back", "close", "cancel", "done", "up")
 
+# Controls that ACT rather than open. They are menu rows and belong in the
+# sheet, but pressing one takes a photo, swaps the lens or leaves for the
+# gallery -- it navigates away from the tree instead of descending into it.
+#
+# Measured with these pressed: the walk wandered badly enough to collect 166
+# children under `Flash` (front and rear options re-gathered under every Flash
+# it met), 141 cyclic rows, 2042 rows against a 392-row sheet, and it still
+# never reached the end of the Settings list where Settings to keep, Shooting
+# methods, About Camera and Permissions live.
+#
+# This is NOT a return to trusting `clickable`. It is a short, named list of
+# things a tester would not tap while mapping menus.
+ACTION_LABELS = (
+    "take picture", "capture", "record", "start recording", "stop recording",
+    "night_shutter", "shutter", "take snapshot",
+    "switch to front camera", "switch to rear camera",
+    "view pictures and videos", "gallery", "latest photos",
+)
+
 
 class RecursiveWalker(ElementTreeWalker):
     """Walks the tree the way the sheet is written."""
@@ -102,6 +121,7 @@ class RecursiveWalker(ElementTreeWalker):
         self._reused_screens = 0
         self._strips_not_swiped = 0
         self._left_unopened = 0
+        self._actions_not_pressed = 0
         self._reopened = 0
         self._documented = {}
         # The tab strip is drawn on EVERY screen the app has. Once its members
@@ -155,6 +175,9 @@ class RecursiveWalker(ElementTreeWalker):
         """
         if self._is_back(element):
             return "back control"
+        if element.label.strip().lower() in ACTION_LABELS:
+            self._actions_not_pressed += 1
+            return "action -- listed, not performed"
         from .element_tree import KEYPAD_KEY
         if KEYPAD_KEY.fullmatch(element.label.strip()):
             self._keypad_skipped += 1
@@ -486,7 +509,16 @@ class RecursiveWalker(ElementTreeWalker):
                 if not views:
                     return
                 current = self._elements(views)
-                if screen_similarity(elements, current) < self.similarity_threshold:
+                # Same trap as the sweep: after scrolling to reach a control,
+                # the screen no longer resembles the one this node started on,
+                # and judging that by similarity alone declared the walk lost.
+                # `Go to Settings` was abandoned on every visit -- "drifted off
+                # ... and could not get back" -- while it was sitting on the
+                # screen the whole time, further down the list.
+                scrolled_here = self._same_container(
+                    (scrollable_container(views) or {}).get("resource_id"), views)
+                if (screen_similarity(elements, current) < self.similarity_threshold
+                        and not scrolled_here):
                     if not self._return_to(node):
                         logger.warning("drifted off %s and could not get back", here)
                         return
@@ -499,7 +531,19 @@ class RecursiveWalker(ElementTreeWalker):
                 target, views = self._find_element_scrolled(element.label, views)
                 if target is None:
                     continue
-                before = self._signature(self._elements(views))
+                # The screen as it stands RIGHT NOW, after any scrolling done
+                # to reach this control. Both the before-signature and the
+                # moved-or-not test have to use this same snapshot.
+                #
+                # They did not: `moved` was measured against a view captured
+                # before the scroll, so pressing Flash -- which expands its
+                # options in place and moves nothing -- looked like a descent.
+                # The walk then tried to descend, the ancestor-similarity
+                # guard refused it as a loop, and BACK_FLASH_OFF/AUTO/ON were
+                # recorded nowhere. A working behaviour disappeared because an
+                # unrelated change moved the baseline out from under it.
+                standing = self._elements(views)
+                before = self._signature(standing)
                 if not self._click(target, views):
                     continue
                 _, after_views, after_pkg = self._await_stable()
@@ -517,7 +561,7 @@ class RecursiveWalker(ElementTreeWalker):
                     self._return_to(node)
                     continue
 
-                moved = screen_similarity(current, after) < self.similarity_threshold
+                moved = screen_similarity(standing, after) < self.similarity_threshold
                 # Everything the press brought onto the screen, and separately the
                 # part of it that is pressable.
                 #
@@ -738,6 +782,7 @@ class RecursiveWalker(ElementTreeWalker):
             "screens_already_documented": self._reused_screens,
             "tab_strips_not_swiped": self._strips_not_swiped,
             "listed_but_not_opened": self._left_unopened,
+            "actions_listed_not_performed": self._actions_not_pressed,
             "reopened_on_second_pass": self._reopened,
         })
         return base

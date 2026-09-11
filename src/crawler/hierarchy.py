@@ -211,18 +211,44 @@ _DIALOG_CLASS_HINTS = ("alertdialog", "dialog", "popupwindow", "bottomsheet")
 
 
 def scrollable_container(views: Sequence[Dict]) -> Optional[Dict]:
-    """The tallest scrollable view on screen, or None."""
-    best, best_height = None, 0
-    for view in views:
-        if not view.get("scrollable"):
-            continue
-        box = box_of(view)
-        if not box:
-            continue
+    """The view that actually scrolls the content, or None.
+
+    The INNERMOST scrollable, not the tallest. A settings page wraps its list
+    in a full-height ScrollView, so "tallest" always picked the wrapper:
+
+        layout         ScrollView     (0,   0, 1080, 2340)   <- chosen
+        recycler_view  RecyclerView   (0, 299, 1080, 2340)   <- the list
+
+    Swiping the wrapper moves nothing. The sweep then sees an unchanged
+    screen, concludes the list has ended, and stops -- so the camera's
+    Settings screen enumerated the same 21 of its sixty-odd rows on every
+    run, and everything from `Swipe preview` to `About Camera` was invisible
+    to the walk. Raising the scroll limit could not help, because the loop
+    was never reaching the limit.
+
+    A nested scrollable only displaces its parent when it is a real share of
+    it (40%), so a small spinner inside a long page does not win.
+    """
+    boxed = [(view, box_of(view)) for view in views if view.get("scrollable")]
+    boxed = [(view, box) for view, box in boxed if box]
+    if not boxed:
+        return None
+
+    def contains(outer, inner) -> bool:
+        return (outer is not inner
+                and outer[0] <= inner[0] and outer[1] <= inner[1]
+                and outer[2] >= inner[2] and outer[3] >= inner[3])
+
+    innermost = []
+    for view, box in boxed:
         height = box[3] - box[1]
-        if height >= best_height:
-            best, best_height = view, height
-    return best
+        nested = [other for _, other in boxed
+                  if contains(box, other) and (other[3] - other[1]) >= 0.4 * height]
+        if not nested:
+            innermost.append((view, box))
+
+    pool = innermost or boxed
+    return max(pool, key=lambda pair: pair[1][3] - pair[1][1])[0]
 
 
 def swipe_span(container: Dict, width: int, height: int

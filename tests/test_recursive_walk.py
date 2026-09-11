@@ -28,7 +28,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.crawler.elements import Element  # noqa: E402
-from src.crawler.recursive_walk import BACK_LABELS, RecursiveWalker  # noqa: E402
+from src.crawler.recursive_walk import (  # noqa: E402
+    ACTION_LABELS, BACK_LABELS, RecursiveWalker)
 
 
 def check(label: str, condition: bool, detail: str = "") -> bool:
@@ -79,6 +80,18 @@ def main() -> int:
     ok &= check("the action guard applies to getting back too",
                 "guard.blocks" in src.split("def press")[1][:400],
                 "every candidate goes through one guarded press")
+
+    print()
+    print("an action is a row, not a door")
+    # Pressing the shutter, swapping the lens or opening the gallery
+    # navigates AWAY from the tree. With these pressed the walk collected 166
+    # children under Flash, 141 cyclic rows and 2042 rows against a 392-row
+    # sheet, while never reaching the end of the Settings list.
+    for lab in ("take picture", "switch to front camera", "view pictures and videos"):
+        ok &= check(f"{lab!r} is listed, not performed", lab in ACTION_LABELS)
+    ok &= check("an ordinary menu row is still pressed",
+                "photo enhancer" not in ACTION_LABELS and "flash" not in ACTION_LABELS,
+                "this is a named list, not a return to trusting ")
 
     print()
     print("options are listed, never pressed")
