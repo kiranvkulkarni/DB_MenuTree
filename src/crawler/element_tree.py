@@ -322,7 +322,15 @@ class ElementTreeWalker:
         # Only a near-total change means the swipe navigated.
         self.scroll_abort_similarity = float(
             config.get("scroll_abort_similarity", 0.30))
-        self.max_scrolls = int(config.get("max_scrolls", 8))
+        # How many swipes a single sweep may take. The loop already stops
+        # the moment the screen stops changing, so this is a ceiling for
+        # pathological lists rather than a target -- and at 8 it was cutting
+        # real ones short. The camera's Settings list runs past sixty rows;
+        # eight swipes reached Location tags and stopped, so Swipe preview,
+        # Shooting methods, Settings to keep, Shutter sound, Camera
+        # Assistant, Privacy, Permissions, Reset settings and About Camera
+        # were never on any screen the walk read.
+        self.max_scrolls = int(config.get("max_scrolls", 30))
         self._settle_polls = 0
         self._package_disagreements = 0
         self._stem_matches = 0
@@ -1155,6 +1163,13 @@ class ElementTreeWalker:
         time.sleep(self.scroll_settle)
         return self._await_stable()[1]
 
+    @staticmethod
+    def _same_container(container_id, views) -> bool:
+        """Is the list we were scrolling still on screen?"""
+        if not container_id:
+            return bool(views)
+        return any(view.get("resource_id") == container_id for view in views)
+
     def _enumerate_scrolled(self, views: Sequence[Dict]) -> List[Element]:
         """Every element on a screen, including what is below the fold.
 
@@ -1182,7 +1197,8 @@ class ElementTreeWalker:
         span = self._swipe_span(views)
         if span is None:
             return found
-        baseline = self._elements(views)
+        container = scrollable_container(views)
+        container_id = (container or {}).get("resource_id")
 
         keys = set()
         for _ in range(self.max_scrolls):
@@ -1193,25 +1209,19 @@ class ElementTreeWalker:
             current = self._scroll_once(span, down=True)
             if not current:
                 break
-            # A swipe that CHANGES the screen was not a scroll. Once spans
-            # could be horizontal, `scrollable_container` started returning
-            # the mode strip on the viewfinder, and every enumeration swiped
-            # it -- which switches PHOTO to VIDEO. The walk then collected
-            # another mode's controls into this node and could not find its
-            # way back: 216 scrolls, 16 failed returns, and the benchmark
-            # score fell from 35 of 55 to 17.
+            # A swipe that navigates is not a scroll -- but "did the content
+            # change" cannot tell the two apart, because scrolling a long list
+            # is SUPPOSED to replace the content. Judging it by similarity
+            # aborted the Settings sweep after a single swipe, so that screen
+            # reported the same 21 of its sixty-odd rows on every run and the
+            # whole tail from `Shooting methods` to `About Camera` was never
+            # visible to the walk.
             #
-            # Scrolling reveals more of the same screen. Anything else is
-            # navigation wearing a swipe.
-            #
-            # The bar is DELIBERATELY low. At the ordinary threshold this
-            # aborted the scroll it exists to permit: dragging the filter
-            # carousel applies each filter as it passes, so the preview and a
-            # label or two change and similarity dips well below 0.6 on a
-            # screen the walk has not left at all. Six of twelve filters came
-            # back. A mode switch replaces almost everything, so it is caught
-            # far below that.
-            if screen_similarity(baseline, self._elements(current)) < self.scroll_abort_similarity:
+            # The question is whether we are still on the same list, and the
+            # list can answer it: if the container we are scrolling is still
+            # on screen, the swipe scrolled it. If it has gone, the swipe took
+            # us somewhere else -- which is what the mode strip did.
+            if not self._same_container(container_id, current):
                 self._scroll_left_screen += 1
                 break
             collect(current)

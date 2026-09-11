@@ -171,10 +171,11 @@ def main() -> int:
     # viewfinder, and every enumeration swiped it -- switching PHOTO to VIDEO,
     # collecting another mode into this node, and stranding the walk. 216
     # scrolls, 16 failed returns, benchmark 35/55 -> 17/55.
-    ok &= check("scrolling stops when the screen stops being the same screen",
-                "scrolls_that_changed_screen" in src
-                and "baseline" in src,
-                "scrolling reveals more of one screen; anything else is navigation")
+    ok &= check("scrolling stops when the LIST is gone, not when it changes",
+                "_same_container(container_id" in src,
+                "scrolling a long list is supposed to replace the content -- "
+                "judging it by similarity aborted the Settings sweep after "
+                "one swipe and hid forty rows")
 
     print()
     print("ALL PASS" if ok else "FAILURES PRESENT")
