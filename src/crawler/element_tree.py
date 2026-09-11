@@ -316,6 +316,9 @@ class ElementTreeWalker:
         self._phases: Dict[str, List[float]] = {}
         self._scrolls = 0
         self._scroll_left_screen = 0
+        # A fling is read mid-flight; a drag settles first.
+        self.scroll_duration_ms = int(config.get("scroll_duration_ms", 700))
+        self.scroll_settle = float(config.get("scroll_settle", 0.9))
         # Only a near-total change means the swipe navigated.
         self.scroll_abort_similarity = float(
             config.get("scroll_abort_similarity", 0.30))
@@ -1138,11 +1141,18 @@ class ElementTreeWalker:
         assert self.driver is not None
         axis, fixed, low, high = span
         start, end = (high, low) if down else (low, high)
+        # A slow drag, then a real pause. A fast flick keeps coasting after
+        # the gesture ends, so the dump lands mid-fling and reads a blur of
+        # half-scrolled rows: `Video format` came back carrying HEVC alone,
+        # while H.264, High bitrate videos, HDR and Log -- which sit directly
+        # under it -- were never seen at all. Scrolling faster does not cover
+        # more of a list, it covers less.
         if axis == "h":
-            self.driver.swipe(start, fixed, end, fixed, 260)
+            self.driver.swipe(start, fixed, end, fixed, self.scroll_duration_ms)
         else:
-            self.driver.swipe(fixed, start, fixed, end, 260)
+            self.driver.swipe(fixed, start, fixed, end, self.scroll_duration_ms)
         self._scrolls += 1
+        time.sleep(self.scroll_settle)
         return self._await_stable()[1]
 
     def _enumerate_scrolled(self, views: Sequence[Dict]) -> List[Element]:

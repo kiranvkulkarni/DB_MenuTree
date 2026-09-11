@@ -118,6 +118,15 @@ class RecursiveWalker(ElementTreeWalker):
         # Deliberately far above return_similarity: this decides "is this the
         # SAME menu I already wrote down", not "did I land where I meant".
         self.documented_similarity = float(config.get("documented_similarity", 0.9))
+        # Off by default. Suppressing a screen because something like it was
+        # already written down is too blunt: the Flash options reached through
+        # `Quick controls` are the SAME set as those under the mode's own
+        # Flash chip, so skipping them left `Quick controls > Flash` with no
+        # children at all. A control reachable from two places is listed under
+        # both; the loop guards, not this, are what stop a walk running on
+        # forever.
+        self.skip_documented_screens = bool(
+            config.get("skip_documented_screens", False))
 
     # -- helpers ---------------------------------------------------------
     def _signature(self, elements: Sequence[Element]) -> Set[tuple]:
@@ -128,9 +137,22 @@ class RecursiveWalker(ElementTreeWalker):
                 or element.label.strip().lower() in BACK_LABELS)
 
     def _worth_pressing(self, element: Element) -> Optional[str]:
-        """None if it should be pressed, else why it should not be."""
-        if not element.interactive:
-            return "not interactive"
+        """None if it should be pressed, else why it should not be.
+
+        Being un-clickable in the dump is NOT a reason to skip a row. A menu
+        item is whatever a tester would tap, and Android hangs the click on a
+        container while the text you can see reports `clickable="false"`.
+        Reading that flag and believing it left every Settings row unpressed
+        and stopped the tree four levels short of the hand-authored sheet.
+
+        Pressing something inert costs one tap and changes nothing. Refusing
+        to press something live costs a whole subtree, silently. The
+        asymmetry decides it.
+
+        The real vetoes stay: a back control leaves the screen, a keypad key
+        can dial, and the action guard refuses destructive, outbound,
+        account and commerce controls.
+        """
         if self._is_back(element):
             return "back control"
         from .element_tree import KEYPAD_KEY
@@ -409,7 +431,8 @@ class RecursiveWalker(ElementTreeWalker):
                     path_selectors, elements, signature, entering, parent)
         here = node.where
         context = path[0] if path else ""
-        seen_at = self._already_documented(signature, context)
+        seen_at = (self._already_documented(signature, context)
+                   if self.skip_documented_screens else None)
         if seen_at is not None:
             logger.info("visit  depth %-2d  %-38s  already listed under %s",
                         depth, here, seen_at)
@@ -432,45 +455,51 @@ class RecursiveWalker(ElementTreeWalker):
         handled = set(chrome)
 
         try:
-            while self._budget_left():
+            # One scroll sweep per screen, then work down what it found.
+            #
+            # The loop used to re-enumerate WITH SCROLLING on every pass, so
+            # each click paid to re-scroll the whole list again. Measured:
+            # 1447 scrolls for 582 clicks, and at ~1.6s per scroll that was
+            # the entire two-hour budget spent dragging lists. The walk never
+            # reached the Settings tree at all, and rows it had found on
+            # earlier runs -- Video stabilization, Dual recordings, Shooting
+            # methods, About Camera -- came back missing.
+            #
+            # The sweep already knows everything on the screen. Re-reading it
+            # per click bought nothing except the chance to notice new
+            # arrivals, and those are caught by `revealed` and by the backstop.
+            for element in elements:
+                if not self._budget_left():
+                    return
+                fingerprint = self._fingerprint(element)
+                if fingerprint in handled:
+                    continue
+                handled.add(fingerprint)
+
+                why = self._worth_pressing(element)
+                self._emit(element, depth, path, path_selectors,
+                           note="" if why is None else why)
+                if why is not None:
+                    continue
+
                 _, views, _ = self._await_stable()
                 if not views:
-                    break
-                current = self._enumerate_scrolled(views)
-
-                # Still on this screen? A stray dialog, a QR overlay, a mode that
-                # changed underneath -- without this check their contents are
-                # listed as if they belonged here. One run absorbed a QR scanner
-                # into the root as depth-2 siblings.
+                    return
+                current = self._elements(views)
                 if screen_similarity(elements, current) < self.similarity_threshold:
                     if not self._return_to(node):
                         logger.warning("drifted off %s and could not get back", here)
                         return
                     _, views, _ = self._await_stable()
-                    current = self._enumerate_scrolled(views) if views else []
-                    if not current:
+                    if not views:
                         return
 
-                target = next((e for e in current
-                               if self._fingerprint(e) not in handled), None)
+                # It may be below the fold: scroll to THIS control, rather
+                # than re-sweeping the screen to find everything again.
+                target, views = self._find_element_scrolled(element.label, views)
                 if target is None:
-                    break
-                handled.add(self._fingerprint(target))
-
-                # Emitted AT THE MOMENT it is reached, so whatever it opens lands
-                # on the rows directly beneath it. Listing the whole screen first
-                # and appending children afterwards is what put Flash's
-                # On/Off/Auto nineteen rows below Flash under "Edge panels", and
-                # Go to Settings under a title rather than under Quick controls.
-                # The sheet reads top to bottom: a row, then its subtree, then the
-                # next sibling.
-                why = self._worth_pressing(target)
-                self._emit(target, depth, path, path_selectors,
-                           note="" if why is None else why)
-                if why is not None:
                     continue
-
-                before = self._signature(current)
+                before = self._signature(self._elements(views))
                 if not self._click(target, views):
                     continue
                 _, after_views, after_pkg = self._await_stable()
