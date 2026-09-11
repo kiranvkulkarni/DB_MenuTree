@@ -95,11 +95,13 @@ def main() -> int:
 
     print()
     print("the screen is re-read, never remembered")
-    ok &= check("each pass re-enumerates before choosing",
-                visit.count("self._enumerate_scrolled") >= 2,
-                "a stale snapshot is what produced 'needs a precondition'")
+    ok &= check("the screen is swept once, then worked down",
+                visit.count("self._enumerate_scrolled") == 1
+                and "_find_element_scrolled" in visit,
+                "re-sweeping per click cost 1447 scrolls for 582 clicks and "
+                "the whole two-hour budget")
     ok &= check("a row is emitted the moment it is reached, before pressing",
-                visit.index("self._emit(target") < visit.index("self._click(target"),
+                visit.index("self._emit(element") < visit.index("self._click(target"),
                 "listing the screen first put Flash On/Off/Auto nineteen rows "
                 "below Flash, under a later sibling")
     ok &= check("each tab is walked before the next is emitted",
