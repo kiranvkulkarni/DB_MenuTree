@@ -39,6 +39,7 @@ import time
 from typing import Dict, List, Optional, Sequence, Set
 
 from .element_tree import ElementTreeWalker, TreeNode
+from .device_driver import DriverError
 from .elements import Element, screen_similarity
 from .hierarchy import box_of, scrollable_container
 
@@ -101,6 +102,7 @@ class RecursiveWalker(ElementTreeWalker):
         self._reused_screens = 0
         self._strips_not_swiped = 0
         self._left_unopened = 0
+        self._reopened = 0
         self._documented = {}
         # The tab strip is drawn on EVERY screen the app has. Once its members
         # are nodes at depth 2 they must never be entered again from anywhere
@@ -522,6 +524,21 @@ class RecursiveWalker(ElementTreeWalker):
                     continue        # the press did nothing visible
 
                 self._descents += 1
+
+                # No menu reaches itself through its own name. The similarity
+                # check below catches a return to a screen that LOOKS the
+                # same; this catches a loop whose laps each differ slightly
+                # and slip under the threshold. Without it one run produced
+                # `... > Switch to front camera > Capture > Capture > Capture`
+                # and filled depths 9 to 14 with twelve rows apiece.
+                #
+                # Written for the older walker and never copied here; raising
+                # --max-depth simply gave the loop more room.
+                if target.label in path:
+                    self._loops_refused += 1
+                    self._return_to(node)
+                    continue
+
                 child_signature = self._signature(after)
                 if any(len(child_signature & seen) / max(1, len(child_signature | seen))
                        >= self.return_similarity
@@ -576,12 +593,106 @@ class RecursiveWalker(ElementTreeWalker):
         self._visit(depth + 1, path + [tab.label], selectors, ancestors,
                     skip_tabs=True, entering=tab, parent=parent)
 
+    def _replay(self, path) -> bool:
+        """Relaunch and click down `path`, scrolling to reach each step.
+
+        `_relaunch_and_replay` verifies where it lands against a known state
+        key and finds each step with `_find_element`, which does not scroll.
+        Neither suits the second pass: there is no target key to verify
+        against, and the controls worth retrying are mostly the ones that
+        were below the fold to begin with. Passing an empty key made every
+        replay report failure, so the first second pass reopened 0 of 243.
+        """
+        assert self.driver is not None
+        self._relaunches += 1
+        try:
+            if not self.driver.launch_clean(self.package,
+                                            clear=self.clear_between_paths):
+                self.driver.start_app(self.package,
+                                      clear=self.clear_between_paths)
+        except DriverError:
+            return False
+        _, views, _ = self._await_stable()
+        if not views:
+            return False
+        for label in path:
+            element, views = self._find_element_scrolled(label, views)
+            if element is None or not self._click(element, views):
+                return False
+            _, views, _ = self._await_stable()
+            if not views:
+                return False
+        return True
+
+    # -- second pass -----------------------------------------------------
+    def _reopen_leftovers(self) -> None:
+        """Go back for the screens the walk had to abandon.
+
+        A node that loses its screen mid-way -- a dialog steals focus, a
+        return fails, a list scrolls under it -- gives up on the rest of that
+        screen, and the backstop records the remainder as listed-but-unopened.
+        On one run that was 206 rows, concentrated in exactly the places the
+        hand-authored tree goes deepest: 35 under
+        `PORTRAIT > Quick controls > Go to Settings`, 38 under
+        `MORE > Switch to front camera > Quick controls`.
+
+        Time is not what stopped that run -- it ended on its own after 1322s
+        of a 2400s budget. The walk simply had nothing left it was willing to
+        try. So retry each abandoned control from a clean start: relaunch,
+        replay its path, press it, and walk what it opens.
+
+        Every reopened branch is a branch the first pass could not reach, so
+        this is the difference between a tree that stops at depth 5 and one
+        that reaches the depth the sheet has.
+        """
+        pending = [row for row in self.rows
+                   if row.note.startswith("listed, not opened")]
+        if not pending:
+            return
+        logger.info("second pass: %d control(s) were listed but never opened",
+                    len(pending))
+
+        for row in pending:
+            if not self._budget_left():
+                logger.info("second pass stopped on the clock with %d left",
+                            len(pending) - self._reopened)
+                return
+            if row.depth >= self.max_depth:
+                continue
+            if not self._replay(row.path):
+                continue
+            _, views, _ = self._await_stable()
+            if not views:
+                continue
+            here = self._enumerate_scrolled(views)
+            live = next((e for e in here
+                         if e.label == row.raw_label and e.interactive), None)
+            if live is None or self._worth_pressing(live) is not None:
+                continue
+            before = self._signature(here)
+            if not self._click(live, views):
+                continue
+            _, after_views, after_pkg = self._await_stable()
+            if not after_views or (after_pkg and after_pkg != self.package):
+                continue
+            after = self._elements(after_views)
+            if screen_similarity(here, after) >= self.similarity_threshold:
+                continue                    # it opened nothing after all
+            self._reopened += 1
+            row.note = "opened on the second pass"
+            selectors = list(row.path_selectors) + [
+                (row.selector_kind, row.selector_value)
+                if row.selector_kind else ("text", row.raw_label)]
+            self._visit(row.depth + 1, row.path + [row.raw_label], selectors,
+                        [], entering=live, parent=None)
+
     def walk(self) -> List[TreeNode]:
         root_key, views = self._start()
         if not root_key:
             return self.rows
         self._root_key = root_key
         self._visit(2, [], [], [])
+        self._reopen_leftovers()
         self._release()
         logger.info("Walk finished: %s", self.stats())
         return self.rows
@@ -598,5 +709,6 @@ class RecursiveWalker(ElementTreeWalker):
             "screens_already_documented": self._reused_screens,
             "tab_strips_not_swiped": self._strips_not_swiped,
             "listed_but_not_opened": self._left_unopened,
+            "reopened_on_second_pass": self._reopened,
         })
         return base
