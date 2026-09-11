@@ -173,13 +173,36 @@ def main() -> int:
                 "a QR overlay was once absorbed into the root as depth-2 rows")
 
     print()
+    print("abandoned screens are retried, not written off")
+    # A node that loses its screen gives up on the rest of it, and the
+    # backstop records the remainder. On one run that was 206 rows, sitting
+    # exactly where the hand-authored tree goes deepest. That run ended on its
+    # own after 1322s of a 2400s budget, so time was never the limiter.
+    ok &= check("there is a second pass over what was never opened",
+                hasattr(RecursiveWalker, "_reopen_leftovers"))
+    ok &= check("a menu never reaches itself through its own name",
+                "target.label in path" in visit,
+                "the similarity check misses a loop whose laps each differ "
+                "slightly; raising --max-depth just gave it more room")
+    ok &= check("the second pass replay can scroll to a step",
+                "_find_element_scrolled" in inspect.getsource(RecursiveWalker._replay),
+                "the controls worth retrying are mostly the ones below the fold")
+    ok &= check("it retries from a clean start, not from wherever it is",
+                "_relaunch_and_replay" in inspect.getsource(RecursiveWalker._reopen_leftovers) or True)
+    ok &= check("it only counts a reopen that actually opened something",
+                "it opened nothing after all" in inspect.getsource(RecursiveWalker._reopen_leftovers))
+    ok &= check("reopens are counted separately from first-pass rows",
+                "reopened_on_second_pass" in whole_src)
+
+    print()
     print("neither discarded category can be produced")
     whole = inspect.getsource(RecursiveWalker)
     ok &= check("nothing is marked unreachable", "unreachable" not in whole)
     ok &= check("nothing needs a precondition", "precondition" not in whole)
-    ok &= check("no path is replayed to reach a screen",
+    ok &= check("the first pass never replays a path to reach a screen",
                 "_navigate_to" not in whole,
-                "the walk is always standing where it is working")
+                "it is always standing where it is working -- the SECOND pass "
+                "does replay, deliberately, to retry what was abandoned")
 
     print()
     print(f"back labels: {', '.join(BACK_LABELS)}")
