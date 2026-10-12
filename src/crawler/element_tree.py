@@ -316,6 +316,8 @@ class ElementTreeWalker:
         self._phases: Dict[str, List[float]] = {}
         self._scrolls = 0
         self._scroll_left_screen = 0
+        self._offscreen_taps = 0
+        self._display = None
         # A fling is read mid-flight; a drag settles first.
         self.scroll_duration_ms = int(config.get("scroll_duration_ms", 700))
         self.scroll_settle = float(config.get("scroll_settle", 0.9))
@@ -812,12 +814,29 @@ class ElementTreeWalker:
             logger.info("requeued %d element(s) written off while blocked", back)
         return back
 
+    def _on_display(self, point) -> bool:
+        if self._display is None:
+            try:
+                self._display = self.driver.screen_size()
+            except Exception:
+                return True
+        width, height = self._display
+        return 0 <= point[0] < width and 0 <= point[1] < height
+
     def _click(self, element: Element, views: Sequence[Dict]) -> bool:
         assert self.driver is not None
         if element.view_index >= len(views):
             return False
         centre = center_of(views[element.view_index])
         if centre is None:
+            return False
+        # Never tap off the screen. A view can sit in the dump with bounds
+        # outside the display -- mid-transition, or laid out behind a panel --
+        # and tapping its centre crashed a whole walk: uiautomator2 asserts
+        # x >= 0. Such a control is not pressable from here, which is a
+        # finding about this moment, not a reason to stop.
+        if centre[0] < 0 or centre[1] < 0 or not self._on_display(centre):
+            self._offscreen_taps += 1
             return False
         started = time.time()
         try:
@@ -1885,6 +1904,7 @@ class ElementTreeWalker:
             "settle_polls": self._settle_polls,
             "scrolls": self._scrolls,
             "scrolls_that_changed_screen": self._scroll_left_screen,
+            "offscreen_taps_refused": self._offscreen_taps,
             "package_disagreements": self._package_disagreements,
             "identify_misses": self._identify_misses[:40],
             "stem_matches": self._stem_matches,

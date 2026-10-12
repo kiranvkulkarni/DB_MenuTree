@@ -72,8 +72,13 @@ def main() -> int:
             print(f"could not replay the path: {' > '.join(path)}")
             walker._release()
             return 2
+        failure = None
         try:
             walker._visit(len(path) + 2, path, [], [], skip_tabs=True)
+        except Exception as exc:              # keep what was collected
+            import traceback
+            failure = f"{type(exc).__name__}: {exc}"
+            traceback.print_exc()
         finally:
             walker._release()
 
@@ -81,7 +86,8 @@ def main() -> int:
     rows = [r.to_dict() for r in walker.rows if r.depth > 1]
     out.mkdir(parents=True, exist_ok=True)
     (out / "branch.json").write_text(
-        json.dumps({"path": path, "stats": stats, "rows": rows}, indent=1),
+        json.dumps({"path": path, "stats": stats, "rows": rows,
+                    "failure": failure}, indent=1),
         encoding="utf-8")
 
     print()
@@ -96,6 +102,9 @@ def main() -> int:
                 "step_backs_recovered_by_replay", "toggles_listed_not_switched",
                 "listed_but_not_opened", "elapsed_seconds"):
         print(f"  {key:<32}{stats.get(key)}")
+    if failure:
+        print(f"\n  !! WALK DID NOT COMPLETE: {failure}")
+        print("  !! The rows above are PARTIAL -- do not read them as the branch.")
     print(f"\n  written to {out / 'branch.json'}")
     return 0
 
