@@ -58,6 +58,13 @@ class Element:
     # its content-desc produces a selector that cannot match at runtime.
     selector_kind: Optional[str] = None    # text | desc | id | xpath | class
     selector_value: Optional[str] = None
+    # docs/HANDLING.md role, assigned when the element is first SEEN (by the
+    # walker, from the dump it was seen in) -- never at press time, because a
+    # summary scrolled out of view cannot be classified any more.
+    role: str = ""
+    # For anything belonging to a switch: which switch, by resource id and
+    # bounds. One switch is operated once, however many labels its row has.
+    switch_key: Optional[str] = None
 
     def annotated(self) -> str:
         """Label with a type annotation, in the sheet's style."""
@@ -174,6 +181,20 @@ def enumerate_elements(
     seen_text = False
     pressed_containers = set()
 
+    # Another app's elements belong on this screen only when that app is IN
+    # FRONT -- a permission prompt, or an app the walk deliberately entered.
+    # While the target app is in front, anything from another package is an
+    # overlay drawn on top of it: the launcher's Edge panels handle
+    # (com.sec.android.app.launcher) sat over every camera screen and was
+    # listed as though it were a camera menu. Decided by which package owns
+    # the most views, so it covers any overlay from any vendor unnamed.
+    from collections import Counter
+    owners = Counter(v.get("package") for v in views
+                     if v.get("package") and not any(
+                         v.get("package").startswith(x) for x in exclude_packages))
+    in_front = owners.most_common(1)[0][0] if owners else None
+    app_in_front = package is None or in_front == package
+
     for index, view in enumerate(views):
         view_package = view.get("package")
         if view_package and package and view_package != package:
@@ -184,6 +205,8 @@ def enumerate_elements(
             # search field adds a row per key: q, w, e, 1, 2 ...
             if any(view_package.startswith(x) for x in exclude_packages):
                 continue
+            if app_in_front:
+                continue                    # an overlay, not the app's
 
         interactive = bool(
             view.get("clickable")

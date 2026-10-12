@@ -40,8 +40,8 @@ from typing import Dict, List, Optional, Sequence, Set
 
 from .element_tree import ElementTreeWalker, TreeNode
 from .device_driver import DriverError
-from .elements import Element, label_set, screen_similarity
-from .hierarchy import box_of, scrollable_container
+from .elements import Element, _pressable_via, label_set, screen_similarity
+from .hierarchy import box_of, center_of, looks_like_dialog, scrollable_container
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,15 @@ class RecursiveWalker(ElementTreeWalker):
         self._toggles_not_pressed = 0
         self._recovered = 0
         self._not_located = 0
+        self._roles = {}
+        self._switches_already_on = 0
+        self._switches_revealing = 0
+        self._switch_dialogs = 0
+        self._switches_navigating = 0
+        self._guarded_rows_opened = 0
+        self._replay_retaps = 0
+        self._switches_restored = 0
+        self._switches_not_restored = 0
         self._reopened = 0
         self._documented = {}
         # The tab strip is drawn on EVERY screen the app has. Once its members
@@ -133,6 +142,10 @@ class RecursiveWalker(ElementTreeWalker):
         # Share of the visible labels that must belong to a node for the
         # walk to believe it is standing on it. See _is_node.
         self.node_containment = float(config.get("node_containment", 0.7))
+        # Profile opt-in: open a guarded ROW (e.g. "Reset settings") to list
+        # the confirmation it raises; the dialog's commit is still refused.
+        self.open_guarded_rows = bool(config.get("open_guarded_rows", False))
+        self._in_dialog = False
         self.do_not_press = {str(x).strip().lower()
                              for x in config.get("do_not_press", [])}
         self.skip_documented_screens = bool(
@@ -165,14 +178,7 @@ class RecursiveWalker(ElementTreeWalker):
         """
         if self._is_back(element):
             return "back control"
-        if element.kind == "toggle" or element.checked is not None:
-            # A switch changes a setting; it does not open a menu. The sheet
-            # lists `switch_widget (On/Off)` as a leaf. Pressing one on the
-            # Settings screen raised a confirmation dialog, the walk took the
-            # dialog for a submenu, and the failed step back that followed
-            # dropped the whole Settings branch.
-            self._toggles_not_pressed += 1
-            return "toggle -- listed, not switched"
+
         if element.label.strip().lower() in self.do_not_press:
             # From the app's profile (profiles/<package>.json), never from
             # this file. The walker knows nothing about any particular app;
@@ -184,7 +190,20 @@ class RecursiveWalker(ElementTreeWalker):
         if KEYPAD_KEY.fullmatch(element.label.strip()):
             self._keypad_skipped += 1
             return "keypad key -- recorded, not pressed"
-        blocked = self.guard.blocks("text", element.label)
+        # In a dialog every button is checked strictly -- that is where a
+        # commit like `Reset` or `Yes, delete` lives. Elsewhere a row is an
+        # action only if it STARTS with the verb (see ActionGuard.blocks_row).
+        if self._in_dialog:
+            blocked = self.guard.blocks("text", element.label)
+        else:
+            blocked = self.guard.blocks_row("text", element.label)
+            if blocked and self.open_guarded_rows and element.role == "title":
+                # Opted into by the app's profile: open the row to document
+                # the confirmation it raises. Inside that dialog the strict
+                # check above refuses the destructive button, and the walk
+                # leaves by Cancel.
+                self._guarded_rows_opened += 1
+                return None
         if blocked:
             return f"action guard: {blocked}"
         return None
@@ -333,6 +352,207 @@ class RecursiveWalker(ElementTreeWalker):
                 best = group
         return best
 
+    def _elements(self, views):
+        """Every element, each carrying its role and switch identity.
+
+        Assigned here, from the dump the element was seen in, because that is
+        the only moment the structure is certain. Classifying at press time
+        failed for anything scrolled out of view: `Prioritize quality` -- a
+        summary -- was looked for, not found, and reported as unlocatable
+        rather than recognised as something never to press.
+        """
+        out = super()._elements(views)
+        for e in out:
+            role, row, check = self._row_role(e, views)
+            e.role = role
+            if check is not None and 0 <= check < len(views):
+                cv = views[check]
+                e.switch_key = f"{cv.get('resource_id')}@{cv.get('bounds')}"
+        return out
+
+    # -- roles (docs/HANDLING.md) ----------------------------------------
+    @staticmethod
+    def _descendants(views, index):
+        out, stack = [], list(views[index].get("children", []))
+        while stack:
+            j = stack.pop(0)
+            if 0 <= j < len(views):
+                out.append(j)
+                stack[0:0] = views[j].get("children", [])
+        return out
+
+    @staticmethod
+    def _label_of(view):
+        return (view.get("text") or view.get("content_description") or "").strip()
+
+    def _row_role(self, target, views):
+        """(role, row index, checkable index) for a control, from structure.
+
+        Read from the dump alone -- class, clickable, checkable, and which
+        clickable row a label sits in -- so it holds for any app built from
+        standard Android rows:
+
+          switch        a Switch that is its own tap target (has `clickable`)
+          inline        a Switch that is NOT clickable: its ROW operates it
+          switch_row    the title of a row holding such an inline Switch
+          option        a radio-style checkable (RadioButton, CheckedTextView)
+          checkbox      a CheckBox
+          summary       a second label inside the same clickable row
+          title         the first label of a clickable row, or a control
+          plain         anything with no clickable row around it
+
+        Measured on the camera's Settings: `Shot suggestions` holds a
+        non-clickable Switch, so pressing the row flips it; `Watermark` holds
+        a clickable Switch behind a divider, so the row opens a screen and
+        the switch is a separate target. They looked identical to a rule
+        written in advance and are told apart here by one attribute.
+        """
+        i = target.view_index
+        if not (0 <= i < len(views)):
+            return "plain", None, None
+        view = views[i]
+        cls = (view.get("class") or "").split(".")[-1].lower()
+        row = i if view.get("clickable") else _pressable_via(views, i)
+        if view.get("checkable") or target.kind in ("toggle", "radio"):
+            # Class first: Element.kind calls every checkable a "toggle", and
+            # a radio button is not a switch -- it is one of a set of options.
+            if "radio" in cls:
+                return "option", row, i
+            if "switch" in cls or "toggle" in cls or                     (target.kind == "toggle" and "checkbox" not in cls and "checked" not in cls):
+                if view.get("clickable"):
+                    return "switch", i, i
+                return ("inline", row, i) if row is not None else ("switch", i, i)
+            if "checkbox" in cls:
+                return "checkbox", row, i
+            return "option", row, i
+        if row is None:
+            return "plain", None, None
+        inside = self._descendants(views, row)
+        labelled = [j for j in inside if self._label_of(views[j])]
+        if i != row and labelled and i != labelled[0]:
+            return "summary", row, None
+        # A row holding a checkable that is not itself clickable is OPERATED
+        # by pressing the row, so the row takes that control's role. Only
+        # switches were checked for at first, and a radio row's title was
+        # taken for a menu: pressing `Prioritize speed` on the Photo
+        # enhancer screen SELECTED it, and Auto FPS was switched Off the same
+        # way -- settings the walk had agreed never to change.
+        inline = next((j for j in inside
+                       if views[j].get("checkable") and not views[j].get("clickable")),
+                      None)
+        if inline is not None:
+            kind = (views[inline].get("class") or "").lower()
+            if "switch" in kind or "toggle" in kind:
+                return "switch_row", row, inline
+            if "checkbox" in kind:
+                return "checkbox", row, inline
+            return "option", row, inline
+        return "title", row, None
+
+    def _synthetic(self, label):
+        return Element(label=label, kind="option", interactive=False, view_index=-1)
+
+    def _operate_switch(self, target, views, tap_index, switch_index, depth,
+                        path, path_selectors, node, ancestors):
+        """The agreed switch policy: if OFF, turn ON, walk what it governs, restore.
+
+        Returns the fingerprints of the controls this switch governs, so the
+        caller does not list them a second time as ordinary siblings.
+
+        What a switch governs is read from the `enabled` attribute, not from
+        what newly appears. Measured on the Watermark screen: Info to show,
+        Model name, Edit, Date, Time, Font and Alignment are on screen the
+        whole time, `enabled=false` while the switch is off and
+        `enabled=true` once it is on. Looking for NEW labels found only the
+        switch bar relabelling itself Off -> On, and the real options were
+        listed as siblings instead of under `On` where the sheet has them.
+
+        Three outcomes, each handled and each restored:
+          * governs controls  -> `Off` and `On` rows, governed walked under On
+          * raises a dialog   -> `On`, the dialog listed under it, declined
+          * navigates away    -> it is a shortcut, not a reveal: a leaf, as
+                                 the sheet lists `Watermark (On/Off)` on the
+                                 Settings list. Measured: pressing that switch
+                                 opened the Watermark screen, which was then
+                                 documented a second time.
+        """
+        sw = views[switch_index]
+        was_on = bool(sw.get("checked"))
+        sw_id = sw.get("resource_id")
+        if was_on:
+            self._switches_already_on += 1
+            return set()
+        own_row = set(self._descendants(views, tap_index)) | {tap_index}
+        before = {}
+        for e in self._elements(views):
+            if e.view_index not in own_row:
+                before[self._fingerprint(e)] = bool(views[e.view_index].get("enabled", True))
+        centre = center_of(views[tap_index])
+        if centre is None:
+            return set()
+        self.driver.tap(*centre, settle=False)
+        self._clicks += 1
+        _, after_views, after_pkg = self._await_stable()
+        after_views = after_views or []
+        after = self._elements(after_views)
+        setting = path + [target.label]
+        selectors = list(path_selectors) + [
+            (target.selector_kind, target.selector_value)
+            if target.selector_kind else ("text", target.label)]
+        governed = set()
+
+        if (after_pkg and after_pkg != self.package) or looks_like_dialog(after_views, self.package):
+            self._emit(self._synthetic("On"), depth + 1, setting, selectors,
+                       note="switch turned on")
+            for e in after:
+                self._emit(e, depth + 2, setting + ["On"], selectors,
+                           note="dialog raised by turning the switch on")
+            self._clear_blocking_dialog()
+            self._switch_dialogs += 1
+        elif not self._is_node(node.elements, after):
+            # It took us somewhere else: a shortcut, not a reveal.
+            self._switches_navigating += 1
+            self._return_to(node)
+        else:
+            for e in after:
+                fp = self._fingerprint(e)
+                if fp in before and not before[fp] and \
+                        after_views[e.view_index].get("enabled", True):
+                    governed.add(fp)
+            if governed:
+                self._emit(self._synthetic("Off"), depth + 1, setting, selectors,
+                           note="switch state")
+                self._emit(self._synthetic("On"), depth + 1, setting, selectors,
+                           note="switch state -- governs the rows below")
+                self._switches_revealing += 1
+                self._visit(depth + 2, setting + ["On"], selectors, ancestors,
+                            skip_tabs=True, entering=None, parent=node,
+                            only=governed)
+
+        self._restore_switch(sw_id, was_on, switch_index, tap_index)
+        return governed
+
+    def _restore_switch(self, sw_id, was_on, switch_index, tap_index):
+        for _ in range(2):
+            _, views, _ = self._await_stable()
+            views = views or []
+            match = [j for j, v in enumerate(views)
+                     if v.get("checkable") and (not sw_id or v.get("resource_id") == sw_id)]
+            if not match:
+                return
+            j = min(match, key=lambda k: abs(k - switch_index))
+            if bool(views[j].get("checked")) == was_on:
+                self._switches_restored += 1
+                return
+            tap = j if views[j].get("clickable") else (_pressable_via(views, j) or j)
+            centre = center_of(views[tap])
+            if centre is None:
+                return
+            self.driver.tap(*centre, settle=False)
+            self._clicks += 1
+        logger.warning("could not restore a switch to %s", "on" if was_on else "off")
+        self._switches_not_restored += 1
+
     def _swipe_span(self, views):
         """Refuse to swipe a navigation strip.
 
@@ -417,7 +637,7 @@ class RecursiveWalker(ElementTreeWalker):
 
     # -- the walk --------------------------------------------------------
     def _visit(self, depth, path, path_selectors, ancestors, skip_tabs=False,
-               entering=None, parent=None):
+               entering=None, parent=None, only=None):
         """List this screen, then walk each item that opens something."""
         if depth > self.max_depth or not self._budget_left():
             return
@@ -457,6 +677,8 @@ class RecursiveWalker(ElementTreeWalker):
         node = Node(path[-1] if path else self.package, depth, path,
                     path_selectors, elements, signature, entering, parent)
         here = node.where
+        outer_dialog = self._in_dialog
+        self._in_dialog = looks_like_dialog(views, self.package)
         context = path[0] if path else ""
         seen_at = (self._already_documented(signature, context)
                    if self.skip_documented_screens else None)
@@ -480,6 +702,9 @@ class RecursiveWalker(ElementTreeWalker):
         chrome |= {self._fingerprint(e)
                    for e in self._tab_strip(elements, views)}
         handled = set(chrome)
+        switches_done = set()
+        to_walk = ([e for e in elements if self._fingerprint(e) in only]
+                   if only is not None else elements)
 
         try:
             # One scroll sweep per screen, then work down what it found.
@@ -495,7 +720,9 @@ class RecursiveWalker(ElementTreeWalker):
             # The sweep already knows everything on the screen. Re-reading it
             # per click bought nothing except the chance to notice new
             # arrivals, and those are caught by `revealed` and by the backstop.
-            for element in elements:
+            # `only`: walk just these elements of the screen -- what a switch
+            # revealed -- while the WHOLE screen still identifies the node.
+            for element in to_walk:
                 if not self._budget_left():
                     return
                 fingerprint = self._fingerprint(element)
@@ -504,9 +731,26 @@ class RecursiveWalker(ElementTreeWalker):
                 handled.add(fingerprint)
 
                 why = self._worth_pressing(element)
-                self._emit(element, depth, path, path_selectors,
-                           note="" if why is None else why)
                 if why is not None:
+                    self._emit(element, depth, path, path_selectors, note=why)
+                    continue
+
+                # Roles that are never pressed are decided from what was
+                # seen, before any attempt to locate them.
+                fixed_notes = {"summary": "summary -- listed, not pressed",
+                               "inline": "switch of the row above",
+                               "option": "option -- listed, not selected",
+                               "checkbox": "checkbox -- listed, not ticked"}
+                if element.role in fixed_notes:
+                    self._emit(element, depth, path, path_selectors,
+                               note=fixed_notes[element.role])
+                    continue
+                # One switch, operated once. A switch bar is a container, a
+                # label, an "Off" text and the switch itself; each was being
+                # treated as a switch row, and Off/On was written five times.
+                if element.switch_key and element.switch_key in switches_done:
+                    self._emit(element, depth, path, path_selectors,
+                               note="switch of the row above")
                     continue
 
                 _, views, _ = self._await_stable()
@@ -538,6 +782,32 @@ class RecursiveWalker(ElementTreeWalker):
                     # never succeed spent a whole run scrolling.
                     self._not_located += 1
                     logger.info("could not locate %r on %s", element.label, here)
+                    self._emit(element, depth, path, path_selectors,
+                               note="listed, could not be located to press")
+                    continue
+
+                # What it IS decides what to do with it (docs/HANDLING.md).
+                role, row_i, check_i = self._row_role(target, views)
+                self._roles[role] = self._roles.get(role, 0) + 1
+                notes = {"summary": "summary -- listed, not pressed",
+                         "inline": "switch of the row above",
+                         "option": "option -- listed, not selected",
+                         "checkbox": "checkbox -- listed, not ticked"}
+                self._emit(element, depth, path, path_selectors,
+                           note=notes.get(role, ""))
+                if role in notes:
+                    continue
+                if role in ("switch", "switch_row"):
+                    if target.switch_key:
+                        switches_done.add(target.switch_key)
+                    if element.switch_key:
+                        switches_done.add(element.switch_key)
+                    tap_i = check_i if role == "switch" else row_i
+                    governed = self._operate_switch(
+                        target, views, tap_i, check_i, depth, path,
+                        path_selectors, node, ancestors + [signature])
+                    # Already written under `On`; not again as siblings.
+                    handled |= governed
                     continue
                 # The screen as it stands RIGHT NOW, after any scrolling done
                 # to reach this control. Both the before-signature and the
@@ -642,6 +912,7 @@ class RecursiveWalker(ElementTreeWalker):
                         return
                     self._recovered += 1
         finally:
+            self._in_dialog = outer_dialog
             # Whatever this screen had that the walk never got to. The loop
             # emits each row as it reaches it, which is what puts a control's
             # children directly beneath it -- but it also means an early exit
@@ -652,7 +923,7 @@ class RecursiveWalker(ElementTreeWalker):
             # Order first, completeness guaranteed: the leftovers go in at
             # this depth, in document order, saying plainly that they were
             # seen and not opened.
-            for element in elements:
+            for element in to_walk:
                 fingerprint = self._fingerprint(element)
                 if fingerprint in handled:
                     continue
@@ -756,6 +1027,30 @@ class RecursiveWalker(ElementTreeWalker):
             _, fresh, _ = self._await_stable()
             current = list(fresh or [])
 
+    def _settled(self, label, views, timeout: float = 3.0):
+        """Wait until `label` stops MOVING, then return (element, views).
+
+        An entering screen slides or fades in. Its labels are readable from
+        the first frame, so a lookup succeeds at once -- and a tap at that
+        moment lands while the view is still in motion and is ignored. The
+        replay pressed `Photo enhancer` that way and stayed on the Settings
+        list. An animation moves bounds, not text, so the test is the
+        control's own bounds being identical in two consecutive dumps.
+        """
+        deadline = time.time() + timeout
+        last = None
+        element = self._find_element(label, views) if views else None
+        while element is not None and time.time() < deadline:
+            bounds = views[element.view_index].get("bounds")
+            if bounds == last:
+                return element, views
+            last = bounds
+            time.sleep(0.35)
+            _, views, _ = self._await_stable()
+            views = views or []
+            element = self._find_element(label, views)
+        return element, views
+
     def _replay(self, path) -> bool:
         """Relaunch and click down `path`, scrolling to reach each step.
 
@@ -778,7 +1073,7 @@ class RecursiveWalker(ElementTreeWalker):
         _, views, _ = self._await_stable()
         if not views:
             return False
-        for label in path:
+        for step, label in enumerate(path):
             element, views = self._await_label(label, views)
             if element is None:
                 element, views = self._find_element_scrolled(label, views)
@@ -790,14 +1085,44 @@ class RecursiveWalker(ElementTreeWalker):
                 # Without this every replay after a reset failed at step one.
                 _, views, _ = self._await_stable()
                 element, views = self._find_element_scrolled(label, views or [])
+            if element is not None:
+                element, views = self._settled(label, views)
+            if element is not None:
+                before = label_set(self._elements(views))
             if element is None or not self._click(element, views):
                 _, seen, package = self._await_stable()
                 logger.info("replay stopped at %r of %s; screen (%s) had: %s",
                             label, " > ".join(path), package,
                             [e.label for e in self._elements(seen or [])][:24])
                 return False
-            _, views, _ = self._await_stable()
-            if not views:
+            # Wait for the press to take effect before reading the screen.
+            # Returning straight after the last tap read the PREVIOUS screen:
+            # a replay to Scanning reported success while the Settings list
+            # was still showing, and the node built from that was wrong.
+            #
+            # A tap can also be swallowed outright: the next step's label is
+            # on screen the moment a list renders, while its entry animation
+            # is still running, and a tap then is ignored. So an unchanged
+            # screen earns ONE more press of the same control -- and a replay
+            # that still cannot see a change reports failure. It used to fall
+            # through and report success from the wrong screen.
+            changed = False
+            for attempt in range(2):
+                deadline = time.time() + 4.0
+                while time.time() < deadline:
+                    _, views, _ = self._await_stable()
+                    if views and label_set(self._elements(views)) != before:
+                        changed = True
+                        break
+                    time.sleep(0.4)
+                if changed or attempt:
+                    break
+                again = self._find_element(label, views or [])
+                if again is None or not self._click(again, views):
+                    break
+                self._replay_retaps += 1
+            if not changed or not views:
+                logger.info("replay: pressing %r changed nothing", label)
                 return False
         return True
 
@@ -890,6 +1215,15 @@ class RecursiveWalker(ElementTreeWalker):
             "toggles_listed_not_switched": self._toggles_not_pressed,
             "step_backs_recovered_by_replay": self._recovered,
             "controls_not_located": self._not_located,
+            "roles": self._roles,
+            "switches_already_on": self._switches_already_on,
+            "switches_revealing": self._switches_revealing,
+            "switch_dialogs": self._switch_dialogs,
+            "switches_that_navigate": self._switches_navigating,
+            "guarded_rows_opened": self._guarded_rows_opened,
+            "replay_retaps": self._replay_retaps,
+            "switches_restored": self._switches_restored,
+            "switches_not_restored": self._switches_not_restored,
             "reopened_on_second_pass": self._reopened,
         })
         return base

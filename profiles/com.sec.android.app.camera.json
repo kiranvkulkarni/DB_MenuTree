@@ -6,7 +6,8 @@
     "do_not_press: controls with a side effect a menu walk must not cause.",
     "Each shutter tap saves a photo or starts a recording. Kept to that:",
     "'Switch to front camera' is deliberately NOT here -- it opens the",
-    "front-camera branch, which must be walked."
+    "front-camera branch, which must be walked.",
+    "open_guarded_rows: open rows like 'Reset settings' to list their confirmation dialog; the dialog's Reset button is still refused and the walk leaves by Cancel."
   ],
   "do_not_press": [
     "Take picture",
@@ -14,5 +15,6 @@
     "Stop recording",
     "night_shutter"
   ],
-  "aliases": "aliases/samsung_camera.json"
+  "aliases": "aliases/samsung_camera.json",
+  "open_guarded_rows": true
 }

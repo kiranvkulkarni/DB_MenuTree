@@ -121,6 +121,27 @@ class ActionGuard:
                 return pattern.pattern
         return None
 
+    def blocks_row(self, strategy: str, value: str, state: str = "") -> Optional[str]:
+        """Like `blocks`, for a menu ROW rather than a button.
+
+        A destructive action names its verb first -- `Reset`, `Format SD
+        card`, `Delete all`. A row that merely contains the word as a noun is
+        a setting: `Photo format` and `Video format` choose a file type, and
+        matching the word anywhere blocked both, so neither screen was ever
+        documented.
+
+        Buttons inside a dialog -- where a commit like `Yes, delete` lives --
+        are still checked with `blocks`, which matches anywhere.
+        """
+        if not self.enabled or not value:
+            return None
+        candidates = (value, self._normalise(value))
+        for pattern in self.patterns:
+            if any(pattern.match(c.strip()) for c in candidates):
+                self.hits.append(GuardHit(strategy, value, pattern.pattern, state))
+                return pattern.pattern
+        return None
+
     def summary(self) -> Dict:
         blocked = {}
         for hit in self.hits:
