@@ -37,6 +37,31 @@ screen that contains that role.
   one level into that app — its first screen recorded as the row's children
   — and then the walk returns to the camera.
 
+## Starting state and the first-launch pop-ups
+
+Every exploration starts from a wiped app: `pm clear` (data and cache) plus
+`pm reset-permissions`, in `device_driver.wipe_app`. Location and Bluetooth
+come back ungranted, so their prompts return. Camera, Microphone, Photos and
+Notifications are granted to this preinstalled app by default and are never
+prompted for, on a new phone or here.
+
+**The Location prompt appears on the THIRD launch after a wipe**, not the
+first (measured: launches 1 and 2 open the viewfinder). Its chain:
+
+```
+Turn on Location tags?                       Cancel | Turn on
+  Allow Camera to access this device's location?   (permissioncontroller)
+    Precise | Approximate
+    While using the app | Only this time | Don't allow
+```
+
+Each answer is one-shot -- once given, Android never offers the dialog
+again. **Every branch is documented**: before each one the app is wiped and
+launched three times, then that branch is walked. About 3-4 minutes.
+
+The rest of the walk then starts with **Location granted** (Turn on > While
+using the app), so location-dependent settings are in their enabled state.
+
 ## Order
 
 Pre-order, exactly as a tester writes the sheet: a row, then everything it

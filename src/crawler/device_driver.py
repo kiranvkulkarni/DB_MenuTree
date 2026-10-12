@@ -20,6 +20,27 @@ logger = logging.getLogger(__name__)
 ADB_TIMEOUT = 60
 
 
+
+def wipe_app(serial: Optional[str], package: str) -> None:
+    """Return the app to first-launch state: data, cache AND permissions.
+
+    `pm clear` removes data and cache. It also leaves runtime permissions
+    that were never granted -- Location, Bluetooth -- ungranted, so their
+    prompts come back. What it cannot undo is an answer someone gave by hand
+    between runs; `pm reset-permissions` covers that, so every run documents
+    the same first-launch pop-ups.
+
+    Permissions the system grants a preinstalled app by default (Camera,
+    Microphone, Photos, Notifications on this camera) are never prompted for,
+    on a new phone or here, so there is no pop-up to record for them.
+    """
+    for args in (("pm", "clear", package),
+                 ("pm", "reset-permissions", "-p", package)):
+        try:
+            _adb(serial, "shell", *args)
+        except DriverError as exc:
+            logger.debug("%s failed for %s: %s", " ".join(args), package, exc)
+
 class DriverError(Exception):
     pass
 
@@ -93,7 +114,7 @@ class AdbDriver:
     def start_app(self, package: str, clear: bool = False) -> None:
         if clear:
             try:
-                _adb(self.serial, "shell", "pm", "clear", package)
+                wipe_app(self.serial, package)
             except DriverError as exc:
                 logger.debug("pm clear failed for %s: %s", package, exc)
         _adb(self.serial, "shell", "monkey", "-p", package, "-c",
@@ -147,7 +168,7 @@ class AdbDriver:
         """
         if clear:
             try:
-                _adb(self.serial, "shell", "pm", "clear", package)
+                wipe_app(self.serial, package)
             except DriverError as exc:
                 logger.debug("pm clear failed for %s: %s", package, exc)
 
@@ -343,7 +364,7 @@ class U2Driver:
     def start_app(self, package: str, clear: bool = False) -> None:
         if clear:
             try:
-                self.device.app_clear(package)
+                wipe_app(self.serial, package)
             except Exception as exc:
                 logger.debug("app_clear failed for %s: %s", package, exc)
         self.device.app_start(package, stop=True)
@@ -387,7 +408,7 @@ class U2Driver:
         """
         if clear:
             try:
-                _adb(self.serial, "shell", "pm", "clear", package)
+                wipe_app(self.serial, package)
             except DriverError as exc:
                 logger.debug("pm clear failed for %s: %s", package, exc)
 
