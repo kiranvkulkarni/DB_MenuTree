@@ -31,10 +31,12 @@ _EDIT_HINTS = ("edittext",)
 # (see ElementTreeWalker), since the active keyboard varies by device --
 # Gboard on Pixel, Honeyboard on Samsung.
 CHROME_PACKAGES = (
+    # The Android platform's own system UI: status bar, navigation bar.
+    # Nothing vendor- or app-specific belongs here. The on-screen keyboard is
+    # NOT listed -- the walker asks the device which IME is active and
+    # excludes that, so any keyboard on any phone is handled, where a list of
+    # vendor keyboards only ever covered the phones someone had tested.
     "com.android.systemui",
-    "com.google.android.inputmethod.latin",
-    "com.samsung.android.honeyboard",
-    "com.touchtype.swiftkey",
 )
 
 
@@ -122,12 +124,6 @@ _RESOLVER = SelectorResolver()
 # that the search starts reaching the page itself.
 _ANCESTOR_LIMIT = 4
 
-# System chrome that is drawn over every app and belongs to none of them.
-# The Samsung Edge panel handle sits on top of the camera, the gallery and
-# the launcher alike; listing it makes it look like a camera menu item and it
-# appeared on nearly every screen the walk visited. A MenuTree is the app's
-# tree, so this is not the app's row.
-_SYSTEM_CHROME = ("edge panels",)
 
 
 def _pressable_via(views, index):
@@ -213,9 +209,6 @@ def enumerate_elements(
             if container is not None and container not in pressed_containers:
                 pressed_containers.add(container)
                 interactive = True
-
-        if label and label.strip().lower() in _SYSTEM_CHROME:
-            continue
 
         if not label:
             # No visible label. An unlabelled *control* still deserves a row

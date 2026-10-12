@@ -145,10 +145,14 @@ def main() -> int:
                     views_for([("com.coloros.gallery3d", 25), (PKG, 4)]))
                 == "com.coloros.gallery3d",
                 "walking the Gallery as if it were the camera has cost real time")
-    ok &= check("the keyboard does not win",
+    # The keyboard is excluded because the walker asks the device which IME
+    # is active and passes it in -- not because any vendor's keyboard is
+    # named in the code. This is the call the walker actually makes.
+    detected_ime = "com.any.vendor.keyboard"
+    ok &= check("the keyboard detected on the device does not win",
                 foreground_package(
-                    views_for([("com.google.android.inputmethod.latin", 50),
-                               (PKG, 6)])) == PKG)
+                    views_for([(detected_ime, 50), (PKG, 6)]),
+                    ("com.android.systemui", detected_ime)) == PKG)
     ok &= check("no views gives empty, not a crash", foreground_package([]) == "")
     ok &= check("only chrome gives empty, not systemui",
                 foreground_package(views_for([("com.android.systemui", 9)])) == "")

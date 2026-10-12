@@ -26,13 +26,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.crawler.recursive_walk import RecursiveWalker  # noqa: E402
+from src.profile import load_profile  # noqa: E402
 from src.run_lock import RunLock  # noqa: E402
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--package", default="com.sec.android.app.camera")
+    p.add_argument("--package", required=True)
     p.add_argument("--serial", required=True)
     p.add_argument("--path", required=True,
                    help="comma-separated labels from the launch screen down")
@@ -48,6 +49,7 @@ def main() -> int:
     out = Path("output") / f"branch_{stamp}"
 
     walker = RecursiveWalker(args.package, args.serial, {
+        **load_profile(args.package),
         "output_dir": str(out),
         "time_budget": args.time_budget,
         "max_depth": args.max_depth,

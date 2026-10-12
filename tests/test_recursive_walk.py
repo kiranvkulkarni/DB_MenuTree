@@ -28,8 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.crawler.elements import Element  # noqa: E402
-from src.crawler.recursive_walk import (  # noqa: E402
-    ACTION_LABELS, BACK_LABELS, RecursiveWalker)
+from src.crawler.recursive_walk import BACK_LABELS, RecursiveWalker  # noqa: E402
 
 
 def check(label: str, condition: bool, detail: str = "") -> bool:
@@ -82,16 +81,30 @@ def main() -> int:
                 "every candidate goes through one guarded press")
 
     print()
-    print("an action is a row, not a door")
-    # Pressing the shutter, swapping the lens or opening the gallery
-    # navigates AWAY from the tree. With these pressed the walk collected 166
-    # children under Flash, 141 cyclic rows and 2042 rows against a 392-row
-    # sheet, while never reaching the end of the Settings list.
-    for lab in ("take picture", "switch to front camera", "view pictures and videos"):
-        ok &= check(f"{lab!r} is listed, not performed", lab in ACTION_LABELS)
-    ok &= check("an ordinary menu row is still pressed",
-                "photo enhancer" not in ACTION_LABELS and "flash" not in ACTION_LABELS,
-                "this is a named list, not a return to trusting ")
+    print("the walker holds no knowledge of any particular app")
+    # It must run on any Android app unchanged. What one app must not have
+    # pressed lives in profiles/<package>.json. A camera word list in this
+    # file once blocked `Switch to front camera` -- the very branch the sheet
+    # needed walked.
+    import re as _re
+    import src.crawler.recursive_walk as _rw
+    import src.crawler.elements as _el
+    import src.crawler.hierarchy as _hi
+    src_all = chr(10).join(inspect.getsource(m) for m in (_rw, _el, _hi))
+    no_docs = _re.sub(chr(34) * 3 + "(?s:.*?)" + chr(34) * 3, "", src_all)
+    code_only = _re.sub("#[^" + chr(10) + "]*", "", no_docs)
+    for word in ("camera", "samsung", "shutter", "picture", "edge panels",
+                 "honeyboard", "swiftkey"):
+        ok &= check(f"no {word!r} in the walker's code",
+                    word not in code_only.lower())
+    w2 = RecursiveWalker("com.example.any", None, {"output_dir": "."})
+    ok &= check("an app without a profile presses everything",
+                not w2.do_not_press)
+    w3 = RecursiveWalker("com.x", None, {"output_dir": ".",
+                                         "do_not_press": ["Take picture"]})
+    ok &= check("a profile's do_not_press is honoured",
+                w3._worth_pressing(el("Take picture")) is not None
+                and w3._worth_pressing(el("Photo enhancer")) is None)
 
     print()
     print("options are listed, never pressed")

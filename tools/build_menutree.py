@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.crawler.action_guard import DEFAULT_PRESETS, GUARD_PRESETS  # noqa: E402
 from src.crawler.element_tree import ElementTreeWalker  # noqa: E402
 from src.crawler.recursive_walk import RecursiveWalker  # noqa: E402
+from src.profile import load_profile  # noqa: E402
 from src.generator import tree_uvta  # noqa: E402
 from src.generator.menutree_sheet import summarise, write_csv  # noqa: E402
 from src.generator.menutree_workbook import write_workbook  # noqa: E402
@@ -136,6 +137,7 @@ def main() -> int:
     if not args.skip_walk:
         build = ElementTreeWalker if args.worklist_walk else RecursiveWalker
         walker = build(args.package, args.serial, {
+            **load_profile(args.package),
             "output_dir": str(output_dir),
             "time_budget": args.time_budget,
             "max_depth": args.max_depth,

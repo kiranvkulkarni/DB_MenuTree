@@ -19,10 +19,32 @@ screen that contains that role.
 | **slider** | `SeekBar` | list |
 | **input** | `EditText` | list; do not type |
 | **tab** | member of the mode strip (PORTRAIT / PHOTO / VIDEO / MORE) | a depth-2 node, entered by pressing it; never re-entered from inside another mode |
-| **action** | shutter, record, camera switch, gallery | list; do not perform |
+| **do-not-press** | listed in the app's profile, `profiles/<package>.json` | list; do not press. Empty for an app with no profile |
 | **back** | Navigate up / Close / Back | the route back; not a row |
 | **header** | text with no clickable row around it | list |
-| **system chrome** | status bar, navigation bar, Edge panels | ignore |
+| **system chrome** | the element's `package` is the platform UI (`com.android.systemui`) or the keyboard detected on the device at start-up | ignore |
+
+## App-agnostic, by rule
+
+The walker contains no knowledge of any particular app or vendor, and
+`tests/test_recursive_walk.py` fails if a word like `camera`, `samsung` or
+`shutter` appears in its code. Everything is decided from:
+
+* **structure in the dump** -- class, `clickable`, `checkable`, the row a
+  label sits in, `resource-id` groups (how the tab strip is found);
+* **observation** -- press, look at what changed, restore (how a switch row
+  is told from a row that opens a screen);
+* **the device itself** -- which keyboard is active, which package owns each
+  element.
+
+What is genuinely specific to one app is DATA in `profiles/<package>.json`:
+controls with a side effect a walk must not cause (`do_not_press`), and the
+alias file mapping a sheet's wording to that app's constants. An app with no
+profile is walked on structure and observation alone.
+
+Known limit, stated rather than hidden: the words for "go back" and "decline"
+(`Navigate up`, `Cancel`, `Not now` ...) are English. A device in another
+language needs them in the profile.
 
 ## Sheet shape, as the To_Be sheet writes it
 

@@ -391,7 +391,9 @@ class ElementTreeWalker:
         has cost real debugging here before.
         """
         assert self.driver is not None
-        derived = foreground_package(views)
+        # The exclusions include the keyboard detected on THIS device at
+        # start-up; no vendor keyboard is named anywhere in the code.
+        derived = foreground_package(views, self._exclude)
         if not derived or derived == self.package:
             return derived
         started = time.time()

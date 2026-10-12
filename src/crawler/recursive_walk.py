@@ -87,24 +87,6 @@ class Node:
 # Controls that leave a screen. Checked against the label, lowercased.
 BACK_LABELS = ("navigate up", "back", "close", "cancel", "done", "up")
 
-# Controls that ACT rather than open. They are menu rows and belong in the
-# sheet, but pressing one takes a photo, swaps the lens or leaves for the
-# gallery -- it navigates away from the tree instead of descending into it.
-#
-# Measured with these pressed: the walk wandered badly enough to collect 166
-# children under `Flash` (front and rear options re-gathered under every Flash
-# it met), 141 cyclic rows, 2042 rows against a 392-row sheet, and it still
-# never reached the end of the Settings list where Settings to keep, Shooting
-# methods, About Camera and Permissions live.
-#
-# This is NOT a return to trusting `clickable`. It is a short, named list of
-# things a tester would not tap while mapping menus.
-ACTION_LABELS = (
-    "take picture", "capture", "record", "start recording", "stop recording",
-    "night_shutter", "shutter", "take snapshot",
-    "switch to front camera", "switch to rear camera",
-    "view pictures and videos", "gallery", "latest photos",
-)
 
 
 class RecursiveWalker(ElementTreeWalker):
@@ -151,6 +133,8 @@ class RecursiveWalker(ElementTreeWalker):
         # Share of the visible labels that must belong to a node for the
         # walk to believe it is standing on it. See _is_node.
         self.node_containment = float(config.get("node_containment", 0.7))
+        self.do_not_press = {str(x).strip().lower()
+                             for x in config.get("do_not_press", [])}
         self.skip_documented_screens = bool(
             config.get("skip_documented_screens", False))
 
@@ -189,9 +173,13 @@ class RecursiveWalker(ElementTreeWalker):
             # dropped the whole Settings branch.
             self._toggles_not_pressed += 1
             return "toggle -- listed, not switched"
-        if element.label.strip().lower() in ACTION_LABELS:
+        if element.label.strip().lower() in self.do_not_press:
+            # From the app's profile (profiles/<package>.json), never from
+            # this file. The walker knows nothing about any particular app;
+            # what a given app must not have pressed -- a shutter that saves
+            # a photo on every tap -- is data maintained beside that app.
             self._actions_not_pressed += 1
-            return "action -- listed, not performed"
+            return "listed, not pressed (profile: do_not_press)"
         from .element_tree import KEYPAD_KEY
         if KEYPAD_KEY.fullmatch(element.label.strip()):
             self._keypad_skipped += 1

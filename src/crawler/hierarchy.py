@@ -110,10 +110,12 @@ def _affordance_depths(views: Sequence[Dict]) -> Dict[int, int]:
 
 
 _DEFAULT_CHROME = (
+    # The Android platform's own system UI: status bar, navigation bar.
+    # Nothing vendor- or app-specific belongs here. The on-screen keyboard is
+    # NOT listed -- the walker asks the device which IME is active and
+    # excludes that, so any keyboard on any phone is handled, where a list of
+    # vendor keyboards only ever covered the phones someone had tested.
     "com.android.systemui",
-    "com.google.android.inputmethod.latin",
-    "com.samsung.android.honeyboard",
-    "com.touchtype.swiftkey",
 )
 
 

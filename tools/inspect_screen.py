@@ -40,7 +40,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.crawler.elements import _pressable_via  # noqa: E402
 from src.crawler.hierarchy import center_of, scrollable_container  # noqa: E402
-from src.crawler.recursive_walk import ACTION_LABELS, RecursiveWalker  # noqa: E402
+from src.crawler.recursive_walk import RecursiveWalker  # noqa: E402
+from src.profile import load_profile  # noqa: E402
 from src.run_lock import RunLock  # noqa: E402
 
 SYSTEM_BAR = ("recents", "back", "home")
@@ -68,7 +69,7 @@ def classify(walker, elements, views):
             role = "back"
         elif label in tabs or label in walker._tab_labels:
             role = "tab"
-        elif label in ACTION_LABELS:
+        elif label in walker.do_not_press:
             role = "action"
         elif "switch" in cls or e.kind == "toggle":
             role = "toggle"
@@ -119,7 +120,7 @@ def outcome(walker, before, after_views, after_pkg):
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--package", default="com.sec.android.app.camera")
+    p.add_argument("--package", required=True)
     p.add_argument("--serial", required=True)
     p.add_argument("--path", default="", help="comma-separated labels to reach the screen")
     p.add_argument("--probe", action="store_true",
@@ -129,6 +130,7 @@ def main() -> int:
 
     path = [x.strip() for x in args.path.split(",") if x.strip()]
     walker = RecursiveWalker(args.package, args.serial, {
+        **load_profile(args.package),
         "output_dir": "output/inspect", "time_budget": 3600,
         "reset_before_start": not args.no_reset,
         "clear_between_paths": False,

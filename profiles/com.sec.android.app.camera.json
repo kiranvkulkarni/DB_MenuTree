@@ -1,0 +1,18 @@
+{
+  "_about": [
+    "App-specific knowledge for the Samsung camera. The walker reads this;",
+    "it contains nothing camera-specific itself.",
+    "",
+    "do_not_press: controls with a side effect a menu walk must not cause.",
+    "Each shutter tap saves a photo or starts a recording. Kept to that:",
+    "'Switch to front camera' is deliberately NOT here -- it opens the",
+    "front-camera branch, which must be walked."
+  ],
+  "do_not_press": [
+    "Take picture",
+    "Start recording",
+    "Stop recording",
+    "night_shutter"
+  ],
+  "aliases": "aliases/samsung_camera.json"
+}
