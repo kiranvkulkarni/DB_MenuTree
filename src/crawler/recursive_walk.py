@@ -40,7 +40,7 @@ from typing import Dict, List, Optional, Sequence, Set
 
 from .element_tree import ElementTreeWalker, TreeNode
 from .device_driver import DriverError
-from .elements import Element, screen_similarity
+from .elements import Element, label_set, screen_similarity
 from .hierarchy import box_of, scrollable_container
 
 logger = logging.getLogger(__name__)
@@ -122,6 +122,9 @@ class RecursiveWalker(ElementTreeWalker):
         self._strips_not_swiped = 0
         self._left_unopened = 0
         self._actions_not_pressed = 0
+        self._toggles_not_pressed = 0
+        self._recovered = 0
+        self._not_located = 0
         self._reopened = 0
         self._documented = {}
         # The tab strip is drawn on EVERY screen the app has. Once its members
@@ -145,6 +148,9 @@ class RecursiveWalker(ElementTreeWalker):
         # children at all. A control reachable from two places is listed under
         # both; the loop guards, not this, are what stop a walk running on
         # forever.
+        # Share of the visible labels that must belong to a node for the
+        # walk to believe it is standing on it. See _is_node.
+        self.node_containment = float(config.get("node_containment", 0.7))
         self.skip_documented_screens = bool(
             config.get("skip_documented_screens", False))
 
@@ -175,6 +181,14 @@ class RecursiveWalker(ElementTreeWalker):
         """
         if self._is_back(element):
             return "back control"
+        if element.kind == "toggle" or element.checked is not None:
+            # A switch changes a setting; it does not open a menu. The sheet
+            # lists `switch_widget (On/Off)` as a leaf. Pressing one on the
+            # Settings screen raised a confirmation dialog, the walk took the
+            # dialog for a submenu, and the failed step back that followed
+            # dropped the whole Settings branch.
+            self._toggles_not_pressed += 1
+            return "toggle -- listed, not switched"
         if element.label.strip().lower() in ACTION_LABELS:
             self._actions_not_pressed += 1
             return "action -- listed, not performed"
@@ -233,8 +247,7 @@ class RecursiveWalker(ElementTreeWalker):
             _, views, package = self._await_stable()
             if not views or (package and package != self.package):
                 return False
-            return (screen_similarity(node.elements, self._elements(views))
-                    >= self.return_similarity)
+            return self._is_node(node.elements, self._elements(views))
 
         def press(element: Element, views, how: str) -> bool:
             if self.guard.blocks("text", element.label):
@@ -274,7 +287,10 @@ class RecursiveWalker(ElementTreeWalker):
             self._returned_by["BACK"] = self._returned_by.get("BACK", 0) + 1
             return True
 
-        if self._relaunch_and_replay("", node.path, clear=self.clear_between_paths):
+        # Last resort: relaunch and walk back down the path. `_replay`
+        # scrolls to each step; the older replay did not, and verified its
+        # landing against an empty state key, so it could never succeed.
+        if self._replay(node.path):
             if arrived():
                 self._returns_ok += 1
                 self._returned_by["relaunch"] = self._returned_by.get("relaunch", 0) + 1
@@ -517,8 +533,7 @@ class RecursiveWalker(ElementTreeWalker):
                 # screen the whole time, further down the list.
                 scrolled_here = self._same_container(
                     (scrollable_container(views) or {}).get("resource_id"), views)
-                if (screen_similarity(elements, current) < self.similarity_threshold
-                        and not scrolled_here):
+                if not self._is_node(elements, current) and not scrolled_here:
                     if not self._return_to(node):
                         logger.warning("drifted off %s and could not get back", here)
                         return
@@ -530,6 +545,11 @@ class RecursiveWalker(ElementTreeWalker):
                 # than re-sweeping the screen to find everything again.
                 target, views = self._find_element_scrolled(element.label, views)
                 if target is None:
+                    # Said out loud. A control the walk cannot locate used to
+                    # vanish without a trace, which is how a lookup that could
+                    # never succeed spent a whole run scrolling.
+                    self._not_located += 1
+                    logger.info("could not locate %r on %s", element.label, here)
                     continue
                 # The screen as it stands RIGHT NOW, after any scrolling done
                 # to reach this control. Both the before-signature and the
@@ -623,8 +643,16 @@ class RecursiveWalker(ElementTreeWalker):
                 self._visit(depth + 1, child_path, child_selectors,
                             ancestors + [signature], entering=target, parent=node)
                 if not self._return_to(node):
+                    # One lost step back used to end this node AND, through
+                    # the same check in each caller, every node above it.
+                    # A single toggle on the Settings screen took out depth
+                    # 6, 5 and 4 in one cascade. Try once more to stand on
+                    # this screen again; give up on the node only if that
+                    # fails too.
                     logger.warning("could not step back to depth %d (%s)", depth, here)
-                    return
+                    if not (self._replay(path) and self._on_screen(elements)):
+                        return
+                    self._recovered += 1
         finally:
             # Whatever this screen had that the walk never got to. The loop
             # emits each row as it reaches it, which is what puts a control's
@@ -666,6 +694,80 @@ class RecursiveWalker(ElementTreeWalker):
         self._visit(depth + 1, path + [tab.label], selectors, ancestors,
                     skip_tabs=True, entering=tab, parent=parent)
 
+    def _is_node(self, node_elements, current) -> bool:
+        """Is the screen showing now part of this node?
+
+        Containment, not overlap. A long list is recorded as a node by
+        scrolling it end to end -- 47 rows for the camera's Settings -- but
+        returning to it shows ONE screenful, about 20. A Jaccard comparison of
+        those is 20/47, about 0.43, below the 0.55 bar: the walk stood on the
+        Settings screen and concluded it was somewhere else. Every step back
+        to a scrolled list failed that way, so each branch was abandoned
+        after its first sub-screen: `Scanning > Document scan` was walked and
+        then nothing else under Settings ever was.
+
+        The right question is what share of what is visible now belongs to
+        the node. A sub-screen fails it because most of its rows are its own.
+        """
+        here = label_set(current)
+        if not here:
+            return False
+        known = label_set(node_elements)
+        return len(here & known) / len(here) >= self.node_containment
+
+    def _on_screen(self, elements) -> bool:
+        _, views, package = self._await_stable()
+        if not views or (package and package != self.package):
+            return False
+        return self._is_node(elements, self._elements(views))
+
+    def _find_element(self, label, views, rid=None):
+        """Find a control by label -- whether or not the dump calls it clickable.
+
+        The walk presses everything, interactive or not, because Android hangs
+        the click on a row's container and reports the visible text as
+        unclickable. The LOOKUP was never told: it still searched interactive
+        elements only. So for every header and caption on the Settings screen
+        -- `Camera settings [Title]`, `Intelligent features` -- it found
+        nothing on screen, scrolled the whole list down and back up looking
+        (about 100s each), found nothing again, and moved on. That was the
+        endless scrolling on Settings, and it used the time the real menu
+        items needed.
+
+        Interactive matches are still preferred, so a label shared by a
+        caption and its button resolves to the button.
+        """
+        found = super()._find_element(label, views, rid)
+        if found is not None:
+            return found
+        return next((e for e in self._elements(views) if e.label == label), None)
+
+    def _await_label(self, label, views, timeout: float = 5.0):
+        """Wait for a control to appear before deciding it needs scrolling.
+
+        A replay presses a step and immediately looks for the next one. A mode
+        switch animates, and the screen read in that window is transitional:
+        after pressing PORTRAIT the next lookup saw neither the old screen
+        nor the new one, missed `Quick controls`, and fell through to
+        scrolling -- and a swipe across the camera preview SWITCHES MODE, so
+        the replay ended back in PHOTO having failed on a control that was
+        on screen a second later.
+
+        Polling first means scrolling is only tried for a control that is
+        genuinely below the fold.
+        """
+        deadline = time.time() + timeout
+        current = list(views or [])
+        while True:
+            element = self._find_element(label, current) if current else None
+            if element is not None:
+                return element, current
+            if time.time() >= deadline:
+                return None, current
+            time.sleep(0.4)
+            _, fresh, _ = self._await_stable()
+            current = list(fresh or [])
+
     def _replay(self, path) -> bool:
         """Relaunch and click down `path`, scrolling to reach each step.
 
@@ -689,8 +791,22 @@ class RecursiveWalker(ElementTreeWalker):
         if not views:
             return False
         for label in path:
-            element, views = self._find_element_scrolled(label, views)
+            element, views = self._await_label(label, views)
+            if element is None:
+                element, views = self._find_element_scrolled(label, views)
+            if element is None and self._clear_blocking_dialog():
+                # A cleared app greets every launch with "Turn on Location
+                # tags?", and the first step of any path is behind it. The
+                # walk proper treats that prompt as part of the tree; a
+                # replay is only trying to get somewhere, so it declines it.
+                # Without this every replay after a reset failed at step one.
+                _, views, _ = self._await_stable()
+                element, views = self._find_element_scrolled(label, views or [])
             if element is None or not self._click(element, views):
+                _, seen, package = self._await_stable()
+                logger.info("replay stopped at %r of %s; screen (%s) had: %s",
+                            label, " > ".join(path), package,
+                            [e.label for e in self._elements(seen or [])][:24])
                 return False
             _, views, _ = self._await_stable()
             if not views:
@@ -783,6 +899,9 @@ class RecursiveWalker(ElementTreeWalker):
             "tab_strips_not_swiped": self._strips_not_swiped,
             "listed_but_not_opened": self._left_unopened,
             "actions_listed_not_performed": self._actions_not_pressed,
+            "toggles_listed_not_switched": self._toggles_not_pressed,
+            "step_backs_recovered_by_replay": self._recovered,
+            "controls_not_located": self._not_located,
             "reopened_on_second_pass": self._reopened,
         })
         return base

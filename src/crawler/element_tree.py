@@ -1250,19 +1250,27 @@ class ElementTreeWalker:
         span = self._swipe_span(views)
         if span is None:
             return None, list(views)
-        keys = set()
+        # Search BOTH ways. This used to scroll only downward from wherever
+        # the list happened to be. The sweep leaves a list rewound to the top,
+        # but after the first press the walk is somewhere in the middle, so
+        # every control above that point was searched for by scrolling to the
+        # bottom, not found, and silently skipped. On the camera's Settings
+        # screen that meant the walk scrolled up and down repeatedly and
+        # opened almost nothing.
         current = list(views)
-        for _ in range(self.max_scrolls):
-            key, seen_views, _ = self._await_stable()
-            if key in keys:
-                break
-            keys.add(key)
-            current = self._scroll_once(span, down=True)
-            if not current:
-                break
-            element = self._find_element(label, current)
-            if element is not None:
-                return element, list(current)
+        for down in (True, False):
+            keys = set()
+            for _ in range(self.max_scrolls):
+                key, _, _ = self._await_stable()
+                if key in keys:
+                    break                   # this end of the list reached
+                keys.add(key)
+                current = self._scroll_once(span, down=down)
+                if not current:
+                    break
+                element = self._find_element(label, current)
+                if element is not None:
+                    return element, list(current)
         return None, list(current)
 
     def _find_element(
