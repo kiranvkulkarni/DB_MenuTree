@@ -1225,8 +1225,10 @@ class ElementTreeWalker:
             for element in self._elements(current):
                 key = self._fingerprint(element)
                 if key in seen:
-                    at = next(i for i, e in enumerate(found)
-                              if self._fingerprint(e) == key)
+                    at = next((i for i, e in enumerate(found)
+                               if self._fingerprint(e) == key), None)
+                    if at is None:
+                        continue    # a repeat of one still pending
                     if pending:     # they sat just above this one
                         found[at:at] = pending
                         at += len(pending)

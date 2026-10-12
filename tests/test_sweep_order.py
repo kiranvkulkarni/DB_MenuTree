@@ -69,6 +69,9 @@ def main() -> int:
     ok &= check("a screenful with nothing known is appended",
                 sweep(["Nav", "A"], ["X", "Y"]),
                 ["Nav", "A", "X", "Y"])
+    ok &= check("a label repeated on one screen is kept once, without a crash",
+                sweep(["A", "A", "B"], ["C"]),
+                ["A", "B", "C"])
     print()
     print("ALL PASS" if ok else "FAILURES PRESENT")
     return 0 if ok else 1

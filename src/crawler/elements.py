@@ -232,6 +232,12 @@ def enumerate_elements(
                 continue
             if app_in_front:
                 continue                    # an overlay, not the app's
+            if in_front and view_package != in_front:
+                # Another app is in front (a permission prompt raised by a
+                # switch): its elements are the screen. A third package --
+                # the launcher's Edge panels handle -- is still an overlay,
+                # and was listed among the prompt's buttons.
+                continue
 
         interactive = bool(
             view.get("clickable")
