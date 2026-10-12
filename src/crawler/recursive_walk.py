@@ -35,12 +35,14 @@ Three rules were confirmed against the hand-authored S25 Ultra MenuTree:
   dump marks the current one `selected`, which is how the parent is found.
 """
 import logging
+import re
 import time
 from typing import Dict, List, Optional, Sequence, Set
 
 from .element_tree import ElementTreeWalker, TreeNode
 from .device_driver import DriverError
 from .elements import Element, _pressable_via, label_set, screen_similarity
+from .elements import CHROME_PACKAGES
 from .hierarchy import box_of, center_of, looks_like_dialog, scrollable_container
 
 logger = logging.getLogger(__name__)
@@ -67,7 +69,7 @@ class Node:
     """
 
     __slots__ = ("label", "depth", "path", "path_selectors", "signature",
-                 "elements", "entering", "parent")
+                 "elements", "entering", "parent", "enabled")
 
     def __init__(self, label, depth, path, path_selectors, elements,
                  signature, entering=None, parent=None):
@@ -79,6 +81,7 @@ class Node:
         self.signature = signature
         self.entering = entering
         self.parent = parent
+        self.enabled = {}           # fingerprint -> enabled, from the sweep
 
     @property
     def where(self):
@@ -145,6 +148,9 @@ class RecursiveWalker(ElementTreeWalker):
         # Profile opt-in: open a guarded ROW (e.g. "Reset settings") to list
         # the confirmation it raises; the dialog's commit is still refused.
         self.open_guarded_rows = bool(config.get("open_guarded_rows", False))
+        # path (as a tuple, ending in the synthetic "On") -> (switch element,
+        # its resource id, wanted state). Lets a replay pass through a switch.
+        self._switch_steps = {}
         self._in_dialog = False
         self.do_not_press = {str(x).strip().lower()
                              for x in config.get("do_not_press", [])}
@@ -210,6 +216,24 @@ class RecursiveWalker(ElementTreeWalker):
 
     def _emit(self, element: Element, depth: int, path: List[str],
               path_selectors: List[tuple], note: str = "") -> TreeNode:
+        # A text block of several paragraphs is several rows, as the sheet
+        # writes it: Log's explanation is one TextView, and the sheet has
+        # "Log videos will look flat and grey..." and "Select which modes..."
+        # on rows of their own. Only plain text is split -- a control keeps
+        # its label whole, because that label is how it is found again.
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", element.label or "")
+                      if p.strip()]
+        if len(paragraphs) > 1 and not element.interactive:
+            row = None
+            for para in paragraphs:
+                part = Element(label=para, kind=element.kind, interactive=False,
+                               view_index=element.view_index)
+                row = self._emit_one(part, depth, path, path_selectors, note)
+            return row
+        return self._emit_one(element, depth, path, path_selectors, note)
+
+    def _emit_one(self, element: Element, depth: int, path: List[str],
+                  path_selectors: List[tuple], note: str = "") -> TreeNode:
         row = TreeNode(
             label=element.annotated(),
             raw_label=element.label,
@@ -455,6 +479,21 @@ class RecursiveWalker(ElementTreeWalker):
             if "checkbox" in cls:
                 return "checkbox", row, i
             return "option", row, i
+        # A segmented choice -- two or more sibling, clickable, LEAF views of
+        # one class under a single parent, each with its own description
+        # (Watermark's Alignment Left / Center / Right). Which one is chosen
+        # lives only in the accessibility text, so there is no attribute to
+        # read, but pressing one changes the setting: it is an option.
+        # Leaves only: quick-setting chips and zoom lens buttons hold child
+        # views and must still be pressed.
+        parent = view.get("parent")
+        if view.get("clickable") and not view.get("children") and parent is not None:
+            sibs = [j for j in views[parent].get("children", [])
+                    if (views[j].get("class") == view.get("class")
+                        and views[j].get("clickable") and not views[j].get("children"))]
+            labels = {self._label_of(views[j]) for j in sibs}
+            if len(sibs) >= 2 and len(labels) == len(sibs) and all(labels):
+                return "option", row, None
         if row is None:
             return "plain", None, None
         inside = self._descendants(views, row)
@@ -517,8 +556,9 @@ class RecursiveWalker(ElementTreeWalker):
         was_on = bool(sw.get("checked"))
         sw_id = sw.get("resource_id")
         if was_on:
-            self._switches_already_on += 1
-            return set()
+            return self._operate_switch_on(target, views, tap_index, switch_index,
+                                           depth, path, path_selectors, node,
+                                           ancestors, sw_id)
         own_row = set(self._descendants(views, tap_index)) | {tap_index}
         before = {}
         for e in self._elements(views):
@@ -529,7 +569,8 @@ class RecursiveWalker(ElementTreeWalker):
             return set()
         self.driver.tap(*centre, settle=False)
         self._clicks += 1
-        _, after_views, after_pkg = self._await_stable()
+        _, after_views, after_pkg = self._after_press(
+            label_set(self._elements(views)), timeout=1.5)
         after_views = after_views or []
         after = self._elements(after_views)
         setting = path + [target.label]
@@ -557,6 +598,8 @@ class RecursiveWalker(ElementTreeWalker):
                         after_views[e.view_index].get("enabled", True):
                     governed.add(fp)
             if governed:
+                governed |= self._governed_below_fold(after_views, node, now_on=True)
+                governed |= self._headers_of(node, governed)
                 # At the switch's OWN level, as the To_Be sheet writes the
                 # Watermark screen: J51 Watermark, J52 Off, J53 On, and the
                 # governed options one level down under On (K54 Info to
@@ -567,6 +610,7 @@ class RecursiveWalker(ElementTreeWalker):
                 self._emit(self._synthetic("On"), depth, path, path_selectors,
                            note="switch state -- governs the rows below")
                 self._switches_revealing += 1
+                self._switch_steps[tuple(path + ["On"])] = (target, sw_id, True)
                 self._visit(depth + 1, path + ["On"], path_selectors, ancestors,
                             skip_tabs=True, entering=None, parent=node,
                             only=governed)
@@ -577,27 +621,222 @@ class RecursiveWalker(ElementTreeWalker):
         _, now, _ = self._await_stable()
         if not self._is_node(node.elements, self._elements(now or [])):
             self._return_to(node)
-        self._restore_switch(sw_id, was_on, switch_index, tap_index)
+        self._restore_switch(sw_id, was_on, switch_index, tap_index, target)
         return governed
 
-    def _restore_switch(self, sw_id, was_on, switch_index, tap_index):
+    def _operate_switch_on(self, target, views, tap_index, switch_index, depth,
+                           path, path_selectors, node, ancestors, sw_id):
+        """A switch that is already ON: what does it govern?
+
+        Its governed rows are visible and enabled, so nothing distinguishes
+        them from ordinary siblings. Turning it OFF does: they go disabled.
+        So turn it off, note what went disabled, turn it back ON at once, and
+        write `Off` / `On` with the governed rows under `On` -- as the sheet
+        writes Log (K98 Off, K99 On). The setting ends as it started.
+        """
+        self._switches_already_on += 1
+        own_row = set(self._descendants(views, tap_index)) | {tap_index}
+        before = {}
+        for e in self._elements(views):
+            if e.view_index not in own_row:
+                before[self._fingerprint(e)] = bool(views[e.view_index].get("enabled", True))
+        centre = center_of(views[tap_index])
+        if centre is None:
+            return set()
+        self.driver.tap(*centre, settle=False)
+        self._clicks += 1
+        _, off_views, off_pkg = self._after_press(label_set(self._elements(views)), 1.5)
+        off_views = off_views or []
+        governed = set()
+        if not (off_pkg and off_pkg != self.package) and \
+                not looks_like_dialog(off_views, self.package):
+            for e in self._elements(off_views):
+                fp = self._fingerprint(e)
+                if before.get(fp) and not off_views[e.view_index].get("enabled", True):
+                    governed.add(fp)
+            if governed:
+                governed |= self._governed_below_fold(off_views, node, now_on=False)
+                governed |= self._headers_of(node, governed)
+        else:
+            self._clear_blocking_dialog()
+        self._restore_switch(sw_id, True, switch_index, tap_index, target)
+        if governed:
+            self._emit(self._synthetic("Off"), depth, path, path_selectors,
+                       note="switch state")
+            self._emit(self._synthetic("On"), depth, path, path_selectors,
+                       note="switch state -- governs the rows below")
+            self._switches_revealing += 1
+            self._switch_steps[tuple(path + ["On"])] = (target, sw_id, True)
+            self._visit(depth + 1, path + ["On"], path_selectors, ancestors,
+                        skip_tabs=True, entering=None, parent=node, only=governed)
+        return governed
+
+    def _governed_below_fold(self, views, node, now_on):
+        """Governed rows the visible check could not see.
+
+        Watermark governs Info to show, Model name, Date, Time, Style, Font
+        and Alignment; only the first three are on screen with the switch.
+        Comparing visible rows alone put those three under `On` and left the
+        rest as ordinary siblings, unopened, because they were disabled when
+        the screen was swept. Sweep the whole screen in the new state and
+        compare with the node's own sweep. Only for a switch that already
+        showed it governs something, on a screen that scrolls.
+        """
+        if not node.enabled or scrollable_container(views) is None:
+            return set()
+        now = {}
+        self._enumerate_scrolled(views, now)
+        return {fp for fp, on in now.items()
+                if fp in node.enabled and node.enabled[fp] != now_on and on == now_on}
+
+    def _headers_of(self, node, governed):
+        """Section headers that belong to what a switch governs.
+
+        `Info to show` and `Style` head Watermark's options but are plain
+        text: they never change `enabled`, so the switch test leaves them
+        behind as siblings of the switch, where the sheet has them under `On`
+        (K54 Info to show). A plain label lying among the governed rows, or
+        directly above the first of them, heads them. Read from the order of
+        the screen, top to bottom -- nothing about the words.
+        """
+        order = [self._fingerprint(e) for e in node.elements]
+        at = [i for i, fp in enumerate(order) if fp in governed]
+        if not at:
+            return set()
+        out = set()
+        for i in range(max(0, at[0] - 1), at[-1]):
+            e = node.elements[i]
+            if order[i] not in governed and not e.interactive and e.role == "plain":
+                out.add(order[i])
+        return out
+
+    def _switch_beside(self, views, target, sw_id):
+        """The switch that belongs to `target`'s row, on the screen as it is now.
+
+        Restoring by view index assumed the list had not moved. After a sweep
+        it has, and a Settings list holds a dozen switches sharing one id, so
+        the nearest index can be another setting's switch.
+        """
+        fp = self._fingerprint(target)
+        mine = next((e for e in self._elements(views) if self._fingerprint(e) == fp), None)
+        if mine is None:
+            return None
+        _, row, _ = self._row_role(mine, views)
+        if row is not None:
+            inside = [j for j in [row] + list(self._descendants(views, row))
+                      if views[j].get("checkable")]
+            if len(inside) == 1:
+                return inside[0]
+        box = box_of(views[mine.view_index])
+        if box is None:
+            return None
+        y = (box[1] + box[3]) / 2
+        match = [j for j, v in enumerate(views)
+                 if v.get("checkable") and (not sw_id or v.get("resource_id") == sw_id)
+                 and box_of(v) is not None]
+        if not match:
+            return None
+        return min(match, key=lambda j: abs((box_of(views[j])[1] + box_of(views[j])[3]) / 2 - y))
+
+    def _locate_switch(self, views, target, sw_id, switch_index):
+        """Index of `target`'s switch on the screen as it is now, or None.
+
+        In order: on screen by the target's row; the one switch on screen
+        with this id; scrolled to by the target's label; nearest by index.
+        The label alone is not enough -- a switch bar's label is its own state
+        ("Off" becomes "On" once flipped), so it cannot be found by the text
+        it had before.
+        """
+        if target is not None and self._find_element(target.label, views) is not None:
+            j = self._switch_beside(views, target, sw_id)
+            if j is not None and not self._under_chrome(views, j):
+                return j, views
+        same = [k for k, v in enumerate(views)
+                if v.get("checkable") and sw_id and v.get("resource_id") == sw_id]
+        if len(same) == 1 and not self._under_chrome(views, same[0]):
+            return same[0], views
+        if target is not None:
+            # Scroll until the switch ITSELF is in view. Its label is not
+            # enough: Watermark's switch bar scrolls away while the toolbar
+            # title "Watermark" stays on screen, so a search by label found
+            # the title, never scrolled, and the restore gave up with the
+            # setting left on.
+            span = self._swipe_span(views)
+            if span is not None:
+                for down in (False, True):
+                    for _ in range(self.max_scrolls):
+                        j = self._switch_beside(views, target, sw_id)
+                        if j is not None and not self._under_chrome(views, j):
+                            return j, views
+                        moved = self._scroll_once(span, down=down)
+                        if not moved or label_set(self._elements(moved)) ==                                 label_set(self._elements(views)):
+                            views = moved or views
+                            break
+                        views = moved
+        match = [k for k, v in enumerate(views)
+                 if v.get("checkable") and (not sw_id or v.get("resource_id") == sw_id)]
+        if not match or switch_index is None:
+            return None, views
+        return min(match, key=lambda k: abs(k - switch_index)), views
+
+    @staticmethod
+    def _under_chrome(views, j) -> bool:
+        """Is view `j`'s centre covered by the status or navigation bar?
+
+        A sticky switch bar pins itself to the top of a scrolled list, half
+        under the status bar: Watermark's sat at [30,0][1050,158] with the
+        status bar at [0,0][1080,96]. Its centre was "on screen", and every
+        tap at it landed on the status bar -- the restore failed three runs
+        running and left Watermark on.
+        """
+        centre = center_of(views[j])
+        if centre is None:
+            return True
+        x, y = centre
+        for v in views:
+            if (v.get("package") or "").startswith(CHROME_PACKAGES):
+                b = box_of(v)
+                if b and b[0] <= x <= b[2] and b[1] <= y <= b[3]:
+                    return True
+        return False
+
+    def _flip_to(self, want_on, target, sw_id, switch_index=None) -> bool:
+        """Set a switch to `want_on`, and confirm it took.
+
+        One tap per attempt, then wait for the switch to REPORT the new
+        state. Reading straight after the tap saw the old state, tapped again,
+        and turned Watermark back on -- "could not restore a switch to off".
+        """
         for _ in range(2):
             _, views, _ = self._await_stable()
-            views = views or []
-            match = [j for j, v in enumerate(views)
-                     if v.get("checkable") and (not sw_id or v.get("resource_id") == sw_id)]
-            if not match:
-                return
-            j = min(match, key=lambda k: abs(k - switch_index))
-            if bool(views[j].get("checked")) == was_on:
-                self._switches_restored += 1
-                return
+            j, views = self._locate_switch(views or [], target, sw_id, switch_index)
+            if j is None:
+                return False
+            if bool(views[j].get("checked")) == want_on:
+                return True
             tap = j if views[j].get("clickable") else (_pressable_via(views, j) or j)
             centre = center_of(views[tap])
             if centre is None:
-                return
+                return False
             self.driver.tap(*centre, settle=False)
             self._clicks += 1
+            deadline = time.time() + 2.5
+            while time.time() < deadline:
+                time.sleep(0.3)
+                _, now, _ = self._await_stable()
+                k, now = self._locate_switch(now or [], target, sw_id, switch_index)
+                if k is not None and bool(now[k].get("checked")) == want_on:
+                    return True
+        return False
+
+    def _set_switch(self, target, sw_id, want_on) -> bool:
+        """Put `target`'s switch in the wanted state (used by replay)."""
+        return self._flip_to(want_on, target, sw_id)
+
+    def _restore_switch(self, sw_id, was_on, switch_index, tap_index, target=None):
+        if self._flip_to(was_on, target, sw_id, switch_index):
+            self._switches_restored += 1
+            return
         logger.warning("could not restore a switch to %s", "on" if was_on else "off")
         self._switches_not_restored += 1
 
@@ -692,7 +931,8 @@ class RecursiveWalker(ElementTreeWalker):
         _, views, _ = self._await_stable()
         if not views:
             return
-        elements = self._enumerate_scrolled(views)
+        enabled = {}
+        elements = self._enumerate_scrolled(views, enabled)
         if not elements:
             return
 
@@ -724,6 +964,7 @@ class RecursiveWalker(ElementTreeWalker):
         signature = self._signature(elements)
         node = Node(path[-1] if path else self.package, depth, path,
                     path_selectors, elements, signature, entering, parent)
+        node.enabled = enabled
         here = node.where
         outer_dialog = self._in_dialog
         self._in_dialog = looks_like_dialog(views, self.package)
@@ -889,7 +1130,7 @@ class RecursiveWalker(ElementTreeWalker):
                 before = self._signature(standing)
                 if not self._click(target, views):
                     continue
-                _, after_views, after_pkg = self._await_stable()
+                _, after_views, after_pkg = self._after_press(label_set(standing))
                 if not after_views:
                     continue
                 after = self._elements(after_views)
@@ -1102,6 +1343,27 @@ class RecursiveWalker(ElementTreeWalker):
             _, fresh, _ = self._await_stable()
             current = list(fresh or [])
 
+    def _after_press(self, before_labels, timeout: float = 3.0):
+        """The screen once a press has had time to take effect.
+
+        Read straight after a tap, the screen is often still the old one:
+        a new screen slides in, a pop-up list fades in. The walk then
+        concluded the press did nothing and moved on -- which is why
+        `Pro mode picture format` (a screen of three formats) and the font
+        list under Watermark (Default / Roboto / Noto Serif) were never
+        written. Wait for the labels to change, up to `timeout`; a press that
+        genuinely does nothing costs the full wait, once.
+        """
+        deadline = time.time() + timeout
+        while True:
+            key, views, package = self._await_stable()
+            views = views or []
+            if label_set(self._elements(views)) != before_labels:
+                return key, views, package
+            if time.time() >= deadline:
+                return key, views, package
+            time.sleep(0.4)
+
     def _settled(self, label, views, timeout: float = 3.0):
         """Wait until `label` stops MOVING, then return (element, views).
 
@@ -1126,7 +1388,7 @@ class RecursiveWalker(ElementTreeWalker):
             element = self._find_element(label, views)
         return element, views
 
-    def _replay(self, path) -> bool:
+    def _replay(self, path, passed=None) -> bool:
         """Relaunch and click down `path`, scrolling to reach each step.
 
         `_relaunch_and_replay` verifies where it lands against a known state
@@ -1149,6 +1411,30 @@ class RecursiveWalker(ElementTreeWalker):
         if not views:
             return False
         for step, label in enumerate(path):
+            switch_step = self._switch_steps.get(tuple(path[:step + 1]))
+            if switch_step is not None:
+                # `On` is not a control: it is the state of the switch whose
+                # rows are being walked. Replaying to Watermark > On > Edit
+                # looked for a button called On, found none, and the rest of
+                # what Watermark governs -- Time, Font, Alignment -- was
+                # walked with the switch off, so nothing opened. Set the
+                # switch instead; the walk restores it when it is done.
+                if not self._set_switch(*switch_step):
+                    logger.info("replay could not set the switch for %r of %s",
+                                label, " > ".join(path))
+                    return False
+                _, views, _ = self._await_stable()
+                continue
+            if passed is not None and views:
+                # The screens a branch walk starts beneath are its ancestors:
+                # a press that drops back onto one of them is a return, not a
+                # new child (see the loop guard in _visit).
+                # Not swept at the launch screen: a swipe across a camera
+                # preview, say, changes mode rather than scrolling.
+                passed.append(self._signature(
+                    self._elements(views) if step == 0 else self._enumerate_scrolled(views)))
+                _, views, _ = self._await_stable()
+                views = views or []
             element, views = self._await_label(label, views)
             if element is None:
                 element, views = self._find_element_scrolled(label, views)

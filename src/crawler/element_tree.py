@@ -1191,7 +1191,8 @@ class ElementTreeWalker:
             return bool(views)
         return any(view.get("resource_id") == container_id for view in views)
 
-    def _enumerate_scrolled(self, views: Sequence[Dict]) -> List[Element]:
+    def _enumerate_scrolled(self, views: Sequence[Dict],
+                            enabled: Optional[Dict] = None) -> List[Element]:
         """Every element on a screen, including what is below the fold.
 
         A settings list is taller than the display. Enumerating one dump
@@ -1208,17 +1209,41 @@ class ElementTreeWalker:
         seen = set()
 
         def collect(current: Sequence[Dict]) -> None:
+            # MERGE each screenful in its own order. Appending put whatever
+            # a row had below the fold at the END of the list: `Save selfies
+            # as previewed` was cut off under its title, its summary came in
+            # on the next screenful, and the sheet's title / summary / switch
+            # came out title / switch / summary. A new element goes directly
+            # after the element above it on the screen it was seen on.
+            #
+            # Keyed by the SAME identity the walk uses. A key of label, kind
+            # and resource id is identical for every inline switch on a
+            # settings list, so the sweep once kept the first switch on the
+            # screen and dropped the rest before the walk ever saw them.
+            anchor = None           # index in `found` of the element above
+            pending = []            # new ones met before any known one
             for element in self._elements(current):
-                # The SAME identity the walk uses. This kept its own key --
-                # label, kind, resource id -- which is identical for every
-                # inline switch on a settings list, so the sweep kept the
-                # first switch on the screen and dropped the rest before the
-                # walk ever saw them. Fixing identity in the walk alone
-                # changed nothing; the rows were lost one step earlier.
                 key = self._fingerprint(element)
-                if key not in seen:
-                    seen.add(key)
-                    found.append(element)
+                if key in seen:
+                    at = next(i for i, e in enumerate(found)
+                              if self._fingerprint(e) == key)
+                    if pending:     # they sat just above this one
+                        found[at:at] = pending
+                        at += len(pending)
+                        pending = []
+                    anchor = at
+                    continue
+                seen.add(key)
+                if anchor is None:
+                    pending.append(element)
+                else:
+                    anchor += 1
+                    found.insert(anchor, element)
+                if enabled is not None and 0 <= element.view_index < len(current):
+                    # For the switch policy: what a switch governs is what
+                    # changes `enabled` when it flips, much of it below the fold.
+                    enabled[key] = bool(current[element.view_index].get("enabled", True))
+            found.extend(pending)   # nothing known on this screen: append
 
         collect(views)
         span = self._swipe_span(views)

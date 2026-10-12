@@ -68,13 +68,17 @@ def main() -> int:
         strip = walker._dedupe(walker._tab_strip(walker._elements(views), views))
         walker._tab_labels = {t.label.strip().lower() for t in strip}
 
-        if not walker._replay(path):
+        passed = []
+        if not walker._replay(path, passed):
             print(f"could not replay the path: {' > '.join(path)}")
             walker._release()
             return 2
         failure = None
         try:
-            walker._visit(len(path) + 2, path, [], [], skip_tabs=True)
+            # The screens replayed through are this branch's ancestors, as
+            # they would be in a full walk; without them a press that drops
+            # back to Settings was walked as a new child of the branch.
+            walker._visit(len(path) + 2, path, [], passed, skip_tabs=True)
         except Exception as exc:              # keep what was collected
             import traceback
             failure = f"{type(exc).__name__}: {exc}"

@@ -22,6 +22,8 @@ screen that contains that role.
 | **do-not-press** | listed in the app's profile, `profiles/<package>.json` | list; do not press. Empty for an app with no profile |
 | **back** | Navigate up / Close / Back | listed on EVERY screen that has one (agreed); also the route back |
 | **header** | text with no clickable row around it | list |
+| **dialog** | an explicit dialog/popup class; or, failing that, a small screen whose app window does NOT fill the display (a short full-window settings page is a screen) | list title and buttons; leave by Cancel; strict action guard on its buttons |
+| **overlay** | another package's window while the app's window is the larger one (judged by window area, not view count) | ignore |
 | **system chrome** | the element's `package` is the platform UI (`com.android.systemui`) or the keyboard detected on the device at start-up | ignore |
 
 ## App-agnostic, by rule
@@ -48,11 +50,39 @@ language needs them in the profile.
 
 ## Sheet shape, as the To_Be sheet writes it
 
-* **A switch that reveals content** gets `Off` and `On` rows beneath the
-  setting, and everything that appears when ON goes under `On` — as the
-  To_Be sheet's Watermark (J52 Off, J53 On, K54 Info to show …).
+* **A switch that governs content** gets `Off` and `On` rows, and everything
+  it governs goes under `On` — as the To_Be sheet's Watermark (J51
+  Watermark, J52 Off, J53 On, K54 Info to show …).
 * **`Off` / `On`** sit at the switch's own level; what the switch governs goes
   one level under `On`.
+* **What a switch governs** is read from `enabled`, not from wording. A switch
+  that is OFF is turned ON, and the rows that go disabled → enabled are the
+  governed ones. A switch already ON (Log) is turned OFF for a moment, and the
+  rows that go enabled → disabled are the governed ones. Either way the
+  switch is put back as it was at once.
+* **Section headers go with what they head.** A plain label among a switch's
+  governed rows, or directly above the first of them (`Info to show`,
+  `Style`), goes under `On` with them. Decided by screen order, not wording.
+* **A replay passes through a switch** by setting it, not by looking for a
+  control called `On`: `Watermark > On > Edit` is replayed by opening
+  Watermark and turning its switch on.
+* **A restore is confirmed.** The switch is tapped once and the walk waits
+  for it to *report* the new state. It is found by its own row, scrolling
+  until the switch itself is in view and not under the status bar (a sticky
+  switch bar pins itself half under it once the list scrolls).
+* **A press is given time to land.** After a tap the walker waits (up to 3 s)
+  for the screen's labels to change before deciding the press did nothing. A
+  screen still sliding in (Pro mode picture format) or a pop-up list still
+  fading in (Watermark's Font list) was otherwise written off.
+* **A segmented choice** — two or more sibling views of one class, all
+  clickable, all leaves, each with its own description (Watermark's
+  Alignment Left / Center / Right) — is a set of **options**: listed, never
+  pressed. Which one is chosen is only in the accessibility text, so there is
+  no attribute to read; pressing one would change the setting. Views that
+  hold children (quick-setting chips, lens buttons) are not caught by this.
+* **A text of several paragraphs** is one row per paragraph, as the sheet
+  splits Log's description. Only plain text is split; a control's label stays
+  whole, because that label is how it is found again.
 * **Container rows** -- a clickable container with no text whose children
   carry the labels (`main_switch_layout`, `spinner_layout`) -- are not rows;
   the children name them. A switch's own state text is not a row either.
@@ -93,6 +123,13 @@ using the app), so location-dependent settings are in their enabled state.
 
 Pre-order, exactly as a tester writes the sheet: a row, then everything it
 opens, then the next row. Rows are emitted at the moment they are reached.
+
+## Settings is walked from every mode
+
+A settings screen's captions depend on the mode it was opened from: a setting
+disabled in the current mode shows "Not available with the current mode or
+front camera." in place of its normal summary. Settings is therefore walked
+under every mode, and each mode's captions are recorded as seen (agreed).
 
 ## Repetition
 

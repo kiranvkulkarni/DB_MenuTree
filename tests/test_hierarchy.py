@@ -157,6 +157,32 @@ def main() -> int:
     ok &= check("only chrome gives empty, not systemui",
                 foreground_package(views_for([("com.android.systemui", 9)])) == "")
 
+    print("\na short screen is not a dialog; a sized window is")
+    # Shapes measured on the device: Photo format is a full-window screen of
+    # 3 clickables, which the size test alone took for a dialog. The launcher's
+    # Edge-panel handle is a separate small window listed beside it.
+    from src.crawler.hierarchy import looks_like_dialog
+
+    def window(app_box, rows=3):
+        views = [{"package": "com.android.systemui", "parent": None,
+                  "bounds": "[0,0][1080,96]", "children": []},
+                 {"package": "com.other.launcher", "parent": None,
+                  "bounds": "[1033,438][1080,780]", "children": []},
+                 {"package": PKG, "parent": None, "bounds": app_box,
+                  "children": []}]
+        for i in range(rows):
+            views.append({"package": PKG, "parent": 2, "clickable": True,
+                          "bounds": "[28,300][1052,550]", "children": []})
+        views.append({"package": "com.android.systemui", "parent": None,
+                      "bounds": "[0,2205][1080,2340]", "children": []})
+        return views
+    ok &= check("a short full-window screen is not a dialog",
+                not looks_like_dialog(window("[0,0][1080,2340]"), PKG))
+    ok &= check("a window sized to its buttons is a dialog",
+                looks_like_dialog(window("[0,1836][1080,2205]"), PKG))
+    ok &= check("a window owned by no app view falls back to the size test",
+                looks_like_dialog(window("[0,0][1080,2340]"), "com.someone.else"))
+
     print("\nbounds")
     ok &= check("centre computed", center_of(wrapper) == (1056, 459),
                 str(center_of(wrapper)))

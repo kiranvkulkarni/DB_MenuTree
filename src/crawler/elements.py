@@ -193,10 +193,30 @@ def enumerate_elements(
     # (com.sec.android.app.launcher) sat over every camera screen and was
     # listed as though it were a camera menu. Decided by which package owns
     # the most views, so it covers any overlay from any vendor unnamed.
+    #
+    # Weighed by WINDOW AREA, not by view count: a small pop-up list (Font:
+    # Default / Roboto / Noto Serif, 6 views) has fewer views than the Edge
+    # panels handle beside it (10), and counting put the launcher in front,
+    # so the handle was listed among the fonts. The handle is a 47 x 342 strip.
+    # Without bounds (synthetic dumps), the count decides as before.
     from collections import Counter
-    owners = Counter(v.get("package") for v in views
-                     if v.get("package") and not any(
-                         v.get("package").startswith(x) for x in exclude_packages))
+    from .hierarchy import box_of
+
+    def foreign_or_app(v):
+        return v.get("package") and not any(
+            v.get("package").startswith(x) for x in exclude_packages)
+    area = Counter()
+    for v in views:
+        # A window's root: no parent, or a parent that is OS chrome.
+        parent = v.get("parent")
+        is_root = (parent is None or not 0 <= parent < len(views)
+                   or not foreign_or_app(views[parent]))
+        if foreign_or_app(v) and is_root:
+            b = box_of(v)
+            if b:
+                area[v.get("package")] += max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+    owners = area if area else Counter(v.get("package") for v in views
+                                       if foreign_or_app(v))
     in_front = owners.most_common(1)[0][0] if owners else None
     app_in_front = package is None or in_front == package
 

@@ -408,10 +408,47 @@ def looks_like_dialog(views: Sequence[Dict], package: Optional[str] = None) -> b
         if any(hint in cls or hint in rid for hint in _DIALOG_CLASS_HINTS):
             return True
 
+    # A modal is a window sized to what it holds; a screen fills the display.
+    # A short settings page -- Photo format: a toolbar and two rows, 31 views,
+    # 3 clickables -- passed the size test below and was taken for a dialog,
+    # so its rows were checked as dialog buttons (the guard refused `Pro mode
+    # picture format`) and its own switch was recorded as raising a dialog.
+    # The app's own window filling the display settles it.
+    if _fills_display(views, content, package):
+        return False
+
     # A modal is small. Full app screens observed here run 80-150 views;
     # the Samsung location-tags dialog was 35.
     clickable = sum(1 for v in content if v.get("clickable"))
     return len(content) <= 45 and 1 < clickable <= 6
+
+
+def _fills_display(views: Sequence[Dict], content: Sequence[Dict],
+                   package: Optional[str] = None) -> bool:
+    """Does the app's own window cover (nearly) the whole display?
+
+    Each window in a dump is a root (no parent). Other packages' windows can
+    sit beside the app's -- the launcher's Edge-panel handle is a window of
+    its own, and comes first or last in the dump at random -- so the app's
+    largest root is the one asked about. When no root belongs to the app (a
+    permission prompt is owned by the system), this says nothing and the
+    size test decides, as before.
+    """
+    boxes = [b for b in (box_of(v) for v in views) if b]
+    if not boxes or not package:
+        return False
+    width = max(b[2] for b in boxes)
+    height = max(b[3] for b in boxes)
+    roots = [box_of(v) for v in content
+             if v.get("package") == package
+             and (v.get("parent") is None
+                  or (views[v["parent"]].get("package") or "").startswith(_DEFAULT_CHROME))]
+    roots = [b for b in roots if b]
+    if not roots or width <= 0 or height <= 0:
+        return False
+    box = max(roots, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+    return ((box[2] - box[0]) >= 0.95 * width
+            and (box[3] - box[1]) >= 0.9 * height)
 
 
 def box_of(view: Dict) -> Optional[tuple]:
