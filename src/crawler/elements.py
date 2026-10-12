@@ -65,6 +65,11 @@ class Element:
     # For anything belonging to a switch: which switch, by resource id and
     # bounds. One switch is operated once, however many labels its row has.
     switch_key: Optional[str] = None
+    # The title of the row this element sits in, when it is not that title.
+    # Part of the element's identity: every inline switch on a settings list
+    # is `switch_widget` with the same id, and without the row they all
+    # looked like ONE element -- the first was walked, the rest skipped.
+    context: str = ""
 
     def annotated(self) -> str:
         """Label with a type annotation, in the sheet's style."""

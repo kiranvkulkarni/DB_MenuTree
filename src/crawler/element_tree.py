@@ -1190,7 +1190,13 @@ class ElementTreeWalker:
 
         def collect(current: Sequence[Dict]) -> None:
             for element in self._elements(current):
-                key = (element.label, element.kind, element.resource_id)
+                # The SAME identity the walk uses. This kept its own key --
+                # label, kind, resource id -- which is identical for every
+                # inline switch on a settings list, so the sweep kept the
+                # first switch on the screen and dropped the rest before the
+                # walk ever saw them. Fixing identity in the walk alone
+                # changed nothing; the rows were lost one step earlier.
+                key = self._fingerprint(element)
                 if key not in seen:
                     seen.add(key)
                     found.append(element)

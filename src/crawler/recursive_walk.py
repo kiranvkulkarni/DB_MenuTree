@@ -352,6 +352,18 @@ class RecursiveWalker(ElementTreeWalker):
                 best = group
         return best
 
+    def _fingerprint(self, element):
+        """Identity of an element: what it is, AND which row it belongs to.
+
+        Label, kind and selector alone are not enough on a settings list: all
+        twenty-odd inline switches are `switch_widget` with one shared id. As
+        one identity, the first was handled and every later switch was taken
+        as already done -- Video stabilization, Location tags, Shutter sound
+        and the rest were written with no switch at all.
+        """
+        return (element.annotated(), element.kind, element.selector_kind,
+                element.selector_value, getattr(element, "context", ""))
+
     def _elements(self, views):
         """Every element, each carrying its role and switch identity.
 
@@ -361,10 +373,28 @@ class RecursiveWalker(ElementTreeWalker):
         summary -- was looked for, not found, and reported as unlocatable
         rather than recognised as something never to press.
         """
-        out = super()._elements(views)
+        out = []
+        for e in super()._elements(views):
+            view = views[e.view_index] if 0 <= e.view_index < len(views) else {}
+            # A clickable container with no text of its own, whose children
+            # carry the labels, is named BY those children -- main_switch_
+            # layout, spinner_layout, custom_text_layout. Listing it adds a
+            # row nobody would write; the press still happens, through the
+            # child label (elements._pressable_via).
+            if not self._label_of(view) and any(
+                    self._label_of(views[j])
+                    for j in self._descendants(views, e.view_index)):
+                continue
+            out.append(e)
         for e in out:
             role, row, check = self._row_role(e, views)
             e.role = role
+            if row is not None and 0 <= row < len(views):
+                titles = [self._label_of(views[j])
+                          for j in [row] + self._descendants(views, row)
+                          if self._label_of(views[j])]
+                if titles and titles[0] != e.label:
+                    e.context = titles[0]
             if check is not None and 0 <= check < len(views):
                 cv = views[check]
                 e.switch_key = f"{cv.get('resource_id')}@{cv.get('bounds')}"
@@ -430,6 +460,13 @@ class RecursiveWalker(ElementTreeWalker):
         inside = self._descendants(views, row)
         labelled = [j for j in inside if self._label_of(views[j])]
         if i != row and labelled and i != labelled[0]:
+            # A switch row's state readout -- the "Off" beside the switch,
+            # the same text the switch itself shows -- is the switch saying
+            # its state, already written as the Off / On rows.
+            switch_text = {self._label_of(views[j]).lower() for j in inside
+                           if views[j].get("checkable")}
+            if self._label_of(view).lower() in switch_text:
+                return "state", row, None
             return "summary", row, None
         # A row holding a checkable that is not itself clickable is OPERATED
         # by pressing the row, so the row takes that control's role. Only
@@ -520,15 +557,26 @@ class RecursiveWalker(ElementTreeWalker):
                         after_views[e.view_index].get("enabled", True):
                     governed.add(fp)
             if governed:
-                self._emit(self._synthetic("Off"), depth + 1, setting, selectors,
+                # At the switch's OWN level, as the To_Be sheet writes the
+                # Watermark screen: J51 Watermark, J52 Off, J53 On, and the
+                # governed options one level down under On (K54 Info to
+                # show ...). Placing Off/On beneath the switch row put that
+                # whole block one level too deep.
+                self._emit(self._synthetic("Off"), depth, path, path_selectors,
                            note="switch state")
-                self._emit(self._synthetic("On"), depth + 1, setting, selectors,
+                self._emit(self._synthetic("On"), depth, path, path_selectors,
                            note="switch state -- governs the rows below")
                 self._switches_revealing += 1
-                self._visit(depth + 2, setting + ["On"], selectors, ancestors,
+                self._visit(depth + 1, path + ["On"], path_selectors, ancestors,
                             skip_tabs=True, entering=None, parent=node,
                             only=governed)
 
+        # Restore from the switch's own screen. Walking what it governs can
+        # leave the walk a screen or two away, and the restore once ran from
+        # there -- found no switch, and left Watermark switched on.
+        _, now, _ = self._await_stable()
+        if not self._is_node(node.elements, self._elements(now or [])):
+            self._return_to(node)
         self._restore_switch(sw_id, was_on, switch_index, tap_index)
         return governed
 
@@ -737,6 +785,8 @@ class RecursiveWalker(ElementTreeWalker):
 
                 # Roles that are never pressed are decided from what was
                 # seen, before any attempt to locate them.
+                if element.role == "state":
+                    continue                    # written as the Off / On rows
                 fixed_notes = {"summary": "summary -- listed, not pressed",
                                "inline": "switch of the row above",
                                "option": "option -- listed, not selected",
@@ -757,15 +807,17 @@ class RecursiveWalker(ElementTreeWalker):
                 if not views:
                     return
                 current = self._elements(views)
-                # Same trap as the sweep: after scrolling to reach a control,
-                # the screen no longer resembles the one this node started on,
-                # and judging that by similarity alone declared the walk lost.
-                # `Go to Settings` was abandoned on every visit -- "drifted off
-                # ... and could not get back" -- while it was sitting on the
-                # screen the whole time, further down the list.
-                scrolled_here = self._same_container(
-                    (scrollable_container(views) or {}).get("resource_id"), views)
-                if not self._is_node(elements, current) and not scrolled_here:
+                # Still on this node? Containment (_is_node) is the whole test:
+                # it already accepts a scrolled list, because it asks what
+                # share of what is visible belongs here.
+                #
+                # It used to be OR'd with "is the current scrollable on the
+                # current screen" -- which is always true, so any screen with
+                # a list passed as this node. After the Watermark switch was
+                # walked the walk stood elsewhere and spent the rest of the
+                # node failing to find Watermark's controls, then did the
+                # same to the bottom of the Settings list.
+                if not self._is_node(elements, current):
                     if not self._return_to(node):
                         logger.warning("drifted off %s and could not get back", here)
                         return
@@ -776,6 +828,19 @@ class RecursiveWalker(ElementTreeWalker):
                 # It may be below the fold: scroll to THIS control, rather
                 # than re-sweeping the screen to find everything again.
                 target, views = self._find_element_scrolled(element.label, views)
+                if target is not None:
+                    # Two controls can share a label: on Scanning, the
+                    # `Document scan` TITLE opens a screen and the `Document
+                    # scan` SWITCH flips a setting. Found by label, the switch
+                    # resolved to the title, which was pressed a second time
+                    # and walked twice. Prefer the one that is the same
+                    # control -- same kind, same selector.
+                    same = [e for e in self._elements(views)
+                            if e.label == element.label
+                            and e.kind == element.kind
+                            and e.selector_value == element.selector_value]
+                    if same:
+                        target = same[0]
                 if target is None:
                     # Said out loud. A control the walk cannot locate used to
                     # vanish without a trace, which is how a lookup that could
@@ -891,8 +956,18 @@ class RecursiveWalker(ElementTreeWalker):
                     continue
 
                 child_signature = self._signature(after)
-                if any(len(child_signature & seen) / max(1, len(child_signature | seen))
-                       >= self.return_similarity
+                # Landed back on a screen we came THROUGH? Containment, as in
+                # _is_node: what share of the new screen belongs to an
+                # ancestor. Jaccard was used here and failed exactly as it did
+                # for node recognition -- one screenful of Settings against the
+                # whole swept list scores low. So when a date spinner under
+                # Watermark > On closed the screen and dropped the walk back
+                # on the Settings list, that read as a NEW child, and the
+                # lower half of Settings was documented under
+                # `Watermark > On > spinner_layout` at depth 8, and then again,
+                # correctly, at depth 5.
+                if any(len(child_signature & seen) / max(1, len(child_signature))
+                       >= self.node_containment
                        for seen in ancestors + [signature]):
                     self._loops_refused += 1
                     self._return_to(node)

@@ -20,7 +20,7 @@ screen that contains that role.
 | **input** | `EditText` | list; do not type |
 | **tab** | member of the mode strip (PORTRAIT / PHOTO / VIDEO / MORE) | a depth-2 node, entered by pressing it; never re-entered from inside another mode |
 | **do-not-press** | listed in the app's profile, `profiles/<package>.json` | list; do not press. Empty for an app with no profile |
-| **back** | Navigate up / Close / Back | the route back; not a row |
+| **back** | Navigate up / Close / Back | listed on EVERY screen that has one (agreed); also the route back |
 | **header** | text with no clickable row around it | list |
 | **system chrome** | the element's `package` is the platform UI (`com.android.systemui`) or the keyboard detected on the device at start-up | ignore |
 
@@ -51,6 +51,11 @@ language needs them in the profile.
 * **A switch that reveals content** gets `Off` and `On` rows beneath the
   setting, and everything that appears when ON goes under `On` — as the
   To_Be sheet's Watermark (J52 Off, J53 On, K54 Info to show …).
+* **`Off` / `On`** sit at the switch's own level; what the switch governs goes
+  one level under `On`.
+* **Container rows** -- a clickable container with no text whose children
+  carry the labels (`main_switch_layout`, `spinner_layout`) -- are not rows;
+  the children name them. A switch's own state text is not a row either.
 * **Summary lines** are rows at the setting's own depth, directly after it
   (I20 Shot suggestions, I21 its description, I22 its switch).
 * **A dialog** is opened, its title and buttons listed as rows, and left by
