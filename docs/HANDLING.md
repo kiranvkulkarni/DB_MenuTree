@@ -60,12 +60,22 @@ language needs them in the profile.
   governed ones. A switch already ON (Log) is turned OFF for a moment, and the
   rows that go enabled → disabled are the governed ones. Either way the
   switch is put back as it was at once.
-* **Section headers go with what they head.** A plain label among a switch's
-  governed rows, or directly above the first of them (`Info to show`,
-  `Style`), goes under `On` with them. Decided by screen order, not wording.
+* **A switch's options go under `On`; its description stays beside `Off` /
+  `On`** (agreed). A plain label among the governed rows, or directly above
+  the first of them, goes under `On` only when it sits in the SAME LIST as
+  them -- `Info to show` and `Style` head Watermark's options; Log's
+  "Add an option to record in Log format..." is in a description block of
+  its own and stays at the switch's level. Decided by layout, not wording.
+* **Choices are named by the phone's own descriptions** (agreed):
+  `Selected, Alignment Left`, `Alignment Center` -- not shortened.
 * **A replay passes through a switch** by setting it, not by looking for a
   control called `On`: `Watermark > On > Edit` is replayed by opening
   Watermark and turning its switch on.
+* **A tap lands on what is seen.** A control is tapped in the middle of the
+  part of it that shows: clipped to its list's viewport, clear of the status
+  and navigation bars, and clear of a band pinned over the list (a toolbar).
+  A row that is on screen but covered is nudged into the clear with short
+  drags. Tapping a covered `Video format` hit the toolbar, which went Back.
 * **A restore is confirmed.** The switch is tapped once and the walk waits
   for it to *report* the new state. It is found by its own row, scrolling
   until the switch itself is in view and not under the status bar (a sticky

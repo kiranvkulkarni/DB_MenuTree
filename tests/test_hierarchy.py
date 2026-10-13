@@ -183,6 +183,25 @@ def main() -> int:
     ok &= check("a window owned by no app view falls back to the size test",
                 looks_like_dialog(window("[0,0][1080,2340]"), "com.someone.else"))
 
+    print("\na tap lands on the part of a control that is seen")
+    # Measured: a Settings row half under the navigation bar, tapped at its
+    # centre, pressed the bar's Back; a sticky switch bar half under the
+    # status bar, tapped at its centre, pressed the status bar.
+    from src.crawler.element_tree import ElementTreeWalker
+    bars = [{"package": "com.android.systemui", "bounds": "[0,0][1080,96]"},
+            {"package": "com.android.systemui", "bounds": "[0,2205][1080,2340]"}]
+    row = bars + [{"package": PKG, "bounds": "[28,2100][1052,2300]"}]
+    point = ElementTreeWalker._tap_point(None, row, 2)
+    ok &= check("a row under the navigation bar is tapped above it",
+                point is not None and 2100 <= point[1] < 2205, str(point))
+    sticky = bars + [{"package": PKG, "bounds": "[30,0][1050,158]"}]
+    point = ElementTreeWalker._tap_point(None, sticky, 2)
+    ok &= check("a bar under the status bar is tapped below it",
+                point is not None and 96 <= point[1] <= 158, str(point))
+    hidden = bars + [{"package": PKG, "bounds": "[28,2195][1052,2340]"}]
+    ok &= check("a control almost wholly hidden is not tapped",
+                ElementTreeWalker._tap_point(None, hidden, 2) is None)
+
     print("\nbounds")
     ok &= check("centre computed", center_of(wrapper) == (1056, 459),
                 str(center_of(wrapper)))

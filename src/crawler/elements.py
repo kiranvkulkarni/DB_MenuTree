@@ -70,6 +70,10 @@ class Element:
     # is `switch_widget` with the same id, and without the row they all
     # looked like ONE element -- the first was walked, the rest skipped.
     context: str = ""
+    # The list this element sits in: class and resource id of its nearest
+    # list or scrolling ancestor. Tells a section header inside a switch's
+    # options apart from the switch's own description outside them.
+    group: str = ""
 
     def annotated(self) -> str:
         """Label with a type annotation, in the sheet's style."""

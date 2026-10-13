@@ -413,6 +413,7 @@ class RecursiveWalker(ElementTreeWalker):
         for e in out:
             role, row, check = self._row_role(e, views)
             e.role = role
+            e.group = self._list_of(views, e.view_index)
             if row is not None and 0 <= row < len(views):
                 titles = [self._label_of(views[j])
                           for j in [row] + self._descendants(views, row)
@@ -564,7 +565,7 @@ class RecursiveWalker(ElementTreeWalker):
         for e in self._elements(views):
             if e.view_index not in own_row:
                 before[self._fingerprint(e)] = bool(views[e.view_index].get("enabled", True))
-        centre = center_of(views[tap_index])
+        centre = self._tap_point(views, tap_index)
         if centre is None:
             return set()
         self.driver.tap(*centre, settle=False)
@@ -640,7 +641,7 @@ class RecursiveWalker(ElementTreeWalker):
         for e in self._elements(views):
             if e.view_index not in own_row:
                 before[self._fingerprint(e)] = bool(views[e.view_index].get("enabled", True))
-        centre = center_of(views[tap_index])
+        centre = self._tap_point(views, tap_index)
         if centre is None:
             return set()
         self.driver.tap(*centre, settle=False)
@@ -689,6 +690,18 @@ class RecursiveWalker(ElementTreeWalker):
         return {fp for fp, on in now.items()
                 if fp in node.enabled and node.enabled[fp] != now_on and on == now_on}
 
+    @staticmethod
+    def _list_of(views, index) -> str:
+        """Class and id of the nearest ancestor that is a list or scrolls."""
+        i = views[index].get("parent") if 0 <= index < len(views) else None
+        while i is not None and 0 <= i < len(views):
+            v = views[i]
+            cls = v.get("class") or ""
+            if v.get("scrollable") or cls.endswith(("RecyclerView", "ListView")):
+                return f"{cls}/{v.get('resource_id') or ''}"
+            i = v.get("parent")
+        return ""
+
     def _headers_of(self, node, governed):
         """Section headers that belong to what a switch governs.
 
@@ -696,17 +709,24 @@ class RecursiveWalker(ElementTreeWalker):
         text: they never change `enabled`, so the switch test leaves them
         behind as siblings of the switch, where the sheet has them under `On`
         (K54 Info to show). A plain label lying among the governed rows, or
-        directly above the first of them, heads them. Read from the order of
-        the screen, top to bottom -- nothing about the words.
+        directly above the first of them, heads them -- provided it sits IN
+        THE SAME LIST as them. Read from order and layout, never the words.
+
+        A switch's own description stays beside Off / On (agreed with the
+        sheet's author): Log's "Add an option to record in Log format..." is
+        directly above its two mode options too, but in a description block
+        of its own, outside the list the options are in.
         """
         order = [self._fingerprint(e) for e in node.elements]
         at = [i for i, fp in enumerate(order) if fp in governed]
         if not at:
             return set()
+        lists = {node.elements[i].group for i in at if node.elements[i].group}
         out = set()
         for i in range(max(0, at[0] - 1), at[-1]):
             e = node.elements[i]
-            if order[i] not in governed and not e.interactive and e.role == "plain":
+            if (order[i] not in governed and not e.interactive
+                    and e.role == "plain" and e.group in lists):
                 out.add(order[i])
         return out
 
@@ -779,26 +799,15 @@ class RecursiveWalker(ElementTreeWalker):
             return None, views
         return min(match, key=lambda k: abs(k - switch_index)), views
 
-    @staticmethod
-    def _under_chrome(views, j) -> bool:
-        """Is view `j`'s centre covered by the status or navigation bar?
+    def _under_chrome(self, views, j) -> bool:
+        """Too much of view `j` is under the system bars to tap it.
 
         A sticky switch bar pins itself to the top of a scrolled list, half
-        under the status bar: Watermark's sat at [30,0][1050,158] with the
-        status bar at [0,0][1080,96]. Its centre was "on screen", and every
-        tap at it landed on the status bar -- the restore failed three runs
-        running and left Watermark on.
+        under the status bar (Watermark's at [30,0][1050,158], the bar at
+        [0,0][1080,96]); tapping its centre hit the status bar and the
+        restore failed three runs running. See _tap_point.
         """
-        centre = center_of(views[j])
-        if centre is None:
-            return True
-        x, y = centre
-        for v in views:
-            if (v.get("package") or "").startswith(CHROME_PACKAGES):
-                b = box_of(v)
-                if b and b[0] <= x <= b[2] and b[1] <= y <= b[3]:
-                    return True
-        return False
+        return self._tap_point(views, j) is None
 
     def _flip_to(self, want_on, target, sw_id, switch_index=None) -> bool:
         """Set a switch to `want_on`, and confirm it took.
@@ -815,7 +824,7 @@ class RecursiveWalker(ElementTreeWalker):
             if bool(views[j].get("checked")) == want_on:
                 return True
             tap = j if views[j].get("clickable") else (_pressable_via(views, j) or j)
-            centre = center_of(views[tap])
+            centre = self._tap_point(views, tap)
             if centre is None:
                 return False
             self.driver.tap(*centre, settle=False)
@@ -1436,6 +1445,8 @@ class RecursiveWalker(ElementTreeWalker):
                 _, views, _ = self._await_stable()
                 views = views or []
             element, views = self._await_label(label, views)
+            if element is not None and self._tap_point(views, element.view_index) is None:
+                element = None              # on screen, but covered: scroll to it
             if element is None:
                 element, views = self._find_element_scrolled(label, views)
             if element is None and self._clear_blocking_dialog():

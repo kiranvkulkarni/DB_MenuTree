@@ -44,6 +44,7 @@ from .elements import (
 )
 from .hierarchy import (
     EMPTY_STATE,
+    box_of,
     scrollable_container,
     swipe_span,
     center_of,
@@ -823,12 +824,101 @@ class ElementTreeWalker:
         width, height = self._display
         return 0 <= point[0] < width and 0 <= point[1] < height
 
+    def _tap_point(self, views: Sequence[Dict], index: int):
+        """Where to tap view `index`: the centre of the part of it that is SEEN.
+
+        A row half under the navigation bar has its centre on the bar, and a
+        tap there is the bar's Back: a replay pressing `Video format` on a
+        scrolled Settings list landed on the camera preview instead. A sticky
+        switch bar half under the status bar was the same. The box is clipped
+        to the band between the system bars and tapped in the middle of what
+        is left; None when too little of it shows to tap safely.
+        """
+        box = box_of(views[index]) if 0 <= index < len(views) else None
+        if box is None:
+            return None
+        x1, y1, x2, y2 = box
+        top, bottom = None, None
+        width = max((b[2] for b in (box_of(v) for v in views) if b), default=0)
+        for v in views:
+            if not (v.get("package") or "").startswith(CHROME_PACKAGES):
+                continue
+            b = box_of(v)
+            if not b or (b[2] - b[0]) < 0.9 * width or not (x1 < b[2] and b[0] < x2):
+                continue
+            if b[1] <= y1 < b[3]:
+                top = max(top or 0, b[3])          # a bar over our top edge
+            if b[1] < y2 <= b[3]:
+                bottom = min(bottom or y2, b[1])   # a bar over our bottom edge
+        y1 = max(y1, top) if top is not None else y1
+        y2 = min(y2, bottom) if bottom is not None else y2
+        if y2 - y1 < 24 or x2 - x1 < 8:
+            return None
+
+        # A row inside a scrolling list can also slide under the app's OWN
+        # views drawn over the list -- a collapsed toolbar. A replay tapped
+        # `Video format` there, the toolbar took the touch as Back, and the
+        # walk was on the camera preview. Anything outside the row's list
+        # (and not one of the row's own ancestors) covers what it overlaps.
+        covers = []
+        lineage, i = set(), index
+        while i is not None and 0 <= i < len(views):
+            lineage.add(i)
+            i = views[i].get("parent")
+        scroller = next((j for j in sorted(lineage, reverse=True)
+                         if j != index and views[j].get("scrollable")), None)
+        list_box = box_of(views[scroller]) if scroller is not None else None
+        if list_box is not None:
+            # Only what lies inside the list's own viewport is seen.
+            x1, y1 = max(x1, list_box[0]), max(y1, list_box[1])
+            x2, y2 = min(x2, list_box[2]), min(y2, list_box[3])
+            if y2 - y1 < 24 or x2 - x1 < 8:
+                return None
+        if scroller is not None and list_box is not None:
+            inside, stack = set(), [scroller]
+            while stack:
+                j = stack.pop()
+                inside.add(j)
+                stack.extend(views[j].get("children", []))
+            for j, v in enumerate(views):
+                if j in inside or j in lineage or j < scroller:
+                    continue                # only what is drawn after the list
+                if (v.get("package") or "").startswith(CHROME_PACKAGES):
+                    continue
+                b = box_of(v)
+                if not b or not (b[0] < x2 and x1 < b[2] and b[1] < y2 and y1 < b[3]):
+                    continue
+                # A view holding the whole list is a backdrop BEHIND it -- the
+                # camera preview behind the mode strip -- not drawn over it.
+                if (b[0] <= list_box[0] and b[1] <= list_box[1]
+                        and b[2] >= list_box[2] and b[3] >= list_box[3]):
+                    continue
+                # Nor is a layer spanning most of the list's own height: the
+                # camera draws see-through twins and strips over its mode
+                # strip (78 and 99 px of a 99 px strip) that pass touches on.
+                # What covers a row is a band pinned over part of the list --
+                # Settings' toolbar, 203 px of a 2340 px list, drawn after it.
+                if (b[3] - b[1]) >= 0.7 * (list_box[3] - list_box[1]):
+                    continue
+                covers.append(b)
+
+        def free(pt):
+            return not any(b[0] <= pt[0] < b[2] and b[1] <= pt[1] < b[3] for b in covers)
+
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+        for py in (cy, y1 + 3 * (y2 - y1) // 4, y1 + (y2 - y1) // 4):
+            for px in (cx, x1 + (x2 - x1) // 4, x1 + 3 * (x2 - x1) // 4):
+                if free((px, py)):
+                    return (px, py)
+        return None
+
     def _click(self, element: Element, views: Sequence[Dict]) -> bool:
         assert self.driver is not None
         if element.view_index >= len(views):
             return False
-        centre = center_of(views[element.view_index])
+        centre = self._tap_point(views, element.view_index)
         if centre is None:
+            self._offscreen_taps += 1
             return False
         # Never tap off the screen. A view can sit in the dump with bounds
         # outside the display -- mid-transition, or laid out behind a panel --
@@ -1298,10 +1388,54 @@ class ElementTreeWalker:
         click against the hierarchy now on screen, not the one it started
         with.
         """
-        element = self._find_element(label, views)
+        def tappable(found, current):
+            # Found but not tappable -- under a toolbar or a system bar -- is
+            # not found: keep scrolling until it comes out from under.
+            if found is None or self._tap_point(current, found.view_index) is None:
+                return None
+            return found
+
+        element = tappable(self._find_element(label, views), views)
         if element is not None:
             return element, list(views)
         span = self._swipe_span(views)
+
+        def nudge(current):
+            """On screen but covered: bring it into the clear with SHORT
+            drags towards the middle. A full swipe moves nearly a screen and
+            carried `Video format` from under the toolbar past the bottom."""
+            covered = self._find_element(label, current)
+            if covered is None or span is None:
+                return None, current
+            axis, fixed, low, high = span
+            mid = (low + high) // 2
+            for _ in range(3):
+                b = box_of(current[covered.view_index])
+                if b is None:
+                    break
+                at = (b[0] + b[2]) // 2 if axis == "h" else (b[1] + b[3]) // 2
+                at = min(max(at, low), high)
+                step = min(abs(mid - at), (high - low) // 3)
+                if step < 40:
+                    break
+                to = at + step if at < mid else at - step
+                if axis == "h":
+                    self.driver.swipe(at, fixed, to, fixed, self.scroll_duration_ms)
+                else:
+                    self.driver.swipe(fixed, at, fixed, to, self.scroll_duration_ms)
+                self._scrolls += 1
+                time.sleep(self.scroll_settle)
+                current = self._await_stable()[1] or []
+                covered = self._find_element(label, current)
+                if covered is None:
+                    break
+                if tappable(covered, current) is not None:
+                    return covered, list(current)
+            return None, current
+
+        found, views = nudge(list(views))
+        if found is not None:
+            return found, views
         if span is None:
             return None, list(views)
         # Search BOTH ways. This used to scroll only downward from wherever
@@ -1322,7 +1456,10 @@ class ElementTreeWalker:
                 current = self._scroll_once(span, down=down)
                 if not current:
                     break
-                element = self._find_element(label, current)
+                element = tappable(self._find_element(label, current), current)
+                if element is not None:
+                    return element, list(current)
+                element, current = nudge(current)
                 if element is not None:
                     return element, list(current)
         return None, list(current)
