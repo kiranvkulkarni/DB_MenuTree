@@ -71,6 +71,26 @@ language needs them in the profile.
 * **A replay passes through a switch** by setting it, not by looking for a
   control called `On`: `Watermark > On > Edit` is replayed by opening
   Watermark and turning its switch on.
+* **A press that opens a panel on the same screen** (agreed, Quick controls):
+  options are listed under the control and never selected (Flash, Timer,
+  Ratio, Resolution); a dial is listed by its title, its value and its Close
+  (Exposure, Face) and never moved. The walk leaves by the panel's Close, and
+  is home again only when the control it pressed is back in view.
+* **A selection group is options**: clickable siblings of one class and id
+  with exactly one marked `selected` (Flash Off / Auto / On, timers, ratios,
+  zoom lenses). Pressing one changes the setting, so none is pressed.
+* **A press that only shows a caption** (agreed): the caption is a `[Title]`
+  row right after the control, at its depth (`Not available with blur
+  effect.` after Lighting), and the control is pressed once more -- Night shot
+  is a toggle and nothing in the layout says so.
+* **Controls that switch the whole app** (`walk_separately` in the profile,
+  agreed: Switch to front camera) are listed, never pressed in the main walk;
+  what they lead to is walked as a pass of its own.
+* **A control carried over from the screen above** (the top bar's Flash on the
+  Quick controls panel) is not listed again when the screen has its own copy.
+  A screen counts as reached only when one of its OWN controls is in view.
+* **A replayed mode is confirmed** by the mode strip's own description
+  ("Portrait, Mode"); after a reset a first-launch tip took the first tap.
 * **A tap lands on what is seen.** A control is tapped in the middle of the
   part of it that shows: clipped to its list's viewport, clear of the status
   and navigation bars, and clear of a band pinned over the list (a toolbar).

@@ -46,6 +46,9 @@ def main() -> int:
     p.add_argument("--rows", required=True, help="first:last Excel rows")
     p.add_argument("--branch", required=True, help="branch.json from walk_branch.py")
     p.add_argument("--all", action="store_true", help="print every row, not only problems")
+    p.add_argument("--package", default="",
+                   help="read this app's confirmed aliases from its profile "
+                        "(sheet wording -> what the phone shows)")
     args = p.parse_args()
 
     first, last = (int(x) for x in args.rows.split(":"))
@@ -67,10 +70,19 @@ def main() -> int:
     gn = [normalise(l) for _, l, _ in got]
     cache = {}
 
+    aliases = {}
+    if args.package:
+        from src.profile import load_profile
+        from src.verify.matching import load_aliases
+        alias_file = load_profile(args.package).get("aliases")
+        if alias_file:
+            aliases = {normalise(k): {normalise(t) for t in v}
+                       for k, v in load_aliases(alias_file).items()}
+
     def sim(i, j):
         key = (wn[i], gn[j])
         if key not in cache:
-            if wn[i] == gn[j]:
+            if wn[i] == gn[j] or gn[j] in aliases.get(wn[i], ()):
                 cache[key] = 1.0
             elif not wn[i] or not gn[j]:
                 cache[key] = 0.0

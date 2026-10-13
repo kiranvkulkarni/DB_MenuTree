@@ -69,7 +69,7 @@ class Node:
     """
 
     __slots__ = ("label", "depth", "path", "path_selectors", "signature",
-                 "elements", "entering", "parent", "enabled")
+                 "elements", "entering", "parent", "enabled", "own")
 
     def __init__(self, label, depth, path, path_selectors, elements,
                  signature, entering=None, parent=None):
@@ -82,6 +82,7 @@ class Node:
         self.entering = entering
         self.parent = parent
         self.enabled = {}           # fingerprint -> enabled, from the sweep
+        self.own = set()            # fingerprints not carried over from above
 
     @property
     def where(self):
@@ -102,6 +103,9 @@ class RecursiveWalker(ElementTreeWalker):
         self._returns_failed = 0
         self._returned_by: Dict[str, int] = {}
         self._options_listed = 0
+        self._panels_listed = 0
+        self._captions_listed = 0
+        self._presses_undone = 0
         self._loops_refused = 0
         self._reused_screens = 0
         self._strips_not_swiped = 0
@@ -151,9 +155,15 @@ class RecursiveWalker(ElementTreeWalker):
         # path (as a tuple, ending in the synthetic "On") -> (switch element,
         # its resource id, wanted state). Lets a replay pass through a switch.
         self._switch_steps = {}
+        self._replayed_last = None
         self._in_dialog = False
         self.do_not_press = {str(x).strip().lower()
                              for x in config.get("do_not_press", [])}
+        # From the profile: controls that switch the app into a parallel
+        # state (a second camera). Listed, never pressed here; walked as a
+        # pass of their own.
+        self.walk_separately = {str(x).strip().lower()
+                                for x in config.get("walk_separately", [])}
         self.skip_documented_screens = bool(
             config.get("skip_documented_screens", False))
 
@@ -192,6 +202,8 @@ class RecursiveWalker(ElementTreeWalker):
             # a photo on every tap -- is data maintained beside that app.
             self._actions_not_pressed += 1
             return "listed, not pressed (profile: do_not_press)"
+        if element.label.strip().lower() in self.walk_separately:
+            return "listed, not pressed (profile: walked as its own pass)"
         from .element_tree import KEYPAD_KEY
         if KEYPAD_KEY.fullmatch(element.label.strip()):
             self._keypad_skipped += 1
@@ -278,44 +290,70 @@ class RecursiveWalker(ElementTreeWalker):
             _, views, package = self._await_stable()
             if not views or (package and package != self.package):
                 return False
-            return self._is_node(node.elements, self._elements(views))
+            return self._is_node(node.elements, self._elements(views), node.own)
 
         def press(element: Element, views, how: str) -> bool:
             if self.guard.blocks("text", element.label):
                 return False
             if not self._click(element, views):
                 return False
+            # Let the press land: a panel read while it slides open is not
+            # yet the panel, and the return was counted a failure.
+            self._after_press(label_set(self._elements(views)))
             if arrived():
                 self._returns_ok += 1
                 self._returned_by[how] = self._returned_by.get(how, 0) + 1
                 return True
             return False
 
+        def via_entering() -> bool:
+            # The control that opens this screen, if it is in view now.
+            # Checked after EVERY step back, not only first: Timer's options
+            # and the Gallery both drop the walk on the camera screen, where
+            # `Quick controls` is one press from home.
+            if node.entering is None:
+                return False
+            _, views, _ = self._await_stable()
+            wanted = self._fingerprint(node.entering)
+            live = next((e for e in self._elements(views or [])
+                         if self._fingerprint(e) == wanted), None)
+            return live is not None and press(live, views, "the control that opens it")
+
+        def hardware_back() -> bool:
+            try:
+                self.driver.press_back()
+                time.sleep(self.settle)
+            except Exception:
+                return False
+            if arrived():
+                self._returns_ok += 1
+                self._returned_by["BACK"] = self._returned_by.get("BACK", 0) + 1
+                return True
+            return via_entering()
+
+        if via_entering():
+            return True
+
+        # In another app, its own `Navigate up` moves around inside THAT app
+        # (the Gallery's went to an album). The system Back leaves it.
+        _, views, package = self._await_stable()
+        if package and package != self.package:
+            for _ in range(2):
+                if hardware_back():
+                    return True
+                _, views, package = self._await_stable()
+                if package == self.package:
+                    break
+
         _, views, _ = self._await_stable()
         here = self._elements(views) if views else []
-
-        if node.entering is not None:
-            wanted = self._fingerprint(node.entering)
-            live = next((e for e in here if self._fingerprint(e) == wanted), None)
-            if live is not None and press(live, views, "the control that opens it"):
-                return True
-            _, views, _ = self._await_stable()
-            here = self._elements(views) if views else []
-
         for element in here:
             if self._is_back(element):
-                if press(element, views, "on-screen back"):
+                if press(element, views, "on-screen back") or via_entering():
                     return True
                 break
 
-        try:
-            self.driver.press_back()
-            time.sleep(self.settle)
-        except Exception:
-            pass
-        if arrived():
-            self._returns_ok += 1
-            self._returned_by["BACK"] = self._returned_by.get("BACK", 0) + 1
+        if hardware_back():
             return True
 
         # Last resort: relaunch and walk back down the path. `_replay`
@@ -384,9 +422,14 @@ class RecursiveWalker(ElementTreeWalker):
         one identity, the first was handled and every later switch was taken
         as already done -- Video stabilization, Location tags, Shutter sound
         and the rest were written with no switch at all.
+
+        And which LIST it sits in: the camera's top bar and its Quick
+        controls panel both hold a `Flash` chip with one shared id. As one
+        identity the panel's chip was lost, and with it the panel's order.
         """
         return (element.annotated(), element.kind, element.selector_kind,
-                element.selector_value, getattr(element, "context", ""))
+                element.selector_value, getattr(element, "context", ""),
+                getattr(element, "group", ""))
 
     def _elements(self, views):
         """Every element, each carrying its role and switch identity.
@@ -495,6 +538,20 @@ class RecursiveWalker(ElementTreeWalker):
             labels = {self._label_of(views[j]) for j in sibs}
             if len(sibs) >= 2 and len(labels) == len(sibs) and all(labels):
                 return "option", row, None
+        # A selection group: clickable siblings of one class and id, exactly
+        # one of them `selected` -- Flash Off / Auto / On, the timers, the
+        # ratios, the zoom lenses. Pressing one CHANGES the setting (an
+        # earlier walk left the timer on 2 s and the zoom on 3x), so each is
+        # an option: listed, never pressed.
+        own = i if view.get("clickable") else row
+        if own is not None and views[own].get("parent") is not None:
+            mine = views[own]
+            sibs = [views[j] for j in views[mine["parent"]].get("children", [])
+                    if views[j].get("clickable")
+                    and views[j].get("class") == mine.get("class")
+                    and views[j].get("resource_id") == mine.get("resource_id")]
+            if len(sibs) >= 2 and sum(1 for s in sibs if s.get("selected")) == 1:
+                return "option", row, None
         if row is None:
             return "plain", None, None
         inside = self._descendants(views, row)
@@ -588,7 +645,7 @@ class RecursiveWalker(ElementTreeWalker):
                            note="dialog raised by turning the switch on")
             self._clear_blocking_dialog()
             self._switch_dialogs += 1
-        elif not self._is_node(node.elements, after):
+        elif not self._is_node(node.elements, after, node.own):
             # It took us somewhere else: a shortcut, not a reveal.
             self._switches_navigating += 1
             self._return_to(node)
@@ -620,7 +677,7 @@ class RecursiveWalker(ElementTreeWalker):
         # leave the walk a screen or two away, and the restore once ran from
         # there -- found no switch, and left Watermark switched on.
         _, now, _ = self._await_stable()
-        if not self._is_node(node.elements, self._elements(now or [])):
+        if not self._is_node(node.elements, self._elements(now or []), node.own):
             self._return_to(node)
         self._restore_switch(sw_id, was_on, switch_index, tap_index, target)
         return governed
@@ -671,6 +728,114 @@ class RecursiveWalker(ElementTreeWalker):
             self._visit(depth + 1, path + ["On"], path_selectors, ancestors,
                         skip_tabs=True, entering=None, parent=node, only=governed)
         return governed
+
+    def _list_panel(self, fresh, target, depth, child_path, child_selectors,
+                    node, elements, handled, before=frozenset(),
+                    inherited=frozenset()):
+        """A press that opened a panel on this screen: list it, close it.
+
+        Agreed handling (docs/HANDLING.md): options are listed under the
+        control and never selected (Flash, Timer, Ratio); a dial is listed
+        by its title, its value and its Close (Exposure, Face) and never
+        moved. The walk then leaves by the panel's own close control, and
+        returns to this screen if the panel took it elsewhere -- otherwise
+        the next chip in the row is hidden behind the panel.
+        """
+        # Read the panel once more when it has settled: a dial's Close
+        # slides in after its title and value, and was missing.
+        time.sleep(0.8)
+        _, late_views, _ = self._await_stable()
+        known = {self._fingerprint(e) for e in fresh} | before | inherited
+        fresh = list(fresh) + [e for e in self._elements(late_views or [])
+                               if self._fingerprint(e) not in known]
+        # Its close control may carry the same identity as one already on
+        # the screen before -- a dial's `Close` and the panel's `Close` are
+        # both just "Close" -- so it is looked for on the settled panel
+        # itself, not among what is new.
+        # Text of the screen above coming back into view is not the panel's:
+        # Face's dial was listed with the camera's "Ready" status beside it.
+        above = {f[0] for f in inherited}
+        fresh = [e for e in fresh if e.interactive or e.label not in above]
+        new_ones = list(fresh)
+        closer = next((e for e in fresh if self._is_back(e)), None)
+        if closer is None:
+            closer = next((e for e in self._elements(late_views or [])
+                           if self._is_back(e)), None)
+            if closer is not None:
+                fresh = list(fresh) + [closer]
+        for e in self._dedupe(fresh):
+            if self._is_back(e):
+                note = "back control"
+            elif e.role == "option":
+                note = "option -- listed, not selected"
+                self._options_listed += 1
+            elif e.interactive:
+                note = self._worth_pressing(e) or ""
+            else:
+                note = ""               # a title or a value: just listed
+            self._emit(e, depth + 1, child_path, child_selectors, note=note)
+        # Only what was new is done with. The dial's `Close` shares its
+        # identity with the panel's own `Close`, which still needs its row.
+        for e in new_ones:
+            handled.add(self._fingerprint(e))
+        self._panels_listed += 1
+        if closer is not None:
+            _, views, _ = self._await_stable()
+            found = self._find_element(closer.label, views or [])
+            if found is not None and self._click(found, views):
+                self._after_press(label_set(self._elements(views)))
+        # Then back to this screen the usual way -- by the control that
+        # opened it (Quick controls), else its back control. Never a bare
+        # hardware Back: on the camera's own screen that closes the camera.
+        # Home means the control just pressed is in view again -- matched by
+        # its full identity, list included, so the top bar's `Flash` cannot
+        # stand in for the panel's. Merely sharing most of what is visible is
+        # not enough: with the panel's options still open the chips are
+        # hidden, and Timer, Ratio, Exposure and Face were not found.
+        def home() -> bool:
+            _, views, _ = self._await_stable()
+            current = self._elements(views or [])
+            mine = self._fingerprint(target)
+            return (any(self._fingerprint(e) == mine for e in current)
+                    and self._is_node(elements, current))
+        if not home():
+            self._return_to(node)
+            if not home():
+                logger.info("after %r the screen did not come back as it was",
+                            target.label)
+
+    def _list_captions(self, appeared, target, depth, path, path_selectors,
+                       handled):
+        """A press that only showed a caption: write it, then press again.
+
+        Agreed handling: the caption is a `[Title]` row directly after the
+        control, at its depth (the sheet's `Not available with blur effect.
+        [Title]` after Lighting). Nothing in the layout tells an information
+        caption from a toggle -- Night shot shows "Night shot Off" and HAS
+        switched night shot off -- so the control is pressed once more, which
+        puts a toggle back and costs a caption control nothing.
+        """
+        for e in self._dedupe(appeared):
+            caption = Element(label=e.label, kind="title", interactive=False,
+                              view_index=e.view_index)
+            self._emit(caption, depth, path, path_selectors,
+                       note=f"caption shown on pressing {target.label}")
+            handled.add(self._fingerprint(e))
+        self._captions_listed += 1
+        _, views, _ = self._await_stable()
+        views = views or []
+        again = self._find_element(target.label, views)
+        if again is not None and self._click(again, views):
+            self._presses_undone += 1
+        # Let the caption go before the next press, or it is read again as
+        # something THAT press showed.
+        shown = {e.label for e in appeared}
+        deadline = time.time() + 4.0
+        while time.time() < deadline:
+            time.sleep(0.4)
+            _, views, _ = self._await_stable()
+            if not shown & {e.label for e in self._elements(views or [])}:
+                break
 
     def _governed_below_fold(self, views, node, now_on):
         """Governed rows the visible check could not see.
@@ -1000,6 +1165,25 @@ class RecursiveWalker(ElementTreeWalker):
         chrome |= {self._fingerprint(e)
                    for e in self._tab_strip(elements, views)}
         handled = set(chrome)
+        # A control carried over from a screen above, when this screen has a
+        # copy of its own -- same label, kind and id, in a different list.
+        # The camera's top bar keeps `Flash` and `Lighting` on screen while
+        # the Quick controls panel shows its own `Flash` and `Lighting`; the
+        # sheet lists the panel's, in the panel's order.
+        inherited = set().union(*ancestors) if ancestors else set()
+        node.own = {self._fingerprint(e) for e in elements
+                    if self._fingerprint(e) not in inherited and not is_tab(e)
+                    and not self._is_back(e)} if inherited else set()
+        if inherited:
+            own = {(e.label, e.kind, e.selector_value) for e in elements
+                   if self._fingerprint(e) not in inherited}
+            twins = {self._fingerprint(e) for e in elements
+                     if self._fingerprint(e) in inherited
+                     and (e.label, e.kind, e.selector_value) in own}
+            handled |= twins
+            if twins:
+                logger.info("carried over from above, not walked here: %s",
+                            sorted(t[0] for t in twins))
         switches_done = set()
         to_walk = ([e for e in elements if self._fingerprint(e) in only]
                    if only is not None else elements)
@@ -1067,7 +1251,7 @@ class RecursiveWalker(ElementTreeWalker):
                 # walked the walk stood elsewhere and spent the rest of the
                 # node failing to find Watermark's controls, then did the
                 # same to the bottom of the Settings list.
-                if not self._is_node(elements, current):
+                if not self._is_node(elements, current, node.own):
                     if not self._return_to(node):
                         logger.warning("drifted off %s and could not get back", here)
                         return
@@ -1085,10 +1269,16 @@ class RecursiveWalker(ElementTreeWalker):
                     # resolved to the title, which was pressed a second time
                     # and walked twice. Prefer the one that is the same
                     # control -- same kind, same selector.
-                    same = [e for e in self._elements(views)
-                            if e.label == element.label
-                            and e.kind == element.kind
-                            and e.selector_value == element.selector_value]
+                    # Same identity first -- which includes the list it is
+                    # in: the top bar's `Flash` and the Quick controls
+                    # panel's `Flash` agree on label, kind and id.
+                    on_screen = self._elements(views)
+                    same = ([e for e in on_screen
+                             if self._fingerprint(e) == self._fingerprint(element)]
+                            or [e for e in on_screen
+                                if e.label == element.label
+                                and e.kind == element.kind
+                                and e.selector_value == element.selector_value])
                     if same:
                         target = same[0]
                 if target is None:
@@ -1169,6 +1359,45 @@ class RecursiveWalker(ElementTreeWalker):
                 # does, and belongs to the same node.
                 appeared = [e for e in after if self._fingerprint(e) not in before]
                 revealed = [e for e in appeared if e.interactive]
+                # What is genuinely NEW: not on this screen, and not on a
+                # screen above it coming back into view. Flash and Timer in
+                # Quick controls close the panel and show their options in
+                # the top bar; the rest of the camera screen returning with
+                # them is the camera screen, not Flash's children.
+                fresh = [e for e in appeared if self._fingerprint(e) not in inherited]
+                back_above = any(
+                    len(self._signature(after) & seen) / max(1, len(after)) >= self.node_containment
+                    for seen in ancestors)
+                # Or, needing no record of the screen above: the control that
+                # OPENED this screen has come back into view. After a reset
+                # the camera screen recorded on the way in carried a first-
+                # launch tip, matched nothing later, and Flash's options were
+                # walked as a new screen -- into Filters, pressing filters.
+                if path and not back_above:
+                    back_above = any(e.interactive and e.label == path[-1]
+                                     for e in appeared)
+
+                # A panel, not a new screen: the press left the walk on this
+                # screen, or back on the one above it -- never a screen of its
+                # own, which Photo enhancer's radio list is.
+                in_place = (not moved or back_above
+                            or self._is_node(elements, after))
+                logger.info("press %r: moved=%s back_above=%s in_place=%s "
+                            "appeared=%d fresh=%d", target.label, moved,
+                            back_above, in_place, len(appeared), len(fresh))
+                if fresh and in_place:
+                    if not moved and not any(e.interactive for e in fresh):
+                        # Only a caption came up: Lighting, Night shot.
+                        self._list_captions(fresh, target, depth, path,
+                                            path_selectors, handled)
+                    else:
+                        # Options, or a dial. Not "any interactive": Face's
+                        # dial was read while its Close was still animating
+                        # in and not yet clickable, and was walked as a screen.
+                        self._list_panel(fresh, target, depth, child_path,
+                                         child_selectors, node, elements, handled,
+                                         before, inherited)
+                    continue
 
                 if not moved and revealed:
                     # An expansion in place: Flash stays put and On/Off/Auto
@@ -1278,7 +1507,7 @@ class RecursiveWalker(ElementTreeWalker):
         self._visit(depth + 1, path + [tab.label], selectors, ancestors,
                     skip_tabs=True, entering=tab, parent=parent)
 
-    def _is_node(self, node_elements, current) -> bool:
+    def _is_node(self, node_elements, current, own=None) -> bool:
         """Is the screen showing now part of this node?
 
         Containment, not overlap. A long list is recorded as a node by
@@ -1297,7 +1526,16 @@ class RecursiveWalker(ElementTreeWalker):
         if not here:
             return False
         known = label_set(node_elements)
-        return len(here & known) / len(here) >= self.node_containment
+        if len(here & known) / len(here) < self.node_containment:
+            return False
+        # And at least one of the node's OWN controls must show. A panel
+        # opened over the camera screen shares most of what is visible with
+        # it: closed, the camera screen still passed as the panel, and the
+        # next chip, Timer, was pressed from the camera screen and walked as
+        # a screen of its own.
+        if own:
+            return any(self._fingerprint(e) in own for e in current)
+        return True
 
     def _on_screen(self, elements) -> bool:
         _, views, package = self._await_stable()
@@ -1434,16 +1672,36 @@ class RecursiveWalker(ElementTreeWalker):
                     return False
                 _, views, _ = self._await_stable()
                 continue
-            if passed is not None and views:
+            if not self._tab_labels and views:
+                # Learn the mode strip here if the walk could not at start-up:
+                # after a reset a first-launch pop-up covers the launch screen,
+                # the strip went unlearned, and a sweep below swiped it --
+                # turning PORTRAIT into PHOTO under the walk's feet.
+                strip = self._dedupe(self._tab_strip(self._elements(views), views))
+                if len(strip) >= 2:
+                    self._tab_labels = {t.label.strip().lower() for t in strip}
+            if passed is not None and views and step:
+                # Not the launch screen: after a reset the first launch shows
+                # the Quick controls panel under a tip, and recording that as
+                # an ancestor made the panel's own chips look carried over.
+                #
                 # The screens a branch walk starts beneath are its ancestors:
                 # a press that drops back onto one of them is a return, not a
-                # new child (see the loop guard in _visit).
-                # Not swept at the launch screen: a swipe across a camera
-                # preview, say, changes mode rather than scrolling.
-                passed.append(self._signature(
-                    self._elements(views) if step == 0 else self._enumerate_scrolled(views)))
+                # new child (see the loop guard in _visit). Only a VERTICAL
+                # list is swept for it: a horizontal strip on a camera screen
+                # is the mode bar, and swiping it changes mode.
+                span = self._swipe_span(views)
+                seen = self._signature(
+                    self._enumerate_scrolled(views) if span and span[0] == "v"
+                    else self._elements(views))
+                # And once more a moment later: a camera screen's top bar
+                # fills in after the mode has switched, and a `Flash` missing
+                # from this record was later taken for a control of the screen
+                # below -- listed there twice.
+                time.sleep(1.0)
                 _, views, _ = self._await_stable()
                 views = views or []
+                passed.append(seen | self._signature(self._elements(views)))
             element, views = self._await_label(label, views)
             if element is not None and self._tap_point(views, element.view_index) is None:
                 element = None              # on screen, but covered: scroll to it
@@ -1461,6 +1719,8 @@ class RecursiveWalker(ElementTreeWalker):
                 element, views = self._settled(label, views)
             if element is not None:
                 before = label_set(self._elements(views))
+            if element is not None:
+                self._replayed_last = element   # how the last screen was entered
             if element is None or not self._click(element, views):
                 _, seen, package = self._await_stable()
                 logger.info("replay stopped at %r of %s; screen (%s) had: %s",
@@ -1483,7 +1743,12 @@ class RecursiveWalker(ElementTreeWalker):
                 deadline = time.time() + 4.0
                 while time.time() < deadline:
                     _, views, _ = self._await_stable()
-                    if views and label_set(self._elements(views)) != before:
+                    # Something must APPEAR. A tap that only made things go
+                    # away was taken by an overlay: after a reset the first
+                    # launch shows a tip, the tap on PORTRAIT dismissed it,
+                    # the screen "changed", and Quick controls was then
+                    # opened -- and walked -- in PHOTO.
+                    if views and label_set(self._elements(views)) - before:
                         changed = True
                         break
                     time.sleep(0.4)
@@ -1496,7 +1761,48 @@ class RecursiveWalker(ElementTreeWalker):
             if not changed or not views:
                 logger.info("replay: pressing %r changed nothing", label)
                 return False
+            if label.strip().lower() in self._tab_labels:
+                # A mode tab is confirmed, and pressed again until it is.
+                # After a reset a first-launch tip sits over the camera; the
+                # tap on PORTRAIT only closed it, and the walk went on -- and
+                # pressed filters -- in PHOTO. Pressing the mode already shown
+                # does nothing, so pressing again is free.
+                for _ in range(3):
+                    if self._tab_confirmed(label, views):
+                        break
+                    again = self._find_element(label, views)
+                    if again is None or not self._click(again, views):
+                        break
+                    self._after_press(label_set(self._elements(views)), timeout=1.5)
+                    _, views, _ = self._await_stable()
+                    views = views or []
+                else:
+                    logger.info("replay could not confirm the mode %r", label)
+                    return False
         return True
+
+    def _tab_confirmed(self, label, views) -> bool:
+        """Does the tab strip say that `label` is the tab showing?
+
+        Modes carry no `selected` flag. The strip that holds them announces
+        the current one instead -- the camera's reads "Portrait, Mode" or
+        "Photo, Mode". A strip that says nothing cannot be asked, and then
+        the press is taken on trust.
+        """
+        tabs = [e for e in self._elements(views)
+                if e.label.strip().lower() in self._tab_labels]
+        for e in tabs:
+            i = views[e.view_index].get("parent")
+            while i is not None and 0 <= i < len(views):
+                said = (views[i].get("content_description") or views[i].get("text") or "").lower()
+                if said:
+                    return label.strip().lower() in said
+                if views[i].get("scrollable"):
+                    break
+                i = views[i].get("parent")
+        strip = scrollable_container(views)
+        said = ((strip or {}).get("content_description") or "").lower()
+        return (label.strip().lower() in said) if said else True
 
     # -- second pass -----------------------------------------------------
     def _reopen_leftovers(self) -> None:
@@ -1579,6 +1885,9 @@ class RecursiveWalker(ElementTreeWalker):
             "returns_failed": self._returns_failed,
             "returned_by": self._returned_by,
             "options_listed_not_pressed": self._options_listed,
+            "panels_listed": self._panels_listed,
+            "captions_listed": self._captions_listed,
+            "presses_undone": self._presses_undone,
             "loops_refused": self._loops_refused,
             "screens_already_documented": self._reused_screens,
             "tab_strips_not_swiped": self._strips_not_swiped,

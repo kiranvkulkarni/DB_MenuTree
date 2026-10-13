@@ -40,6 +40,9 @@ def main() -> int:
     p.add_argument("--time-budget", type=int, default=900)
     p.add_argument("--max-depth", type=int, default=10)
     p.add_argument("--no-reset", action="store_true")
+    p.add_argument("--skip", default="",
+                   help="comma-separated rows to list but not open -- a branch "
+                        "already checked on its own (development aid only)")
     args = p.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -56,6 +59,9 @@ def main() -> int:
         "reset_before_start": not args.no_reset,
         "clear_between_paths": not args.no_reset,
     })
+
+    skip = {x.strip().lower() for x in args.skip.split(",") if x.strip()}
+    walker.do_not_press |= skip
 
     with RunLock(Path("output"), args.serial):
         root_key, views = walker._start()
@@ -78,7 +84,8 @@ def main() -> int:
             # The screens replayed through are this branch's ancestors, as
             # they would be in a full walk; without them a press that drops
             # back to Settings was walked as a new child of the branch.
-            walker._visit(len(path) + 2, path, [], passed, skip_tabs=True)
+            walker._visit(len(path) + 2, path, [], passed, skip_tabs=True,
+                          entering=walker._replayed_last)
         except Exception as exc:              # keep what was collected
             import traceback
             failure = f"{type(exc).__name__}: {exc}"

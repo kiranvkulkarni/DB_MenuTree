@@ -67,10 +67,15 @@ def main() -> int:
     print()
     print("getting back is ordered by what it costs to be wrong")
     src = inspect.getsource(RecursiveWalker._return_to)
-    order = [src.index(x) for x in ("node.entering", "_is_back", "press_back")]
+    # In the app: the control that opens it, then the screen's back control,
+    # then the hardware key. (Inside ANOTHER app the hardware key comes first:
+    # that app's own Navigate up only moves around inside it.)
+    flow = src.split("if via_entering():", 1)[1]
     ok &= check("the control that opens it, then back control, then hardware BACK",
-                order == sorted(order),
+                flow.index("_is_back(element)") < flow.rindex("if hardware_back():"),
                 "BACK on a viewfinder leaves the app; a wrong tap only loses a screen")
+    ok &= check("in another app, the system Back leaves it first",
+                "package != self.package" in flow.split("_is_back(element)")[0])
     ok &= check("the way back is looked up in the tree, not guessed",
                 "node.entering" in src,
                 "a node records the element that opened it")

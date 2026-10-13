@@ -167,6 +167,33 @@
       "confirmed": true,
       "why": "inferred from the constant family the device exposed; review on first use",
       "note": "the newer sheet writes the megapixel value with 'MP'; the older one wrote '12M'. Same control, same dump constant."
+    },
+    "Two seconds": {
+      "on_screen": [
+        "BACK_TIMER_2S",
+        "FRONT_TIMER_2S"
+      ],
+      "confirmed": true,
+      "why": "seen on the device: Quick controls > Timer shows these constants (2026-10-13)",
+      "note": "the MenuTree_To_Be sheet spells the timer out in words"
+    },
+    "Five seconds": {
+      "on_screen": [
+        "BACK_TIMER_5S",
+        "FRONT_TIMER_5S"
+      ],
+      "confirmed": true,
+      "why": "seen on the device: Quick controls > Timer shows these constants (2026-10-13)",
+      "note": "the MenuTree_To_Be sheet spells the timer out in words"
+    },
+    "Ten seconds": {
+      "on_screen": [
+        "BACK_TIMER_10S",
+        "FRONT_TIMER_10S"
+      ],
+      "confirmed": true,
+      "why": "seen on the device: Quick controls > Timer shows these constants (2026-10-13)",
+      "note": "the MenuTree_To_Be sheet spells the timer out in words"
     }
   }
 }
