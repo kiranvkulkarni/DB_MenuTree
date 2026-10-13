@@ -115,6 +115,25 @@ language needs them in the profile.
   Face lie past Motion photo) is dragged along to see the rest, and back.
 * **Rows that leave the app** for somewhere outside its menu tree are listed,
   not opened (`leaves_app` in the profile; agreed: Download filters).
+* **Modes under MORE** (agreed): each tile is a node (MORE > PRO > ...), left
+  by the mode's own on-screen Back. A tile that opens another app (EXPERT RAW
+  -> Galaxy Store, Bixby Vision) has that app's first screen listed one level,
+  nothing in it pressed or answered. MORE > Edit is `list_only` in the profile.
+* **Another app is listed once** per control (`--revisits` other than full):
+  the Gallery from every mode is "opens ...gallery3d; listed under ...".
+* **A screen reached again by another route** (Settings from every mode):
+  `--revisits full|top|note`, default `top` -- its rows listed again, rows it
+  already had where it was walked before not reopened. Only a near-identical
+  screen (>= 90% the same) counts; Quick controls differ per mode and are
+  always walked.
+* **A control that relabels itself** when pressed (FOOD_BLUR_EFFECT_ON ->
+  _OFF, same id and place) is a toggle: the new state recorded, pressed back.
+* **A control named as a screen on the current path** is a title, not
+  pressed (FOOD's `FOOD` leaves the mode).
+* **Getting back never uses a control carried over from above**: FOOD's own
+  `Back` stays visible over its Quick controls' panels and leads out of FOOD;
+  nor does a panel's "close" use it.
+* **Replay confirms each step** against the screen the walk recorded there.
 * **A tap lands on what is seen.** A control is tapped in the middle of the
   part of it that shows: clipped to its list's viewport, clear of the status
   and navigation bars, and clear of a band pinned over the list (a toolbar).

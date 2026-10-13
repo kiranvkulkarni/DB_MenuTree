@@ -63,6 +63,12 @@ def parse_args() -> argparse.Namespace:
              "permission controller and appears in the expected sheet, so "
              "this loses real coverage.",
     )
+    p.add_argument("--revisits", default="top", choices=("full", "top", "note"),
+                   help="a screen reached again by another route (Settings, from "
+                        "every mode): 'full' walks it fully every time; 'top' "
+                        "lists its rows but reopens only rows it did not have "
+                        "before (default); 'note' writes one row saying where it "
+                        "was listed")
     p.add_argument("--no-reset", action="store_true",
                    help="Do NOT pm clear the app before exploring. By default each run starts from a fresh app state, which also brings back "
                         "first-run pop-ups a previous run dismissed.")
@@ -141,6 +147,7 @@ def main() -> int:
             "output_dir": str(output_dir),
             "time_budget": args.time_budget,
             "max_depth": args.max_depth,
+            "revisits": args.revisits,
             "ready_timeout": args.ready_timeout,
             "settle_seconds": args.settle,
             "driver": args.driver,

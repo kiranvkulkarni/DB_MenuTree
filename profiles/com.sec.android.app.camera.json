@@ -11,6 +11,7 @@
   "step 6). Pressing it inside Quick controls walked the whole front camera",
   "there and left the phone on it.",
   "leaves_app: rows that open somewhere outside the app's menu tree (agreed: Download filters opens the Galaxy Store). Listed, not opened.",
+  "list_only: rows opened to list what they show, nothing pressed there, left by Back (agreed: MORE > Edit, where pressing could rearrange the mode bar).",
   "open_guarded_rows: open rows like 'Reset settings' to list their confirmation dialog; the dialog's Reset button is still refused and the walk leaves by Cancel."
  ],
  "do_not_press": [
@@ -27,5 +28,8 @@
  ],
  "leaves_app": [
   "Download filters"
+ ],
+ "list_only": [
+  "Edit"
  ]
 }

@@ -39,6 +39,12 @@ def main() -> int:
                    help="comma-separated labels from the launch screen down")
     p.add_argument("--time-budget", type=int, default=900)
     p.add_argument("--max-depth", type=int, default=10)
+    p.add_argument("--revisits", default="top", choices=("full", "top", "note"),
+                   help="a screen reached again by another route (Settings, from "
+                        "every mode): 'full' walks it fully every time; 'top' "
+                        "lists its rows but reopens only rows it did not have "
+                        "before (default); 'note' writes one row saying where it "
+                        "was listed")
     p.add_argument("--no-reset", action="store_true")
     p.add_argument("--only", default="",
                    help="comma-separated rows of the starting screen to walk; "
@@ -59,6 +65,7 @@ def main() -> int:
         "output_dir": str(out),
         "time_budget": args.time_budget,
         "max_depth": args.max_depth,
+        "revisits": args.revisits,
         "reset_before_start": not args.no_reset,
         "clear_between_paths": not args.no_reset,
     })

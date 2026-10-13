@@ -69,7 +69,8 @@ class Node:
     """
 
     __slots__ = ("label", "depth", "path", "path_selectors", "signature",
-                 "elements", "entering", "parent", "enabled", "own")
+                 "elements", "entering", "parent", "enabled", "own", "list_only",
+                 "inherited")
 
     def __init__(self, label, depth, path, path_selectors, elements,
                  signature, entering=None, parent=None):
@@ -83,6 +84,8 @@ class Node:
         self.parent = parent
         self.enabled = {}           # fingerprint -> enabled, from the sweep
         self.own = set()            # fingerprints not carried over from above
+        self.list_only = False      # profile: list what is here, press nothing
+        self.inherited = set()      # fingerprints carried over from above
 
     @property
     def where(self):
@@ -104,6 +107,7 @@ class RecursiveWalker(ElementTreeWalker):
         self._returned_by: Dict[str, int] = {}
         self._options_listed = 0
         self._panels_listed = 0
+        self._titles_not_pressed = 0
         self._selectors_walked = 0
         self._clipped_rows_swept = 0
         self._selectors_not_swiped = 0
@@ -172,6 +176,23 @@ class RecursiveWalker(ElementTreeWalker):
         # not part of its menu tree (a store). Listed, not opened.
         self.leaves_app = {str(x).strip().lower()
                            for x in config.get("leaves_app", [])}
+        # A screen reached again by another route -- Settings, through Quick
+        # controls in every mode. full: walk it fully every time. top: list
+        # its rows again, but do not reopen a row it already had where it was
+        # walked before (rows new here are opened). note: one row saying where
+        # it was listed. Only near-identical screens count as "the same".
+        self.revisits = str(config.get("revisits", "top"))
+        if self.revisits not in ("full", "top", "note"):
+            raise ValueError(f"revisits must be full, top or note, not {self.revisits!r}")
+        self.revisit_similarity = float(config.get("revisit_similarity", 0.9))
+        self._walked = []           # (path, signature) of every screen walked
+        self._opens_app = {}        # control label -> (package, path listed under)
+        self._revisited = 0
+        # From the profile: rows opened to LIST what they show, nothing on
+        # that screen pressed, left by Back (agreed: MORE > Edit, where a
+        # press could rearrange the mode bar).
+        self.list_only = {str(x).strip().lower()
+                          for x in config.get("list_only", [])}
         self.skip_documented_screens = bool(
             config.get("skip_documented_screens", False))
 
@@ -215,6 +236,8 @@ class RecursiveWalker(ElementTreeWalker):
         if element.label.strip().lower() in self.leaves_app:
             return "listed, not opened (profile: leads out of the app)"
         from .element_tree import KEYPAD_KEY
+        if element.role == "option":
+            return "option -- listed, not selected"
         if KEYPAD_KEY.fullmatch(element.label.strip()):
             self._keypad_skipped += 1
             return "keypad key -- recorded, not pressed"
@@ -358,7 +381,10 @@ class RecursiveWalker(ElementTreeWalker):
         _, views, _ = self._await_stable()
         here = self._elements(views) if views else []
         for element in here:
-            if self._is_back(element):
+            # Not a back control carried over from a screen above: FOOD's own
+            # `Back` stays in view while its Quick controls' Ratio options are
+            # open, and pressing it to return to Quick controls left FOOD.
+            if self._is_back(element) and self._fingerprint(element) not in node.inherited:
                 if press(element, views, "on-screen back") or via_entering():
                     return True
                 break
@@ -366,6 +392,10 @@ class RecursiveWalker(ElementTreeWalker):
         if hardware_back():
             return True
 
+        _, views, package = self._await_stable()
+        logger.info("return to %s needs a relaunch; on screen (%s): %s",
+                    node.where, package,
+                    [e.label for e in self._elements(views or [])][:10])
         # Last resort: relaunch and walk back down the path. `_replay`
         # scrolls to each step; the older replay did not, and verified its
         # landing against an empty state key, so it could never succeed.
@@ -783,8 +813,12 @@ class RecursiveWalker(ElementTreeWalker):
         new_ones = list(fresh)
         closer = next((e for e in fresh if self._is_back(e)), None)
         if closer is None:
+            # Never a back control carried over from the screen above: in
+            # FOOD, Ratio's options left FOOD's own `Back` in view, and
+            # "closing" the panel with it left FOOD for PHOTO.
             closer = next((e for e in self._elements(late_views or [])
-                           if self._is_back(e)), None)
+                           if self._is_back(e)
+                           and self._fingerprint(e) not in inherited), None)
             if closer is not None:
                 fresh = list(fresh) + [closer]
         selector = self._selector_in(late_views or [])
@@ -922,6 +956,47 @@ class RecursiveWalker(ElementTreeWalker):
             if flipped is None:
                 break
         logger.warning("could not put %r back to %r", name, was)
+        self._switches_not_restored += 1
+
+    def _relabelled(self, target, before_views, after_views):
+        """The pressed control, now under a new label -- or None.
+
+        Same resource id, same place on screen, different label: the press
+        flipped a state the control names in its own label. FOOD's
+        `FOOD_BLUR_EFFECT_ON` became `..._OFF`. Unrecognised, the walk saw
+        the control it pressed vanish, took that for having left the screen,
+        stepped back with the system key -- which leaves the camera from FOOD
+        -- and left blur switched off.
+        """
+        if not (0 <= target.view_index < len(before_views)) or not after_views:
+            return None
+        mine = before_views[target.view_index]
+        rid, box = mine.get("resource_id"), mine.get("bounds")
+        if not rid or not box:
+            return None
+        for e in self._elements(after_views):
+            v = after_views[e.view_index]
+            if (v.get("resource_id") == rid and v.get("bounds") == box
+                    and e.label != target.label and e.interactive):
+                return e
+        return None
+
+    def _undo_relabel(self, target, flipped, depth, path, selectors):
+        """Record the state the press switched to, then put it back."""
+        self._emit(flipped, depth + 1, path, selectors,
+                   note="state after pressing -- put back")
+        for _ in range(2):
+            _, views, _ = self._await_stable()
+            views = views or []
+            now = next((e for e in self._elements(views) if e.label == flipped.label), None)
+            if now is None or not self._click(now, views):
+                break
+            self._after_press(label_set(self._elements(views)), timeout=1.5)
+            _, views, _ = self._await_stable()
+            if any(e.label == target.label for e in self._elements(views or [])):
+                self._switches_restored += 1
+                return
+        logger.warning("could not put %r back", target.label)
         self._switches_not_restored += 1
 
     def _selector_in(self, views):
@@ -1598,6 +1673,7 @@ class RecursiveWalker(ElementTreeWalker):
         node = Node(path[-1] if path else self.package, depth, path,
                     path_selectors, elements, signature, entering, parent)
         node.enabled = enabled
+        node.list_only = bool(path) and path[-1].strip().lower() in self.list_only
         here = node.where
         outer_dialog = self._in_dialog
         self._in_dialog = looks_like_dialog(views, self.package)
@@ -1610,6 +1686,26 @@ class RecursiveWalker(ElementTreeWalker):
             self._reused_screens += 1
             return
         self._documented[(context, here)] = signature
+
+        # The same screen walked before under another branch?
+        reopened_before, seen_under = set(), None
+        if self.revisits != "full" and path:
+            for earlier_path, earlier in self._walked:
+                # Another route to it: same screen name, different way in.
+                # (Not "a different first step": MORE > PRO and MORE > NIGHT
+                # both begin with MORE.)
+                if (earlier_path[-1:] == path[-1:] and earlier_path != path
+                        and len(signature & earlier) / max(1, len(signature | earlier))
+                        >= self.revisit_similarity):
+                    reopened_before, seen_under = earlier, " > ".join(earlier_path)
+                    break
+        if seen_under is not None:
+            self._revisited += 1
+            if self.revisits == "note":
+                self._emit(self._synthetic(f"Same as {seen_under}"), depth, path,
+                           path_selectors, note="--revisits note: listed once")
+                return
+        self._walked.append((list(path), signature))
 
         self._nodes_visited += 1
         logger.info("visit  depth %-2d  %-38s  %d element(s)",
@@ -1630,6 +1726,7 @@ class RecursiveWalker(ElementTreeWalker):
         # the Quick controls panel shows its own `Flash` and `Lighting`; the
         # sheet lists the panel's, in the panel's order.
         inherited = set().union(*ancestors) if ancestors else set()
+        node.inherited = inherited
         node.own = {self._fingerprint(e) for e in elements
                     if self._fingerprint(e) not in inherited and not is_tab(e)
                     and not self._is_back(e)} if inherited else set()
@@ -1672,6 +1769,16 @@ class RecursiveWalker(ElementTreeWalker):
                 handled.add(fingerprint)
 
                 why = self._worth_pressing(element)
+                if why is None and self.revisits != "full" and element.label in self._opens_app:
+                    # The same app, already listed once: the Gallery from
+                    # every mode. Coming back from it also drops the camera
+                    # into PHOTO, so each visit cost a relaunch.
+                    package, where = self._opens_app[element.label]
+                    why = f"opens {package}; listed under {where}"
+                if why is None and seen_under is not None and fingerprint in reopened_before:
+                    why = f"listed; opened under {seen_under} (--revisits top)"
+                if why is None and node.list_only:
+                    why = "listed, not pressed (profile: list only)"
                 if why is not None:
                     self._emit(element, depth, path, path_selectors, note=why)
                     continue
@@ -1773,6 +1880,14 @@ class RecursiveWalker(ElementTreeWalker):
                     # Already written under `On`; not again as siblings.
                     handled |= governed
                     continue
+                # A control named as the screen it is on -- or a screen above
+                # it -- is a title. FOOD's `FOOD` label is pressable, also
+                # from FOOD's Quick controls, and leaves FOOD for PHOTO, from
+                # where the system Back closes the camera.
+                if path and target.label.strip().lower() in {
+                        x.strip().lower() for x in path}:
+                    self._titles_not_pressed += 1
+                    continue
                 # The screen as it stands RIGHT NOW, after any scrolling done
                 # to reach this control. Both the before-signature and the
                 # moved-or-not test have to use this same snapshot.
@@ -1798,9 +1913,45 @@ class RecursiveWalker(ElementTreeWalker):
                     if target.selector_kind else ("text", target.label)]
 
                 if after_pkg and after_pkg != self.package:
+                    # Another app: its first screen is listed one level down
+                    # (agreed: EXPERT RAW's Store page, Bixby Vision's
+                    # permission prompt), nothing in it pressed or answered,
+                    # and the walk comes back.
                     self._foreign_skipped += 1
-                    logger.info("foreign screen %s -- recorded, not walked", after_pkg)
+                    self._opens_app[target.label] = (after_pkg, " > ".join(child_path))
+                    logger.info("foreign screen %s -- listed one level", after_pkg)
+                    time.sleep(0.8)
+                    _, there, there_pkg = self._await_stable()
+                    shown = self._dedupe_controls(
+                        [e for e in self._elements(there or [])])
+                    for e in shown:
+                        self._emit(e, depth + 1, child_path, child_selectors,
+                                   note=f"in {there_pkg or after_pkg} -- listed, not pressed")
                     self._return_to(node)
+                    continue
+
+                if target.label.strip().lower() in self.list_only:
+                    # Agreed (MORE > Edit): list what it shows -- all of it,
+                    # even rows that look like the screen below -- press
+                    # nothing, step back.
+                    time.sleep(0.6)
+                    _, there, _ = self._await_stable()
+                    for e in self._dedupe_controls(self._elements(there or [])):
+                        if self._fingerprint(e) in inherited or e.label == target.label:
+                            continue
+                        self._emit(e, depth + 1, child_path, child_selectors,
+                                   note=("back control" if self._is_back(e) else
+                                         "listed, not pressed (profile: list only)"
+                                         if e.interactive else ""))
+                    if not self._is_node(elements, self._elements(there or []), node.own):
+                        self._return_to(node)
+                    continue
+
+                flipped = self._relabelled(target, views, after_views)
+                if flipped is not None:
+                    self._undo_relabel(target, flipped, depth, child_path,
+                                       child_selectors)
+                    handled.add(self._fingerprint(flipped))
                     continue
 
                 moved = screen_similarity(standing, after) < self.similarity_threshold
@@ -2259,7 +2410,36 @@ class RecursiveWalker(ElementTreeWalker):
                 else:
                     logger.info("replay could not confirm the mode %r", label)
                     return False
+            # Where the walk has been before, the screen must look like it.
+            # After a reset the press on the FOOD tile was taken by the
+            # grid's first-launch state, the next step `Quick controls` was
+            # found anyway -- on PHOTO -- and PHOTO's panel was taken for
+            # FOOD's. One more press; then the replay says it failed.
+            known = self._recorded(path[:step + 1])
+            if known and not self._looks_like(known, views):
+                again = self._find_element(label, views)
+                if again is not None and self._click(again, views):
+                    self._after_press(label_set(self._elements(views)))
+                    time.sleep(1.0)
+                    _, views, _ = self._await_stable()
+                    views = views or []
+                if not self._looks_like(known, views):
+                    logger.info("replay: after %r the screen is not the one "
+                                "walked before", label)
+                    return False
         return True
+
+    def _recorded(self, path):
+        """The signature the walk recorded for the screen at `path`."""
+        for earlier_path, signature in self._walked:
+            if earlier_path == list(path):
+                return signature
+        return None
+
+    def _looks_like(self, signature, views) -> bool:
+        """Is most of what is visible part of that recorded screen?"""
+        here = {self._fingerprint(e) for e in self._elements(views)}
+        return bool(here) and len(here & signature) / len(here) >= 0.5
 
     def _tab_confirmed(self, label, views) -> bool:
         """Does the tab strip say that `label` is the tab showing?
@@ -2366,6 +2546,8 @@ class RecursiveWalker(ElementTreeWalker):
             "returned_by": self._returned_by,
             "options_listed_not_pressed": self._options_listed,
             "panels_listed": self._panels_listed,
+            "screens_revisited": self._revisited,
+            "revisits": self.revisits,
             "selectors_walked": self._selectors_walked,
             "clipped_rows_swept": self._clipped_rows_swept,
             "selections_restored": self._selections_restored,
