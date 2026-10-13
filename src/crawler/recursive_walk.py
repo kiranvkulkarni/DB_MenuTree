@@ -364,6 +364,23 @@ class RecursiveWalker(ElementTreeWalker):
                 return True
             return via_entering()
 
+        def walk_back() -> bool:
+            # Before the hardware key (which on a camera screen closes the
+            # app) and before a relaunch (which restarts, here wipes, it): if
+            # the walk is still in the app and the path's first tab is in
+            # view, walk the path from here. A MORE mode's own Back lands on
+            # PHOTO, two presses (MORE, the tile) from home.
+            _, views, package = self._await_stable()
+            if not (package == self.package and node.path
+                    and node.path[0].strip().lower() in self._tab_labels
+                    and self._find_element(node.path[0], views or []) is not None):
+                return False
+            if self._replay(node.path, launch=False) and arrived():
+                self._returns_ok += 1
+                self._returned_by["walked back"] = self._returned_by.get("walked back", 0) + 1
+                return True
+            return False
+
         if via_entering():
             return True
 
@@ -389,7 +406,7 @@ class RecursiveWalker(ElementTreeWalker):
                     return True
                 break
 
-        if hardware_back():
+        if walk_back() or hardware_back() or walk_back():
             return True
 
         _, views, package = self._await_stable()
@@ -453,6 +470,33 @@ class RecursiveWalker(ElementTreeWalker):
             if len(group) > len(best):
                 best = group
         return best
+
+    @staticmethod
+    def _peers(views, index):
+        """Clickable views of the same class and id as `index`: its siblings,
+        or its cousins when each sits in a wrapper of its own (PRO VIDEO's
+        Mic sources: one `pro_item_button` per `pro_item`)."""
+        mine = views[index]
+        parent = mine.get("parent")
+        if parent is None:
+            return [mine]
+
+        def same(j):
+            v = views[j]
+            return (v.get("clickable") and v.get("class") == mine.get("class")
+                    and v.get("resource_id") == mine.get("resource_id"))
+        sibs = [views[j] for j in views[parent].get("children", []) if same(j)]
+        if len(sibs) >= 2:
+            return sibs
+        grand = views[parent].get("parent")
+        if grand is None:
+            return sibs
+        out = []
+        for uncle in views[grand].get("children", []):
+            if views[uncle].get("resource_id") != views[parent].get("resource_id"):
+                continue
+            out += [views[j] for j in views[uncle].get("children", []) if same(j)]
+        return out or sibs
 
     def _fingerprint(self, element):
         """Identity of an element: what it is, AND which row it belongs to.
@@ -599,11 +643,7 @@ class RecursiveWalker(ElementTreeWalker):
         # an option: listed, never pressed.
         own = i if view.get("clickable") else row
         if own is not None and views[own].get("parent") is not None:
-            mine = views[own]
-            sibs = [views[j] for j in views[mine["parent"]].get("children", [])
-                    if views[j].get("clickable")
-                    and views[j].get("class") == mine.get("class")
-                    and views[j].get("resource_id") == mine.get("resource_id")]
+            sibs = self._peers(views, own)
             if len(sibs) >= 2 and sum(1 for s in sibs if s.get("selected")) == 1:
                 return "option", row, None
         if row is None:
@@ -811,13 +851,17 @@ class RecursiveWalker(ElementTreeWalker):
         above = {f[0] for f in inherited}
         fresh = [e for e in fresh if e.interactive or e.label not in above]
         new_ones = list(fresh)
+        # Closed only by a back control that came WITH the panel. Any other
+        # one on screen belongs to the screen: in the MORE modes it is the
+        # mode's own Back, which leaves for PHOTO, and the walk then fell
+        # out of the camera. Without one, the return ladder takes over.
         closer = next((e for e in fresh if self._is_back(e)), None)
-        if closer is None:
-            # Never a back control carried over from the screen above: in
-            # FOOD, Ratio's options left FOOD's own `Back` in view, and
-            # "closing" the panel with it left FOOD for PHOTO.
-            closer = next((e for e in self._elements(late_views or [])
+        if closer is None and late_views:
+            # A dial's Close carries the same identity as the panel's own
+            # Close, so "came with it" is judged by what was on screen.
+            closer = next((e for e in self._elements(late_views)
                            if self._is_back(e)
+                           and self._fingerprint(e) not in before
                            and self._fingerprint(e) not in inherited), None)
             if closer is not None:
                 fresh = list(fresh) + [closer]
@@ -876,12 +920,29 @@ class RecursiveWalker(ElementTreeWalker):
         # stand in for the panel's. Merely sharing most of what is visible is
         # not enough: with the panel's options still open the chips are
         # hidden, and Timer, Ratio, Exposure and Face were not found.
+        # And most of the screen's own controls with it: SLOW MOTION's Flash
+        # options left Flash in view but hid Video size, Bar and HDR.
+        own_before = (before & node.own) if node.own else set(before)
+
         def home() -> bool:
             _, views, _ = self._await_stable()
             current = self._elements(views or [])
+            here = {self._fingerprint(e) for e in current}
             mine = self._fingerprint(target)
-            return (any(self._fingerprint(e) == mine for e in current)
+            enough = (not own_before
+                      or len(own_before & here) >= 0.8 * len(own_before))
+            return (mine in here and enough
                     and self._is_node(elements, current))
+        if not home():
+            # Options a chip opened are closed by pressing that chip again.
+            # Otherwise PHOTO's Flash options stayed open after the walk
+            # "returned" by the PHOTO tab, and the next press -- Filters --
+            # merely closed them: Filters' 124 rows were never walked.
+            _, views, _ = self._await_stable()
+            again = next((e for e in self._elements(views or [])
+                          if self._fingerprint(e) == self._fingerprint(target)), None)
+            if again is not None and self._click(again, views):
+                self._after_press(label_set(self._elements(views)), timeout=1.5)
         if not home():
             self._return_to(node)
             if not home():
@@ -1571,6 +1632,7 @@ class RecursiveWalker(ElementTreeWalker):
         Face's items each show a value, all "0": deduplicated by label, only
         Smoothness kept its value. Controls are what the mode strip renders
         twice; values are not."""
+        controls = {e.label.strip().lower() for e in elements if e.interactive}
         seen, out = set(), []
         for element in elements:
             key = element.label.strip().lower()
@@ -1580,6 +1642,8 @@ class RecursiveWalker(ElementTreeWalker):
                 if key in seen:
                     continue
                 seen.add(key)
+            elif key in controls:
+                continue        # a control's own caption (Mic's "OMNI" under OMNI)
             out.append(element)
         return out
 
@@ -1943,7 +2007,13 @@ class RecursiveWalker(ElementTreeWalker):
                                    note=("back control" if self._is_back(e) else
                                          "listed, not pressed (profile: list only)"
                                          if e.interactive else ""))
-                    if not self._is_node(elements, self._elements(there or []), node.own):
+                    # Always step back out. Edit shows the very tiles of the
+                    # MORE grid, so it passed for MORE: the walk stayed in
+                    # Edit and pressed PRO there ("Touch and hold to move").
+                    self.driver.press_back(settle=False)
+                    self._after_press(label_set(self._elements(there or [])))
+                    _, back, _ = self._await_stable()
+                    if not self._is_node(elements, self._elements(back or []), node.own):
                         self._return_to(node)
                     continue
 
@@ -1955,6 +2025,15 @@ class RecursiveWalker(ElementTreeWalker):
                     continue
 
                 moved = screen_similarity(standing, after) < self.similarity_threshold
+                if moved and not any(self._fingerprint(e) not in before for e in after):
+                    # Things went, nothing came -- yet. Filters clears the top
+                    # bar before its carousel slides in; read in between, the
+                    # press "brought nothing" and 124 rows were never walked.
+                    time.sleep(1.0)
+                    _, later, later_pkg = self._await_stable()
+                    if later:
+                        after_views, after = later, self._elements(later)
+                        moved = screen_similarity(standing, after) < self.similarity_threshold
                 # Everything the press brought onto the screen, and separately the
                 # part of it that is pressable.
                 #
@@ -2008,8 +2087,41 @@ class RecursiveWalker(ElementTreeWalker):
                 carried = before & inherited
                 keeps = (len(carried) >= 3 and
                          len(carried & self._signature(after)) >= 0.5 * len(carried))
-                in_place = (not moved or back_above or brings_selector or keeps
-                            or self._is_node(elements, after))
+                # Or nothing it brought is worth walking: only options, back
+                # controls and readings (PRO VIDEO's Mic: six sources, a level,
+                # Close). Walked as a screen, each source was pressed -- and
+                # the screen around it listed again under every one.
+                # ...and much of the screen is still there around it. A
+                # Settings sub-screen of radios (Photo enhancer) also brings
+                # only options, but replaces the list: a screen of its own,
+                # with its own Navigate up row.
+                settled = bool(fresh) and any(e.interactive for e in fresh) and all(
+                    e.role == "option" or self._is_back(e) or not e.interactive
+                    for e in fresh) and (
+                    len(before & self._signature(after)) >= 0.3 * max(1, len(before)))
+                # But a press that brought controls that themselves need
+                # walking opened a screen, however much stayed around it:
+                # Quick controls keeps the camera's top bar and shutter in
+                # place too, and was listed as a panel -- its chips, and the
+                # Settings behind them, never walked. Options, back controls,
+                # state toggles and readings need no walking.
+                states = [self._state_of(e, after_views) for e in fresh]
+                readouts = {state for _, state in filter(None, states)}
+                # Clickable in its own right: a panel's title ("Video size")
+                # and a live reading ("1/30s") are pressable only through
+                # their container, and are not controls to walk.
+                walkable = [e for e in fresh if e.interactive and e.role != "option"
+                            and not self._is_back(e) and e.label not in readouts
+                            and 0 <= e.view_index < len(after_views)
+                            and after_views[e.view_index].get("clickable")
+                            and self._state_of(e, after_views) is None]
+                # Back on the screen above is a panel whatever came with it:
+                # PRO VIDEO's Video size closes Quick controls, and PRO
+                # VIDEO's own ISO / SPEED / EV -- live values, so "new" --
+                # were taken for controls of a new screen.
+                in_place = (brings_selector or not moved or back_above
+                            or (not walkable and (keeps or settled
+                                                  or self._is_node(elements, after))))
                 logger.info("press %r: moved=%s back_above=%s in_place=%s "
                             "appeared=%d fresh=%d", target.label, moved,
                             back_above, in_place, len(appeared), len(fresh))
@@ -2263,7 +2375,7 @@ class RecursiveWalker(ElementTreeWalker):
             element = self._find_element(label, views)
         return element, views
 
-    def _replay(self, path, passed=None) -> bool:
+    def _replay(self, path, passed=None, launch=True) -> bool:
         """Relaunch and click down `path`, scrolling to reach each step.
 
         `_relaunch_and_replay` verifies where it lands against a known state
@@ -2274,14 +2386,15 @@ class RecursiveWalker(ElementTreeWalker):
         replay report failure, so the first second pass reopened 0 of 243.
         """
         assert self.driver is not None
-        self._relaunches += 1
-        try:
-            if not self.driver.launch_clean(self.package,
-                                            clear=self.clear_between_paths):
-                self.driver.start_app(self.package,
-                                      clear=self.clear_between_paths)
-        except DriverError:
-            return False
+        if launch:
+            self._relaunches += 1
+            try:
+                if not self.driver.launch_clean(self.package,
+                                                clear=self.clear_between_paths):
+                    self.driver.start_app(self.package,
+                                          clear=self.clear_between_paths)
+            except DriverError:
+                return False
         _, views, _ = self._await_stable()
         if not views:
             return False

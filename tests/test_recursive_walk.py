@@ -72,7 +72,7 @@ def main() -> int:
     # that app's own Navigate up only moves around inside it.)
     flow = src.split("if via_entering():", 1)[1]
     ok &= check("the control that opens it, then back control, then hardware BACK",
-                flow.index("_is_back(element)") < flow.rindex("if hardware_back():"),
+                flow.index("_is_back(element)") < flow.rindex("hardware_back()"),
                 "BACK on a viewfinder leaves the app; a wrong tap only loses a screen")
     ok &= check("in another app, the system Back leaves it first",
                 "package != self.package" in flow.split("_is_back(element)")[0])

@@ -134,6 +134,21 @@ language needs them in the profile.
   `Back` stays visible over its Quick controls' panels and leads out of FOOD;
   nor does a panel's "close" use it.
 * **Replay confirms each step** against the screen the walk recorded there.
+* **Panel or screen** is decided by what the press brought: if it brought
+  controls that are clickable in their own right and need walking (Quick
+  controls' chips), it opened a screen; if it brought only options, back
+  controls, readings or a state toggle (Flash, Timer, Mic, a dial, Face),
+  or it landed back on the screen above (PRO VIDEO's Video size), it is a
+  panel listed in place. Options are recognised among siblings or cousins
+  (one wrapper each, as Mic's sources) with exactly one `selected`.
+* **A panel is closed** by its own close control, else by pressing the chip
+  that opened it again, else by the return ladder -- and is only "home" when
+  most of the screen's own controls are back in view.
+* **Returning from a mode** that its own Back leaves for PHOTO: the walk
+  walks the path again from where it stands (MORE, the tile) before it ever
+  uses the system Back, which closes the camera from a mode screen.
+* **A press that clears things before showing them** (Filters clears the top
+  bar, then slides its carousel in) is read again a moment later.
 * **A tap lands on what is seen.** A control is tapped in the middle of the
   part of it that shows: clipped to its list's viewport, clear of the status
   and navigation bars, and clear of a band pinned over the list (a toolbar).
