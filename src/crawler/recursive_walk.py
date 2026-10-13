@@ -104,6 +104,10 @@ class RecursiveWalker(ElementTreeWalker):
         self._returned_by: Dict[str, int] = {}
         self._options_listed = 0
         self._panels_listed = 0
+        self._selectors_walked = 0
+        self._clipped_rows_swept = 0
+        self._selectors_not_swiped = 0
+        self._selections_restored = 0
         self._captions_listed = 0
         self._presses_undone = 0
         self._loops_refused = 0
@@ -164,6 +168,10 @@ class RecursiveWalker(ElementTreeWalker):
         # pass of their own.
         self.walk_separately = {str(x).strip().lower()
                                 for x in config.get("walk_separately", [])}
+        # From the profile: rows that lead out of the app to somewhere that is
+        # not part of its menu tree (a store). Listed, not opened.
+        self.leaves_app = {str(x).strip().lower()
+                           for x in config.get("leaves_app", [])}
         self.skip_documented_screens = bool(
             config.get("skip_documented_screens", False))
 
@@ -204,6 +212,8 @@ class RecursiveWalker(ElementTreeWalker):
             return "listed, not pressed (profile: do_not_press)"
         if element.label.strip().lower() in self.walk_separately:
             return "listed, not pressed (profile: walked as its own pass)"
+        if element.label.strip().lower() in self.leaves_app:
+            return "listed, not opened (profile: leads out of the app)"
         from .element_tree import KEYPAD_KEY
         if KEYPAD_KEY.fullmatch(element.label.strip()):
             self._keypad_skipped += 1
@@ -763,6 +773,20 @@ class RecursiveWalker(ElementTreeWalker):
                            if self._is_back(e)), None)
             if closer is not None:
                 fresh = list(fresh) + [closer]
+        selector = self._selector_in(late_views or [])
+        if selector is not None and any(e.group == selector[1] for e in fresh):
+            # A carousel that selects: walked item by item, the selection put
+            # back (agreed). Its announcement and the selected item's title
+            # are not rows of their own.
+            for e in new_ones:
+                handled.add(self._fingerprint(e))
+            self._walk_selector(selector, target, depth + 1, child_path,
+                                child_selectors, node, inherited)
+            self._panels_listed += 1
+            _, views, _ = self._await_stable()
+            if not self._is_node(elements, self._elements(views or []), node.own):
+                self._return_to(node)
+            return
         for e in self._dedupe(fresh):
             if self._is_back(e):
                 note = "back control"
@@ -803,6 +827,319 @@ class RecursiveWalker(ElementTreeWalker):
             if not home():
                 logger.info("after %r the screen did not come back as it was",
                             target.label)
+
+    def _selector_in(self, views):
+        """(index, group, announcement) of a carousel that selects, or None.
+
+        A horizontally scrolling list that carries a description of its own
+        and holds clickable items: the description announces what is
+        selected ("Original Filter", "Classic film Filter"). The mode strip is
+        the same kind of thing and is handled as tabs instead.
+        """
+        for i, v in enumerate(views):
+            said = v.get("content_description")
+            box = box_of(v)
+            if not (v.get("scrollable") and said and box):
+                continue
+            if (box[2] - box[0]) <= (box[3] - box[1]):
+                continue
+            group = f"{v.get('class') or ''}/{v.get('resource_id') or ''}"
+            items = [e for e in self._elements(views)
+                     if e.group == group and e.interactive]
+            if len(items) < 2 or any(e.label.strip().lower() in self._tab_labels
+                                     for e in items):
+                continue
+            return i, group, said
+        return None
+
+    def _announced(self, group):
+        _, views, _ = self._await_stable()
+        for v in views or []:
+            if f"{v.get('class') or ''}/{v.get('resource_id') or ''}" == group:
+                return v.get("content_description") or ""
+        return ""
+
+    def _enumerate_scrolled(self, views, enabled=None):
+        """The screen's sweep, plus any row of items cut off at its edge.
+
+        PHOTO's Quick controls row holds nine chips and shows seven: Motion
+        photo is cut in half at the right edge, and Filters and Face lie
+        beyond it. The row is not marked scrollable, so the sweep never moved
+        it and those two were never seen. A horizontal list whose last item
+        is clipped by the list's edge has more to show; it is dragged along
+        until nothing new appears, and dragged back.
+        """
+        found = super()._enumerate_scrolled(views, enabled)
+        _, views, _ = self._await_stable()
+        views = views or []
+        for index, box in self._clipped_rows(views):
+            group = f"{views[index].get('class') or ''}/{views[index].get('resource_id') or ''}"
+            seen = {self._fingerprint(e) for e in found}
+            y = (box[1] + box[3]) // 2
+            span = box[2] - box[0]
+            start, end = box[2] - max(10, span // 10), box[0] + max(10, span // 10)
+            moves = 0
+            for _ in range(self.max_scrolls):
+                self.driver.swipe(start, y, end, y, self.scroll_duration_ms)
+                self._scrolls += 1
+                moves += 1
+                time.sleep(self.scroll_settle)
+                _, now, _ = self._await_stable()
+                new = [e for e in self._elements(now or [])
+                       if self._fingerprint(e) not in seen]
+                if not new:
+                    break
+                # After the last item already known from this row.
+                at = max((i for i, e in enumerate(found) if e.group == group),
+                         default=len(found) - 1)
+                for e in new:
+                    seen.add(self._fingerprint(e))
+                    at += 1
+                    found.insert(at, e)
+                    if enabled is not None and 0 <= e.view_index < len(now or []):
+                        enabled[self._fingerprint(e)] = bool(
+                            now[e.view_index].get("enabled", True))
+            for _ in range(moves):
+                self.driver.swipe(end, y, start, y, self.scroll_duration_ms)
+                time.sleep(self.scroll_settle)
+            self._clipped_rows_swept += 1
+        return found
+
+    def _find_element_scrolled(self, label, views):
+        """As the base lookup, then along any cut-off row of items.
+
+        Filters and Face sit past the edge of PHOTO's Quick controls row;
+        the sweep sees them by dragging the row, and pressing one needs the
+        same drag -- in both directions, as the row may be left either way.
+        """
+        found, views = super()._find_element_scrolled(label, views)
+        if found is not None:
+            return found, views
+        for index, box in self._clipped_rows(views) or self._clipped_rows(
+                self._await_stable()[1] or []):
+            y = (box[1] + box[3]) // 2
+            span = box[2] - box[0]
+            right, left = box[2] - max(10, span // 10), box[0] + max(10, span // 10)
+            for start, end in ((right, left), (left, right)):
+                last = None
+                for _ in range(self.max_scrolls):
+                    self.driver.swipe(start, y, end, y, self.scroll_duration_ms)
+                    self._scrolls += 1
+                    time.sleep(self.scroll_settle)
+                    _, views, _ = self._await_stable()
+                    views = views or []
+                    hit = self._find_element(label, views)
+                    if hit is not None and self._tap_point(views, hit.view_index):
+                        return hit, views
+                    now = label_set(self._elements(views))
+                    if now == last:
+                        break
+                    last = now
+        return None, list(views)
+
+    def _clipped_rows(self, views):
+        """(index, box) of horizontal lists whose last item is cut off.
+
+        Not marked scrollable, not a selector (no announcement), holding two
+        or more clickable items, the last of which is markedly narrower than
+        the others and touches the list's edge.
+        """
+        out = []
+        for i, v in enumerate(views):
+            box = box_of(v)
+            cls = v.get("class") or ""
+            if (not box or v.get("scrollable") or v.get("content_description")
+                    or not cls.endswith(("RecyclerView", "ListView"))
+                    or (box[2] - box[0]) <= (box[3] - box[1])):
+                continue
+            kids = [box_of(views[j]) for j in v.get("children", [])
+                    if views[j].get("clickable") and box_of(views[j])]
+            if len(kids) < 2:
+                continue
+            kids.sort(key=lambda b: b[0])
+            widths = sorted(b[2] - b[0] for b in kids)
+            usual = widths[len(widths) // 2]
+            last = kids[-1]
+            if last[2] >= box[2] - 2 and (last[2] - last[0]) < 0.8 * usual:
+                out.append((i, box))
+        return out
+
+    def _items_of(self, group):
+        """The carousel's visible items, left to right, and the screen."""
+        _, views, _ = self._await_stable()
+        views = views or []
+        items = [e for e in self._elements(views) if e.group == group and e.interactive]
+        items.sort(key=lambda e: (box_of(views[e.view_index]) or (0, 0, 0, 0))[0])
+        return items, views
+
+    def _walk_selector(self, selector, opener, depth, path, selectors, node,
+                       inherited):
+        """Walk a carousel whose items are selections (agreed for Filters).
+
+        Each item is selected in turn -- there is no other way to see them
+        all, or to see an item's own settings. Selected, it is pressed once
+        more to open its editor, whose contents are listed (sliders never
+        moved, Reset never pressed) and which is left by its Close. An item
+        that does not select (Custom filters) is handled like any other
+        press. At the end the item selected to begin with is selected again.
+        """
+        _, group, first = selector
+        self._selectors_walked += 1
+        done, selecting = set(), []
+        above = {f[0] for f in inherited}
+
+        def reopen():
+            # Back on the carousel, if a press took the walk off it.
+            if self._selector_in(self._await_stable()[1] or []) is not None:
+                return True
+            self._return_to(node)
+            _, views, _ = self._await_stable()
+            again = self._find_element(opener.label, views or [])
+            if again is not None and self._click(again, views):
+                self._after_press(label_set(self._elements(views)))
+            return self._selector_in(self._await_stable()[1] or []) is not None
+
+        # The carousel as it opened: what a selection brings ("View original")
+        # is judged against this, not against the previous item -- otherwise
+        # only the first filter selected was shown to bring it.
+        base = self._signature(self._elements(self._await_stable()[1] or []))
+        stalls = 0
+        while self._budget_left() and stalls < 2:
+            items, views = self._items_of(group)
+            todo = [e for e in items if e.label not in done]
+            if not todo:
+                # Move along: re-select the right-most item that selects; the
+                # carousel centres it and shows what lies beyond.
+                # Never the item already selected: pressing that opens its
+                # editor instead of moving the carousel.
+                said = self._announced(group)
+                ahead = [e for e in items if e.label in selecting
+                         and e.label not in said]
+                if not ahead or not self._click(ahead[-1], views):
+                    break
+                self._after_press(label_set(self._elements(views)))
+                stalls += 1
+                continue
+            stalls = 0
+            item = todo[0]
+            done.add(item.label)
+            why = self._worth_pressing(item)
+            if why is not None:
+                self._emit(item, depth, path, selectors, note=why)
+                continue
+            self._emit(item, depth, path, selectors)
+            before_said = self._announced(group)
+            standing = self._elements(views)
+            before = self._signature(standing)
+            if not self._click(item, views):
+                continue
+            _, after_views, after_pkg = self._after_press(label_set(standing))
+            if after_pkg and after_pkg != self.package:
+                self._foreign_skipped += 1
+                reopen()
+                continue
+            if self._announced(group) == before_said:
+                if item.label in before_said:
+                    # The item already selected: pressing it again selected
+                    # nothing new. It is the one to put back at the end.
+                    selecting.append(item.label)
+                # Not a selection: a panel of its own (Custom filters' picker).
+                time.sleep(0.6)
+                _, after_views, _ = self._await_stable()
+                fresh = [e for e in self._elements(after_views or [])
+                         if self._fingerprint(e) not in before
+                         and self._fingerprint(e) not in inherited]
+                for e in self._dedupe(fresh):
+                    if self._is_back(e):
+                        note = "back control"
+                    elif e.role == "option":
+                        note = "option -- listed, not selected"
+                    elif e.interactive:
+                        note = self._worth_pressing(e) or ""
+                    else:
+                        note = ""
+                    self._emit(e, depth + 1, path + [item.label], selectors, note=note)
+                if self._selector_in(after_views or []) is None or fresh:
+                    self.driver.press_back(settle=False)
+                    self._after_press(label_set(self._elements(after_views or [])))
+                reopen()
+                continue
+            selecting.append(item.label)
+            # Selected. What selecting brought (View original ...), then the
+            # item's own editor, opened by pressing it again.
+            time.sleep(0.4)
+            _, sel_views, _ = self._await_stable()
+            said_now = self._announced(group)
+            brought = [e for e in self._elements(sel_views or [])
+                       if self._fingerprint(e) not in base and e.group != group
+                       and e.interactive and e.label not in above]
+            again = next((e for e in self._items_of(group)[0] if e.label == item.label), None)
+            editor = []
+            if again is not None:
+                _, sel_views, _ = self._await_stable()
+                standing = self._elements(sel_views or [])
+                ed_before = self._signature(standing)
+                if self._click(again, sel_views):
+                    self._after_press(label_set(standing))
+                    time.sleep(0.6)
+                    _, ed_views, _ = self._await_stable()
+                    # Not the item's own name again ("Monotone [Title]"),
+                    # nor the carousel announcing it (agreed shape).
+                    editor = [e for e in self._elements(ed_views or [])
+                              if self._fingerprint(e) not in ed_before
+                              and e.label not in (said_now, item.label)
+                              and e.label not in above]
+            closer = None
+            for e in self._dedupe(editor):
+                if self._is_back(e):
+                    note = "back control"
+                    closer = closer or e
+                elif e.interactive:
+                    note = self._worth_pressing(e) or "setting -- listed, not changed"
+                else:
+                    note = ""
+                self._emit(e, depth + 1, path + [item.label], selectors, note=note)
+            for e in self._dedupe(brought):
+                self._emit(e, depth + 1, path + [item.label], selectors,
+                           note=self._worth_pressing(e) or "")
+            if closer is not None:
+                _, views, _ = self._await_stable()
+                found = self._find_element(closer.label, views or [])
+                if found is not None and self._click(found, views):
+                    self._after_press(label_set(self._elements(views)))
+            if self._selector_in(self._await_stable()[1] or []) is None:
+                reopen()
+
+        self._restore_selection(group, first, selecting)
+
+    def _restore_selection(self, group, first, selecting):
+        """Select again what the carousel announced before the walk."""
+        if self._announced(group) == first:
+            self._selections_restored += 1
+            return
+        wanted = max((label for label in selecting if label in first),
+                     key=len, default=None)
+        if wanted is None:
+            logger.warning("cannot tell which item %r names", first)
+            return
+        for _ in range(self.max_scrolls):
+            items, views = self._items_of(group)
+            hit = next((e for e in items if e.label == wanted), None)
+            # Not in view: select the left-most item that selects, which
+            # brings the carousel back towards the start -- never the one
+            # already selected, which would open its editor instead.
+            said = self._announced(group)
+            step = hit or next((e for e in items if e.label in selecting
+                                and e.label not in said), None)
+            if step is None or not self._click(step, views):
+                break
+            self._after_press(label_set(self._elements(views)))
+            if hit is not None:
+                break
+        if self._announced(group) == first:
+            self._selections_restored += 1
+        else:
+            logger.warning("could not put the selection back to %r", first)
 
     def _list_captions(self, appeared, target, depth, path, path_selectors,
                        handled):
@@ -1031,6 +1368,14 @@ class RecursiveWalker(ElementTreeWalker):
         pressing it, never by dragging it.
         """
         span = super()._swipe_span(views)
+        if span is not None and span[0] == "h":
+            container = scrollable_container(views)
+            if container is not None and container.get("content_description"):
+                # A horizontal list that announces a selection is a selector:
+                # swiping the filter carousel SELECTED filter after filter.
+                # It is walked by _walk_selector, never swept.
+                self._selectors_not_swiped += 1
+                return None
         if span is None or span[0] != "h" or not self._tab_labels:
             return span
         container = scrollable_container(views)
@@ -1380,7 +1725,16 @@ class RecursiveWalker(ElementTreeWalker):
                 # A panel, not a new screen: the press left the walk on this
                 # screen, or back on the one above it -- never a screen of its
                 # own, which Photo enhancer's radio list is.
-                in_place = (not moved or back_above
+                # A carousel that selects arriving with the press is a panel
+                # on this screen too, however much else moved: opening PHOTO's
+                # Filters hides the zoom row, read as a new screen, and its
+                # filters were pressed like menu items -- selected, not put back.
+                brings_selector = False
+                if fresh:
+                    found_sel = self._selector_in(after_views)
+                    brings_selector = found_sel is not None and any(
+                        e.group == found_sel[1] for e in fresh)
+                in_place = (not moved or back_above or brings_selector
                             or self._is_node(elements, after))
                 logger.info("press %r: moved=%s back_above=%s in_place=%s "
                             "appeared=%d fresh=%d", target.label, moved,
@@ -1758,6 +2112,9 @@ class RecursiveWalker(ElementTreeWalker):
                 if again is None or not self._click(again, views):
                     break
                 self._replay_retaps += 1
+            is_tab = label.strip().lower() in self._tab_labels
+            if not changed and is_tab and views and self._tab_confirmed(label, views):
+                changed = True      # the mode was already showing
             if not changed or not views:
                 logger.info("replay: pressing %r changed nothing", label)
                 return False
@@ -1886,6 +2243,9 @@ class RecursiveWalker(ElementTreeWalker):
             "returned_by": self._returned_by,
             "options_listed_not_pressed": self._options_listed,
             "panels_listed": self._panels_listed,
+            "selectors_walked": self._selectors_walked,
+            "clipped_rows_swept": self._clipped_rows_swept,
+            "selections_restored": self._selections_restored,
             "captions_listed": self._captions_listed,
             "presses_undone": self._presses_undone,
             "loops_refused": self._loops_refused,

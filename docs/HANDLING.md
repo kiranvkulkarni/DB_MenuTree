@@ -91,6 +91,18 @@ language needs them in the profile.
   A screen counts as reached only when one of its OWN controls is in view.
 * **A replayed mode is confirmed** by the mode strip's own description
   ("Portrait, Mode"); after a reset a first-launch tip took the first tap.
+* **A carousel that selects** (agreed, Filters): a horizontal list that
+  announces its selection in its own description ("Original Filter"). It is
+  never swept -- swiping selects. Each item is selected in turn; pressed again
+  it opens its editor, whose adjustments (Strength, Contrast, ...) are listed,
+  Reset listed and refused, left by Close; what selecting brings ("View
+  original") is listed under the item. An item that does not select (Custom
+  filters) is handled like any press. The item selected at the start is
+  selected again at the end. Title and announcement rows are not repeated.
+* **A row of items cut off at its edge** (PHOTO's Quick controls: Filters and
+  Face lie past Motion photo) is dragged along to see the rest, and back.
+* **Rows that leave the app** for somewhere outside its menu tree are listed,
+  not opened (`leaves_app` in the profile; agreed: Download filters).
 * **A tap lands on what is seen.** A control is tapped in the middle of the
   part of it that shows: clipped to its list's viewport, clear of the status
   and navigation bars, and clear of a band pinned over the list (a toolbar).

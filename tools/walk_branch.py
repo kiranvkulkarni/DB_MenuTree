@@ -40,6 +40,9 @@ def main() -> int:
     p.add_argument("--time-budget", type=int, default=900)
     p.add_argument("--max-depth", type=int, default=10)
     p.add_argument("--no-reset", action="store_true")
+    p.add_argument("--only", default="",
+                   help="comma-separated rows of the starting screen to walk; "
+                        "the rest is not visited (development aid only)")
     p.add_argument("--skip", default="",
                    help="comma-separated rows to list but not open -- a branch "
                         "already checked on its own (development aid only)")
@@ -84,8 +87,15 @@ def main() -> int:
             # The screens replayed through are this branch's ancestors, as
             # they would be in a full walk; without them a press that drops
             # back to Settings was walked as a new child of the branch.
+            only = None
+            wanted = {x.strip() for x in args.only.split(",") if x.strip()}
+            if wanted:
+                _, here, _ = walker._await_stable()
+                only = {walker._fingerprint(e)
+                        for e in walker._enumerate_scrolled(here or [])
+                        if e.label in wanted}
             walker._visit(len(path) + 2, path, [], passed, skip_tabs=True,
-                          entering=walker._replayed_last)
+                          entering=walker._replayed_last, only=only)
         except Exception as exc:              # keep what was collected
             import traceback
             failure = f"{type(exc).__name__}: {exc}"

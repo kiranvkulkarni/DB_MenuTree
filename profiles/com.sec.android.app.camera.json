@@ -10,6 +10,7 @@
   "state they lead to is walked as its own pass (agreed: the front camera,",
   "step 6). Pressing it inside Quick controls walked the whole front camera",
   "there and left the phone on it.",
+  "leaves_app: rows that open somewhere outside the app's menu tree (agreed: Download filters opens the Galaxy Store). Listed, not opened.",
   "open_guarded_rows: open rows like 'Reset settings' to list their confirmation dialog; the dialog's Reset button is still refused and the walk leaves by Cancel."
  ],
  "do_not_press": [
@@ -23,5 +24,8 @@
  "walk_separately": [
   "Switch to front camera",
   "Switch to rear camera"
+ ],
+ "leaves_app": [
+  "Download filters"
  ]
 }
