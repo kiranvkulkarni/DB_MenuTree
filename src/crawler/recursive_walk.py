@@ -462,6 +462,20 @@ class RecursiveWalker(ElementTreeWalker):
                     self._label_of(views[j])
                     for j in self._descendants(views, e.view_index)):
                 continue
+            # And the converse: an unlabelled control inside a container that
+            # carries the name -- Face's items are `beauty_list_item_button`
+            # inside a layout described "Smoothness". The container names it.
+            if not self._label_of(view):
+                up, named = view.get("parent"), False
+                for _ in range(2):
+                    if up is None or not 0 <= up < len(views):
+                        break
+                    if self._label_of(views[up]):
+                        named = True
+                        break
+                    up = views[up].get("parent")
+                if named:
+                    continue
             out.append(e)
         for e in out:
             role, row, check = self._row_role(e, views)
@@ -787,7 +801,19 @@ class RecursiveWalker(ElementTreeWalker):
             if not self._is_node(elements, self._elements(views or []), node.own):
                 self._return_to(node)
             return
-        for e in self._dedupe(fresh):
+        toggles = {}
+        for e in fresh:
+            state = self._state_of(e, late_views or [])
+            if state is not None:
+                toggles[self._fingerprint(e)] = state
+        readouts = {state for _, state in toggles.values()}
+        for e in self._dedupe_controls(fresh):
+            if self._fingerprint(e) in toggles:
+                self._operate_state_toggle(e, toggles[self._fingerprint(e)],
+                                           depth + 1, child_path, child_selectors)
+                continue
+            if e.label in readouts:
+                continue                    # the toggle's own state text
             if self._is_back(e):
                 note = "back control"
             elif e.role == "option":
@@ -827,6 +853,76 @@ class RecursiveWalker(ElementTreeWalker):
             if not home():
                 logger.info("after %r the screen did not come back as it was",
                             target.label)
+
+    def _state_of(self, element, views):
+        """(name, state) for a control that shows its own state, else None.
+
+        A clickable control whose label ends with the text of one of its own
+        child views: "Face retouching: Off" holding a child "Off". The child
+        is the state readout; the label without it is the control's name.
+        """
+        if not element.interactive or not 0 <= element.view_index < len(views):
+            return None
+        label = element.label or ""
+        for j in self._descendants(views, element.view_index):
+            said = (views[j].get("text") or "").strip()
+            if said and said != label and label.endswith(said):
+                name = label[: -len(said)].rstrip(" :,-\u2013")
+                if name:
+                    return name, said
+        return None
+
+    def _operate_state_toggle(self, element, state, depth, path, selectors):
+        """Agreed: a state toggle is handled as a switch -- `Off` / `On` rows,
+        what turning it on shows listed under `On` -- and put back at once."""
+        name, was = state
+        rid = element.selector_value if element.selector_kind == "id" else None
+        self._emit(Element(label=name, kind="text", interactive=True,
+                           view_index=element.view_index), depth, path, selectors,
+                   note="toggle -- turned on to read, put back")
+        _, views, _ = self._await_stable()
+        views = views or []
+        mine = next((e for e in self._elements(views)
+                     if self._fingerprint(e) == self._fingerprint(element)), None)
+        if mine is None or not self._click(mine, views):
+            return
+        before = self._signature(self._elements(views))
+        self._after_press(label_set(self._elements(views)), timeout=1.5)
+        time.sleep(0.5)
+        _, on_views, _ = self._await_stable()
+        on_views = on_views or []
+        flipped = next((e for e in self._elements(on_views)
+                        if e.label.startswith(name) and e.label != element.label), None)
+        shown = [e for e in self._elements(on_views)
+                 if self._fingerprint(e) not in before
+                 and not e.label.startswith(name)
+                 and (flipped is None or e.label != (self._state_of(flipped, on_views) or ("", ""))[1])]
+        if flipped is None:
+            self._emit(self._synthetic(was), depth, path + [name], selectors,
+                       note="state shown; pressing it changed nothing")
+            return
+        now = (self._state_of(flipped, on_views) or (name, ""))[1]
+        self._emit(self._synthetic(was), depth, path, selectors, note="toggle state")
+        self._emit(self._synthetic(now), depth, path, selectors,
+                   note="toggle state -- shows the rows below")
+        for e in self._dedupe(shown):
+            self._emit(e, depth + 1, path + [now], selectors)
+        # Put it back, and make sure it went.
+        for _ in range(2):
+            if self._click(flipped, on_views):
+                self._after_press(label_set(self._elements(on_views)), timeout=1.5)
+            _, back, _ = self._await_stable()
+            back = back or []
+            if any(e.label == element.label for e in self._elements(back)):
+                self._switches_restored += 1
+                return
+            flipped = next((e for e in self._elements(back)
+                            if e.label.startswith(name)), None)
+            on_views = back
+            if flipped is None:
+                break
+        logger.warning("could not put %r back to %r", name, was)
+        self._switches_not_restored += 1
 
     def _selector_in(self, views):
         """(index, group, announcement) of a carousel that selects, or None.
@@ -1394,6 +1490,24 @@ class RecursiveWalker(ElementTreeWalker):
                 return None
         return span
 
+    def _dedupe_controls(self, elements: Sequence[Element]) -> List[Element]:
+        """One CONTROL per label; every displayed value kept.
+
+        Face's items each show a value, all "0": deduplicated by label, only
+        Smoothness kept its value. Controls are what the mode strip renders
+        twice; values are not."""
+        seen, out = set(), []
+        for element in elements:
+            key = element.label.strip().lower()
+            if not key:
+                continue
+            if element.interactive:
+                if key in seen:
+                    continue
+                seen.add(key)
+            out.append(element)
+        return out
+
     def _dedupe(self, elements: Sequence[Element]) -> List[Element]:
         """One control per label. The mode strip is rendered twice."""
         seen, out = set(), []
@@ -1734,7 +1848,16 @@ class RecursiveWalker(ElementTreeWalker):
                     found_sel = self._selector_in(after_views)
                     brings_selector = found_sel is not None and any(
                         e.group == found_sel[1] for e in fresh)
-                in_place = (not moved or back_above or brings_selector
+                # Or the screen's carried-over parts are still there. A panel
+                # leaves the camera's top bar and shutter in place (Face and
+                # Exposure in PHOTO kept 7 of 12; Timer 10 of 10); a screen of
+                # its own replaces them all (Settings kept none). Face's panel
+                # hid the chip row and the mode strip, read as a new screen,
+                # and its items were pressed one by one.
+                carried = before & inherited
+                keeps = (len(carried) >= 3 and
+                         len(carried & self._signature(after)) >= 0.5 * len(carried))
+                in_place = (not moved or back_above or brings_selector or keeps
                             or self._is_node(elements, after))
                 logger.info("press %r: moved=%s back_above=%s in_place=%s "
                             "appeared=%d fresh=%d", target.label, moved,

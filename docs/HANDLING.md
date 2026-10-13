@@ -99,6 +99,18 @@ language needs them in the profile.
   original") is listed under the item. An item that does not select (Custom
   filters) is handled like any press. The item selected at the start is
   selected again at the end. Title and announcement rows are not repeated.
+* **A toggle that shows its own state** (agreed, Face in PHOTO): a control
+  whose label ends with the text of its own child ("Face retouching: Off"
+  holding "Off"). Handled as a switch: its name, then `Off` / `On`, what
+  turning it on shows under `On`; turned back at once. Its state text is not
+  a row of its own.
+* **A panel is told from a new screen** also by what it leaves in place: if
+  at least half of the screen's carried-over controls (top bar, shutter)
+  are still there after the press, it opened a panel. Face's panel hid the
+  chip row and the mode strip and was walked as a screen, its items pressed.
+* **An unlabelled control inside a named container** is named by the
+  container and not listed (`beauty_list_item_button` in "Smoothness").
+  In a panel every displayed value is kept, even when values repeat.
 * **A row of items cut off at its edge** (PHOTO's Quick controls: Filters and
   Face lie past Motion photo) is dragged along to see the rest, and back.
 * **Rows that leave the app** for somewhere outside its menu tree are listed,
