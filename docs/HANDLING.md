@@ -154,12 +154,16 @@ using the app), so location-dependent settings are in their enabled state.
 Pre-order, exactly as a tester writes the sheet: a row, then everything it
 opens, then the next row. Rows are emitted at the moment they are reached.
 
-## Settings is walked from every mode
+## Quick controls and Settings are walked from every mode
 
-A settings screen's captions depend on the mode it was opened from: a setting
-disabled in the current mode shows "Not available with the current mode or
-front camera." in place of its normal summary. Settings is therefore walked
-under every mode, and each mode's captions are recorded as seen (agreed).
+Both menus are dynamic (confirmed by the sheet's author): what they hold
+depends on the mode they are opened from. Resolution is not in PORTRAIT's
+Quick controls; in night mode Flash, Face, Resolution, Motion photo and
+Filters are not available; a setting disabled in the current mode shows
+"Not available with the current mode or front camera." in place of its
+summary. So both are walked under every mode, and each records exactly what
+that mode shows -- no list of expected items exists anywhere. A To_Be row
+missing in one mode is a mode difference, not a walker miss.
 
 ## Repetition
 
