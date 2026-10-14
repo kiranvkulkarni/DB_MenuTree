@@ -15,6 +15,7 @@ the annotations a human writes in the sheet (`[Title]`, `(On/Off)`,
 `[When location Permission is OFF in DUT]`, which are specification
 knowledge rather than anything observable on screen.
 """
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
@@ -114,7 +115,9 @@ def _kind_of(view: Dict, label: str, is_first_text: bool) -> str:
         return "toggle"
     if any(h in cls for h in _RADIO_HINTS):
         return "radio"
-    if clickable and any(h == desc or h in desc for h in _BACK_HINTS):
+    # Whole words: "back" inside "Backdrop" (a portrait effect) is not one.
+    if clickable and any(re.search(r"\b" + re.escape(h) + r"\b", desc)
+                         for h in _BACK_HINTS):
         return "back"
     if clickable:
         return "button"

@@ -202,6 +202,15 @@ def main() -> int:
     ok &= check("a control almost wholly hidden is not tapped",
                 ElementTreeWalker._tap_point(None, hidden, 2) is None)
 
+    print("\nback controls are whole words")
+    from src.crawler.elements import _kind_of
+    def kind(desc):
+        return _kind_of({"class": "android.widget.Button", "clickable": True,
+                         "content_description": desc}, desc, False)
+    ok &= check("Navigate up is a back control", kind("Navigate up") == "back")
+    ok &= check("Close is a back control", kind("Close") == "back")
+    ok &= check("Backdrop (a portrait effect) is not", kind("Backdrop") == "button")
+
     print("\nbounds")
     ok &= check("centre computed", center_of(wrapper) == (1056, 459),
                 str(center_of(wrapper)))

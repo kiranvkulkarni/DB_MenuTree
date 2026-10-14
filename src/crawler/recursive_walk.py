@@ -1393,15 +1393,22 @@ class RecursiveWalker(ElementTreeWalker):
             if self._selector_in(self._await_stable()[1] or []) is None:
                 reopen()
 
-        self._restore_selection(group, first, selecting)
+        self._restore_selection(group, first, selecting, done)
 
-    def _restore_selection(self, group, first, selecting):
+    def _restore_selection(self, group, first, selecting, seen_items=()):
         """Select again what the carousel announced before the walk."""
         if self._announced(group) == first:
             self._selections_restored += 1
             return
         wanted = max((label for label in selecting if label in first),
                      key=len, default=None)
+        if wanted is None:
+            # The item named may never have registered as "selecting" (the
+            # front camera's Portrait effects): any item seen will do.
+            wanted = max((label for label in seen_items if label in first),
+                         key=len, default=None)
+            if wanted is not None:
+                selecting = list(selecting) + [wanted]
         if wanted is None:
             logger.warning("cannot tell which item %r names", first)
             return
