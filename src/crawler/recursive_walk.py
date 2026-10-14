@@ -2278,8 +2278,12 @@ class RecursiveWalker(ElementTreeWalker):
                 # PRO VIDEO's Video size closes Quick controls, and PRO
                 # VIDEO's own ISO / SPEED / EV -- live values, so "new" --
                 # were taken for controls of a new screen.
-                in_place = (brings_selector or not moved or back_above
-                            or (not walkable and (keeps or settled
+                # Controls to walk make a screen even when little moved: on
+                # the front camera Quick controls barely changes the screen,
+                # was listed as a panel, and its chips -- and Settings behind
+                # them -- were never walked.
+                in_place = (brings_selector or back_above
+                            or (not walkable and (not moved or keeps or settled
                                                   or self._is_node(elements, after))))
                 logger.info("press %r: moved=%s back_above=%s in_place=%s "
                             "appeared=%d fresh=%d", target.label, moved,
@@ -2298,7 +2302,7 @@ class RecursiveWalker(ElementTreeWalker):
                                          before, inherited)
                     continue
 
-                if not moved and revealed:
+                if not moved and revealed and not walkable:
                     # An expansion in place: Flash stays put and On/Off/Auto
                     # appear beside it. The sheet lists them as children of Flash
                     # and does not select one, because selecting one changes the
@@ -2314,7 +2318,7 @@ class RecursiveWalker(ElementTreeWalker):
                         handled.add(self._fingerprint(option))
                     continue
 
-                if not moved:
+                if not moved and not walkable:
                     # Nothing came -- but did the screen's own controls go?
                     # Then the press changed the app's state. "Use Night
                     # mode", a suggestion the camera shows in dim light, put
@@ -2362,7 +2366,10 @@ class RecursiveWalker(ElementTreeWalker):
                 # lower half of Settings was documented under
                 # `Watermark > On > spinner_layout` at depth 8, and then again,
                 # correctly, at depth 5.
-                if any(len(child_signature & seen) / max(1, len(child_signature))
+                # Not when the press brought controls of its own to walk: the
+                # front camera's Quick controls is PHOTO's screen plus eight
+                # chips -- mostly "the same", and refused as a loop.
+                if not walkable and any(len(child_signature & seen) / max(1, len(child_signature))
                        >= self.node_containment
                        for seen in ancestors + [signature]):
                     self._loops_refused += 1
