@@ -2847,10 +2847,21 @@ class RecursiveWalker(ElementTreeWalker):
         _, views, _ = self._await_stable()
         return views or []
 
-    def _press_exact(self, label, wait=3.0):
-        """Press the control with exactly this label, on whatever is in front."""
-        _, views, _ = self._await_stable()
-        hit = next((e for e in self._elements(views or []) if e.label == label), None)
+    def _press_exact(self, label, wait=3.0, appear=8.0):
+        """Press the control with exactly this label, on whatever is in front.
+
+        Waits up to `appear` seconds for it to show: the Location tags dialog
+        comes a moment after the third launch, and looked for straight away
+        it was "not there" -- the full run then walked the modes with the
+        dialog still up, and the permission prompt was never answered.
+        """
+        deadline = time.time() + appear
+        while True:
+            _, views, _ = self._await_stable()
+            hit = next((e for e in self._elements(views or []) if e.label == label), None)
+            if hit is not None or time.time() >= deadline:
+                break
+            time.sleep(0.5)
         if hit is None or not self._click(hit, views):
             return False
         time.sleep(wait)
@@ -2873,8 +2884,10 @@ class RecursiveWalker(ElementTreeWalker):
             self._launch(wipe=True)
         for _ in range(self.first_launches - 1):
             self._launch()
-        for label in self.launch_answers:
-            self._press_exact(label)
+        for i, label in enumerate(self.launch_answers):
+            # The first answer waits for its pop-up; a later one may simply
+            # not be asked (Location Accuracy already on), so less patience.
+            self._press_exact(label, appear=10.0 if i == 0 else 5.0)
         self._await_stable()
 
     def _dialog_in_front(self, views, package):
