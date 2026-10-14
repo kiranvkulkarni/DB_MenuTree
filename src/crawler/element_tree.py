@@ -1249,11 +1249,19 @@ class ElementTreeWalker:
         container = scrollable_container(views)
         if container is None:
             return None
-        try:
-            width, height = self.driver.screen_size()
-        except Exception:
-            return None
-        return swipe_span(container, width, height)
+        # The size the screen has NOW, from the dump: the device reports its
+        # portrait size, and in landscape every swipe was clamped to it.
+        boxes = [b for b in (box_of(v) for v in views) if b]
+        if boxes:
+            width, height = max(b[2] for b in boxes), max(b[3] for b in boxes)
+        else:
+            try:
+                width, height = self.driver.screen_size()
+            except Exception:
+                return None
+        items = [box_of(views[j]) for j in container.get("children", [])
+                 if 0 <= j < len(views) and box_of(views[j])]
+        return swipe_span(container, width, height, items)
 
     def _scroll_once(self, span, down: bool) -> List[Dict]:
         """One swipe along the container's own axis, then let it settle."""
@@ -1906,6 +1914,7 @@ class ElementTreeWalker:
         if ime and ime not in self._exclude:
             self._exclude.append(ime)
             logger.info("Excluding active keyboard package: %s", ime)
+        self._hold_portrait()
         self._started = time.time()
 
         # Start from a fresh copy of the app. Beyond reproducibility, this is
@@ -2022,6 +2031,47 @@ class ElementTreeWalker:
             self.driver.release_device(self.package)
         except Exception as exc:
             logger.debug("release_device failed: %s", exc)
+        self._restore_rotation()
+
+    def _hold_portrait(self) -> None:
+        """Keep the device in portrait for the walk; remember how it was.
+
+        A phone turned on its side mid-run turned the Settings list
+        landscape: 2244 px wide and 922 tall, read as a HORIZONTAL list, swiped
+        sideways, never scrolled -- and Settings came out with 11 rows of 56.
+        Restored exactly as found when the walk ends, however it ends.
+        """
+        from .device_driver import _adb
+        self._rotation_saved = None
+        serial = getattr(self.driver, "serial", None)
+        try:
+            auto = _adb(serial, "shell", "settings", "get", "system",
+                        "accelerometer_rotation").strip()
+            user = _adb(serial, "shell", "settings", "get", "system",
+                        "user_rotation").strip()
+            self._rotation_saved = (auto, user)
+            _adb(serial, "shell", "settings", "put", "system", "accelerometer_rotation", "0")
+            _adb(serial, "shell", "settings", "put", "system", "user_rotation", "0")
+            logger.info("Holding the device in portrait for the walk (was auto=%s, rotation=%s)",
+                        auto, user)
+        except Exception as exc:
+            logger.debug("could not hold portrait: %s", exc)
+
+    def _restore_rotation(self) -> None:
+        saved = getattr(self, "_rotation_saved", None)
+        if not saved:
+            return
+        from .device_driver import _adb
+        serial = getattr(self.driver, "serial", None)
+        auto, user = saved
+        try:
+            if user and user != "null":
+                _adb(serial, "shell", "settings", "put", "system", "user_rotation", user)
+            if auto and auto != "null":
+                _adb(serial, "shell", "settings", "put", "system", "accelerometer_rotation", auto)
+        except Exception as exc:
+            logger.debug("could not restore rotation: %s", exc)
+        self._rotation_saved = None
 
     def stats(self) -> Dict:
         by_depth: Dict[int, int] = {}

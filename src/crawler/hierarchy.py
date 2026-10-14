@@ -253,8 +253,8 @@ def scrollable_container(views: Sequence[Dict]) -> Optional[Dict]:
     return max(pool, key=lambda pair: pair[1][3] - pair[1][1])[0]
 
 
-def swipe_span(container: Dict, width: int, height: int
-               ) -> Optional[tuple]:
+def swipe_span(container: Dict, width: int, height: int,
+               item_boxes: Sequence[tuple] = ()) -> Optional[tuple]:
     """How to scroll inside this container: (axis, fixed, low, high).
 
     `axis` is "v" or "h", `fixed` the coordinate that does not move, and
@@ -281,6 +281,16 @@ def swipe_span(container: Dict, width: int, height: int
         return None
     x1, y1, x2, y2 = box
     horizontal = (x2 - x1) > (y2 - y1)
+    # Better still, from how its items are laid out: rows stacked top to
+    # bottom make a vertical list whatever the box's shape. In landscape the
+    # camera's Settings list is 2244 x 922 -- wider than tall -- and was
+    # swiped sideways, never scrolled: Settings came out with 11 rows of 56.
+    if len(item_boxes) >= 2:
+        xs = [(b[0] + b[2]) / 2 for b in item_boxes]
+        ys = [(b[1] + b[3]) / 2 for b in item_boxes]
+        spread_x, spread_y = max(xs) - min(xs), max(ys) - min(ys)
+        if spread_x != spread_y:
+            horizontal = spread_x > spread_y
 
     if horizontal:
         fixed = max(1, min(height - 2, (y1 + y2) // 2))

@@ -202,6 +202,18 @@ def main() -> int:
     ok &= check("a control almost wholly hidden is not tapped",
                 ElementTreeWalker._tap_point(None, hidden, 2) is None)
 
+    print("\na list scrolls the way its items are laid out")
+    from src.crawler.hierarchy import swipe_span
+    wide = {"bounds": "[135,158][2244,1080]"}          # Settings, in landscape
+    rows = [(135, 200 + 150 * k, 2244, 340 + 150 * k) for k in range(5)]
+    ok &= check("rows stacked top to bottom: vertical, however wide the box",
+                swipe_span(wide, 2340, 1080, rows)[0] == "v")
+    chips = [(100 * k, 1615, 100 * k + 90, 1813) for k in range(6)]
+    ok &= check("items side by side: horizontal (the filter carousel)",
+                swipe_span({"bounds": "[0,1615][1080,1813]"}, 1080, 2340, chips)[0] == "h")
+    ok &= check("no items: the box's shape decides, as before",
+                swipe_span(wide, 2340, 1080)[0] == "h")
+
     print("\nback controls are whole words")
     from src.crawler.elements import _kind_of
     def kind(desc):

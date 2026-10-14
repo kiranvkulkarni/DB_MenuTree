@@ -1905,6 +1905,15 @@ class RecursiveWalker(ElementTreeWalker):
         chrome = {self._fingerprint(e) for e in elements if is_tab(e)}
         chrome |= {self._fingerprint(e)
                    for e in self._tab_strip(elements, views)}
+        # And the strip that holds them. It announces the mode ("Portrait,
+        # Mode") and is pressable: a tap at its middle selects whichever mode
+        # is there -- from PORTRAIT that was MORE, and MORE's grid was then
+        # walked as PORTRAIT's own content.
+        tab_views = {e.view_index for e in elements if is_tab(e)}
+        for e in elements:
+            if 0 <= e.view_index < len(views) and tab_views & set(
+                    self._descendants(views, e.view_index)):
+                chrome.add(self._fingerprint(e))
         handled = set(chrome)
         # A control carried over from a screen above, when this screen has a
         # copy of its own -- same label, kind and id, in a different list.
@@ -2394,11 +2403,31 @@ class RecursiveWalker(ElementTreeWalker):
         is to press the next. Pressing BACK here would leave the app.
         """
         _, views, _ = self._await_stable()
-        if not views:
-            return
-        live = next((e for e in self._enumerate_scrolled(views)
+        views = views or []
+        live = next((e for e in self._elements(views)
                      if e.label.strip().lower() == tab.label.strip().lower()), None)
-        if live is None or not self._click(live, views):
+        entered = False
+        if live is not None and self._click(live, views):
+            self._after_press(label_set(self._elements(views)))
+            _, views, _ = self._await_stable()
+            views = views or []
+            for _ in range(2):
+                if self._tab_confirmed(tab.label, views):
+                    entered = True
+                    break
+                again = self._find_element(tab.label, views)
+                if again is None or not self._click(again, views):
+                    break
+                self._after_press(label_set(self._elements(views)))
+                _, views, _ = self._await_stable()
+                views = views or []
+        if not entered:
+            # The walk may stand where no mode strip shows -- inside a MORE
+            # mode -- and PHOTO, VIDEO and MORE were skipped without a word.
+            # Relaunch and enter the tab from the start.
+            entered = self._replay(path + [tab.label])
+        if not entered:
+            logger.warning("could not enter the tab %r", tab.label)
             return
         selectors = list(path_selectors) + [
             (tab.selector_kind, tab.selector_value) if tab.selector_kind
