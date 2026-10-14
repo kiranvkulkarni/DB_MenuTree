@@ -2857,7 +2857,11 @@ class RecursiveWalker(ElementTreeWalker):
         self._root_key = root_key
         if self.first_launches:
             self._walk_first_launches()
-            self._prime(wipe=True)
+            if not self._primed():
+                logger.error("could not bring the app to its walking state; "
+                             "the main walk would start on a pop-up")
+                self._release()
+                return self.rows
         self._visit(2, [], [], [])
         self._reopen_leftovers()
         self._walk_passes()
@@ -2917,7 +2921,32 @@ class RecursiveWalker(ElementTreeWalker):
             # The first answer waits for its pop-up; a later one may simply
             # not be asked (Location Accuracy already on), so less patience.
             self._press_exact(label, appear=10.0 if i == 0 else 5.0)
+        # And any answer that comes late: Google Play services' Location
+        # Accuracy pop-up arrived more than five seconds after "While using
+        # the app", went unanswered, and the full run walked it as the app.
+        answers = set(self.launch_answers)
+        deadline = time.time() + 20.0
+        while time.time() < deadline:
+            _, views, package = self._await_stable()
+            views = views or []
+            if not self._dialog_in_front(views, package):
+                break
+            hit = next((e for e in self._elements(views) if e.label in answers), None)
+            if hit is None or not self._click(hit, views):
+                time.sleep(1.0)
+                continue
+            time.sleep(2.0)
         self._await_stable()
+
+    def _primed(self):
+        """Prime, and make sure the walk then stands on the app itself."""
+        for attempt in range(2):
+            self._prime(wipe=True)
+            _, views, package = self._await_stable()
+            if not self._dialog_in_front(views or [], package):
+                return True
+            logger.warning("a pop-up is still up after priming (attempt %d)", attempt + 1)
+        return False
 
     def _dialog_in_front(self, views, package):
         """A pop-up is in front -- not the app's own main screen.
