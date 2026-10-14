@@ -332,7 +332,37 @@ class U2Driver:
         self.serial = serial
 
     def dump_hierarchy(self) -> str:
-        return self.device.dump_hierarchy()
+        """The screen's XML -- restarting the on-device agent if it stops.
+
+        After VIDEO's Quick controls > Dual recordings every dump came back
+        empty for the rest of a run: the phone was connected and awake, but
+        the uiautomator agent had stopped answering, and 30 minutes of walk
+        read nothing. An empty or failed dump now restarts the agent and
+        tries again; the plain adb dump is the last resort.
+        """
+        xml = ""
+        for attempt in range(3):
+            try:
+                xml = self.device.dump_hierarchy()
+                if xml and "<node" in xml:
+                    return xml
+            except Exception as exc:          # agent gone, socket closed ...
+                logger.debug("dump failed: %s", exc)
+            logger.warning("screen read came back empty -- restarting the "
+                           "uiautomator agent (attempt %d)", attempt + 1)
+            try:
+                self.device.reset_uiautomator()
+            except Exception:
+                try:
+                    import uiautomator2 as u2
+                    self.device = u2.connect(self.serial) if self.serial else u2.connect()
+                except Exception as exc:
+                    logger.debug("reconnect failed: %s", exc)
+            time.sleep(2)
+        try:
+            return AdbDriver(self.serial).dump_hierarchy()
+        except Exception:
+            return xml or ""
 
     def tap(self, x: int, y: int, settle: bool = True) -> None:
         """Tap, and by default wait a fixed settle period afterwards.

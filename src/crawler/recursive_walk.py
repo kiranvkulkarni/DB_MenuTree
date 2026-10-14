@@ -107,6 +107,7 @@ class RecursiveWalker(ElementTreeWalker):
         self._returned_by: Dict[str, int] = {}
         self._options_listed = 0
         self._panels_listed = 0
+        self._states_reset = 0
         self._titles_not_pressed = 0
         self._selectors_walked = 0
         self._clipped_rows_swept = 0
@@ -172,6 +173,7 @@ class RecursiveWalker(ElementTreeWalker):
         # pass of their own.
         self.walk_separately = {str(x).strip().lower()
                                 for x in config.get("walk_separately", [])}
+        self._separate_labels = [str(x).strip() for x in config.get("walk_separately", [])]
         # From the profile: rows that lead out of the app to somewhere that is
         # not part of its menu tree (a store). Listed, not opened.
         self.leaves_app = {str(x).strip().lower()
@@ -186,6 +188,9 @@ class RecursiveWalker(ElementTreeWalker):
             raise ValueError(f"revisits must be full, top or note, not {self.revisits!r}")
         self.revisit_similarity = float(config.get("revisit_similarity", 0.9))
         self._walked = []           # (path, signature) of every screen walked
+        self._pass_marker = None    # the control that started the current pass
+        self._same_as_main = set()  # pass paths whose screen is the main walk's
+        self._passes_walked = 0
         self._opens_app = {}        # control label -> (package, path listed under)
         self._revisited = 0
         # From the profile: rows opened to LIST what they show, nothing on
@@ -201,8 +206,16 @@ class RecursiveWalker(ElementTreeWalker):
         return {self._fingerprint(e) for e in elements}
 
     def _is_back(self, element: Element) -> bool:
-        return (element.kind == "back"
-                or element.label.strip().lower() in BACK_LABELS)
+        if element.kind == "back" or element.label.strip().lower() in BACK_LABELS:
+            return True
+        # An unlabelled control named only by its resource id: the front
+        # camera's Color tone panel closes by `close_button`. The same back
+        # words, read from the id.
+        rid = (element.selector_value or "") if element.selector_kind == "id" else ""
+        if rid and element.label == rid.split("/")[-1]:
+            words = re.split(r"[_\W]+", element.label.lower())
+            return any(w in BACK_LABELS for w in words if w)
+        return False
 
     def _worth_pressing(self, element: Element) -> Optional[str]:
         """None if it should be pressed, else why it should not be.
@@ -1020,45 +1033,77 @@ class RecursiveWalker(ElementTreeWalker):
         self._switches_not_restored += 1
 
     def _relabelled(self, target, before_views, after_views):
-        """The pressed control, now under a new label -- or None.
+        """A control that now shows another label in the same place, or None.
 
-        Same resource id, same place on screen, different label: the press
-        flipped a state the control names in its own label. FOOD's
-        `FOOD_BLUR_EFFECT_ON` became `..._OFF`. Unrecognised, the walk saw
-        the control it pressed vanish, took that for having left the screen,
-        stepped back with the system key -- which leaves the camera from FOOD
-        -- and left blur switched off.
+        The pressed one first -- FOOD's `FOOD_BLUR_EFFECT_ON` became `_OFF`
+        -- then any other: Quick controls' stabilisation chip keeps its
+        label, and it is the TOP BAR's copy that flips to
+        `SUPER_VIDEO_STABILIZATION_ON`. Either way the press changed a
+        setting. Same id, overlapping place (a new label can change the
+        width), a label that was nowhere on the screen before.
         """
-        if not (0 <= target.view_index < len(before_views)) or not after_views:
+        if not after_views:
             return None
-        mine = before_views[target.view_index]
-        rid, box = mine.get("resource_id"), mine.get("bounds")
-        if not rid or not box:
-            return None
+        before_labels = {e.label for e in self._elements(before_views)}
+        olds = []
+        for e in self._elements(before_views):
+            v = before_views[e.view_index]
+            if e.interactive and v.get("resource_id") and box_of(v):
+                olds.append((e.view_index == target.view_index, v.get("resource_id"),
+                             box_of(v), e.label))
+        olds.sort(key=lambda o: not o[0])          # the pressed control first
         for e in self._elements(after_views):
+            if not e.interactive or e.label in before_labels:
+                continue
             v = after_views[e.view_index]
-            if (v.get("resource_id") == rid and v.get("bounds") == box
-                    and e.label != target.label and e.interactive):
-                return e
+            box = box_of(v)
+            if not box:
+                continue
+            for _, rid, old_box, old_label in olds:
+                if (v.get("resource_id") == rid and old_label != e.label
+                        and self._overlap(old_box, box) >= 0.5):
+                    e.was_label = old_label         # what it showed before
+                    return e
         return None
 
+    @staticmethod
+    def _overlap(a, b) -> float:
+        """Intersection over the smaller of two boxes."""
+        w = min(a[2], b[2]) - max(a[0], b[0])
+        h = min(a[3], b[3]) - max(a[1], b[1])
+        if w <= 0 or h <= 0:
+            return 0.0
+        small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+        return (w * h) / max(1, small)
+
     def _undo_relabel(self, target, flipped, depth, path, selectors):
-        """Record the state the press switched to, then put it back."""
+        """Record the state the press switched to, then put it back -- by
+        pressing what was pressed again, until the old label shows."""
+        was = getattr(flipped, "was_label", "") or target.label
         self._emit(flipped, depth + 1, path, selectors,
                    note="state after pressing -- put back")
         for _ in range(2):
             _, views, _ = self._await_stable()
             views = views or []
-            now = next((e for e in self._elements(views) if e.label == flipped.label), None)
+            now = (next((e for e in self._elements(views)
+                         if self._fingerprint(e) == self._fingerprint(target)), None)
+                   or next((e for e in self._elements(views) if e.label == flipped.label), None))
             if now is None or not self._click(now, views):
                 break
             self._after_press(label_set(self._elements(views)), timeout=1.5)
             _, views, _ = self._await_stable()
-            if any(e.label == target.label for e in self._elements(views or [])):
+            if any(e.label == was for e in self._elements(views or [])):
                 self._switches_restored += 1
                 return
         logger.warning("could not put %r back", target.label)
         self._switches_not_restored += 1
+
+    def _emit_note(self, element, depth, note):
+        """Add a note to the row already written for `element`."""
+        for row in reversed(self.rows):
+            if row.depth == depth and row.raw_label == element.label:
+                row.note = (row.note + "; " if row.note else "") + note
+                return
 
     def _selector_in(self, views):
         """(index, group, announcement) of a carousel that selects, or None.
@@ -1733,6 +1778,39 @@ class RecursiveWalker(ElementTreeWalker):
                                     parent)
                 return
 
+        main_twin = self._recorded(path[1:]) if self._pass_marker and len(path) > 1 else None
+        here_sig = self._signature(elements)
+        same_as_main = bool(main_twin) and (
+            len(here_sig & main_twin) / max(1, len(here_sig | main_twin))
+            >= self.revisit_similarity)
+        # Only when its parent was the main walk's screen too: the front
+        # camera's MORE grid is identical to the rear one, but under it PRO
+        # and NIGHT differ -- MORE is walked, FOOD (same, under same) is not.
+        if same_as_main:
+            self._same_as_main.add(tuple(path))
+        if self._pass_marker and len(path) > 1 and (
+                (same_as_main and tuple(path[:-1]) in self._same_as_main)
+                or any(e.label == self._pass_marker for e in elements)):
+            # Or the screen IS the main walk's screen for the same path --
+            # FOOD and PANORAMA show no switch button at all, but the rear
+            # camera's own lenses: the very screen walked in the main tree.
+            # The control that started this pass is back on screen: this
+            # screen has left the pass's state. Agreed (front camera): FOOD
+            # and PANORAMA switch to the rear camera -- a leaf with a note,
+            # their tree is in the main walk.
+            for row in reversed(self.rows):
+                if row.depth == depth - 1 and row.raw_label == path[-1]:
+                    row.note = (f"leaves the '{self._pass_marker}' state -- "
+                                "walked in the main tree")
+                    break
+            # And the state stays left: after PANORAMA the camera is the
+            # rear one, the MORE grid looks the same, and SLOW MOTION,
+            # HYPERLAPSE and PORTRAIT VIDEO were entered on the rear camera
+            # and wrongly written off. Replaying the parent's path (which
+            # presses the pass's control again) puts the state back.
+            self._replay(path[:-1])
+            return
+
         signature = self._signature(elements)
         node = Node(path[-1] if path else self.package, depth, path,
                     path_selectors, elements, signature, entering, parent)
@@ -1754,7 +1832,16 @@ class RecursiveWalker(ElementTreeWalker):
         # The same screen walked before under another branch?
         reopened_before, seen_under = set(), None
         if self.revisits != "full" and path:
+            # Not across a pass at mode level: the front camera's MORE grid
+            # matches the rear one, and as a revisit none of its modes were
+            # opened -- the very thing the pass is for. Below the modes
+            # (Settings) a revisit is a revisit.
+            in_pass = bool(self._pass_marker) and path[:1] == [self._pass_marker]
+            own_depth = len(path) - (1 if in_pass else 0)
             for earlier_path, earlier in self._walked:
+                earlier_in_pass = bool(self._pass_marker) and earlier_path[:1] == [self._pass_marker]
+                if earlier_in_pass != in_pass and own_depth <= 2:
+                    continue
                 # Another route to it: same screen name, different way in.
                 # (Not "a different first step": MORE > PRO and MORE > NIGHT
                 # both begin with MORE.)
@@ -1804,6 +1891,15 @@ class RecursiveWalker(ElementTreeWalker):
             if twins:
                 logger.info("carried over from above, not walked here: %s",
                             sorted(t[0] for t in twins))
+        # A screen that shows a carousel that selects gets the carousel walk,
+        # however it was reached: the front camera's Quick controls > Color
+        # tone opened as a screen, and its items were pressed as menu items
+        # -- selected one after another, never put back.
+        carousel = self._selector_in(views) if entering is not None else None
+        if carousel is not None and only is None:
+            handled |= {self._fingerprint(e) for e in elements if e.group == carousel[1]}
+            self._walk_selector(carousel, entering, depth, path, path_selectors,
+                                node, inherited)
         switches_done = set()
         to_walk = ([e for e in elements if self._fingerprint(e) in only]
                    if only is not None else elements)
@@ -2018,6 +2114,16 @@ class RecursiveWalker(ElementTreeWalker):
                     continue
 
                 flipped = self._relabelled(target, views, after_views)
+                if flipped is None and screen_similarity(standing, after) >= self.similarity_threshold:
+                    # A toggle can show a toast first and relabel a moment
+                    # later: Quick controls' stabilisation chip was read in
+                    # between, and stabilisation was left on.
+                    time.sleep(0.6)
+                    _, later, _ = self._await_stable()
+                    if later:
+                        flipped = self._relabelled(target, views, later)
+                        if flipped is not None:
+                            after_views, after = later, self._elements(later)
                 if flipped is not None:
                     self._undo_relabel(target, flipped, depth, child_path,
                                        child_selectors)
@@ -2156,6 +2262,24 @@ class RecursiveWalker(ElementTreeWalker):
                     continue
 
                 if not moved:
+                    # Nothing came -- but did the screen's own controls go?
+                    # Then the press changed the app's state. "Use Night
+                    # mode", a suggestion the camera shows in dim light, put
+                    # PHOTO into night mode: Flash, Resolution, Motion photo
+                    # and Filters vanished, nothing new appeared, and the
+                    # rest of PHOTO was walked in the wrong state. A clean
+                    # relaunch to this screen puts the state back.
+                    here_now = self._signature(after)
+                    lost = [fp for fp in (before & node.own if node.own else before)
+                            if fp not in here_now and fp != self._fingerprint(target)]
+                    if len(lost) >= 2 and not appeared:
+                        logger.warning("pressing %r removed %d of this screen's controls "
+                                       "and showed nothing: state changed, relaunching",
+                                       target.label, len(lost))
+                        self._emit_note(target, depth, "changes the app's state -- "
+                                        "undone by relaunching")
+                        self._states_reset += 1
+                        self._replay(path)
                     continue        # the press did nothing visible
 
                 self._descents += 1
@@ -2505,6 +2629,20 @@ class RecursiveWalker(ElementTreeWalker):
             if not changed or not views:
                 logger.info("replay: pressing %r changed nothing", label)
                 return False
+            if label.strip().lower() in self.walk_separately:
+                # A state switch (front camera) is pressed until its own label
+                # is gone -- a first-launch tip can take the first tap.
+                for _ in range(2):
+                    still = next((e for e in self._elements(views) if e.label == label), None)
+                    if still is None or not self._click(still, views):
+                        break
+                    self._after_press(label_set(self._elements(views)), timeout=1.5)
+                    time.sleep(1.0)
+                    _, views, _ = self._await_stable()
+                    views = views or []
+                if any(e.label == label for e in self._elements(views)):
+                    logger.info("replay could not switch state with %r", label)
+                    return False
             if label.strip().lower() in self._tab_labels:
                 # A mode tab is confirmed, and pressed again until it is.
                 # After a reset a first-launch tip sits over the camera; the
@@ -2537,9 +2675,13 @@ class RecursiveWalker(ElementTreeWalker):
                     _, views, _ = self._await_stable()
                     views = views or []
                 if not self._looks_like(known, views):
-                    logger.info("replay: after %r the screen is not the one "
-                                "walked before", label)
-                    return False
+                    # Said, not enforced: a screen walked before can differ
+                    # after a reset (first-launch state), and refusing it
+                    # turned a good replay of PHOTO > Quick controls into a
+                    # lost branch. Whoever asked for the replay checks where
+                    # it landed.
+                    logger.info("replay: after %r the screen differs from the "
+                                "one walked before", label)
         return True
 
     def _recorded(self, path):
@@ -2646,9 +2788,65 @@ class RecursiveWalker(ElementTreeWalker):
         self._root_key = root_key
         self._visit(2, [], [], [])
         self._reopen_leftovers()
+        self._walk_passes()
         self._release()
         logger.info("Walk finished: %s", self.stats())
         return self.rows
+
+    def _walk_passes(self):
+        """Walk the app again in each state a `walk_separately` control opens.
+
+        Agreed (front camera): the main walk lists the control and never
+        presses it; afterwards the app is relaunched, the control pressed,
+        and everything walked again under a node named after it -- depth 2,
+        its modes at depth 3. The mode strip is forgotten first, so the one
+        the new state shows is entered again. A relaunch at the end puts the
+        app back as a reset leaves it.
+        """
+        def exact(label, views):
+            # Exactly this label. The forgiving lookup reads "Switch to rear
+            # camera" as the same control as "Switch to front camera" once
+            # it has flipped, and the switch looked as though it had not.
+            return next((e for e in self._elements(views or []) if e.label == label), None)
+
+        for label in self._separate_labels:
+            if not self._budget_left():
+                return
+            if not self._replay([]):
+                continue
+            _, views, _ = self._await_stable()
+            control = exact(label, views)
+            if control is None:
+                continue                    # not offered here (e.g. "Switch to rear")
+            self._emit(control, 2, [], [], note="walked as its own pass (profile)")
+            # Pressed until it goes: after the reset a first-launch tip sits
+            # over the camera and takes the first tap, as it did the mode tab.
+            for _ in range(3):
+                standing = self._elements(views or [])
+                if not self._click(control, views):
+                    break
+                self._after_press(label_set(standing))
+                time.sleep(1.0)
+                _, views, _ = self._await_stable()
+                control = exact(label, views)
+                if control is None:
+                    break
+            if exact(label, views) is not None:
+                logger.warning("pressing %r did not change the app's state", label)
+                continue
+            control = Element(label=label, kind="button", interactive=True, view_index=-1)
+            logger.info("separate pass: %s", label)
+            self._passes_walked += 1
+            kept_tabs, self._tab_labels = self._tab_labels, set()
+            self._pass_marker = label
+            try:
+                selector = ((control.selector_kind, control.selector_value)
+                            if control.selector_kind else ("text", label))
+                self._visit(3, [label], [selector], [], entering=control)
+            finally:
+                self._pass_marker = None
+                self._tab_labels = kept_tabs | self._tab_labels
+            self._replay([])                # back as a reset leaves it
 
     def stats(self) -> Dict:
         base = super().stats()
@@ -2659,6 +2857,8 @@ class RecursiveWalker(ElementTreeWalker):
             "returned_by": self._returned_by,
             "options_listed_not_pressed": self._options_listed,
             "panels_listed": self._panels_listed,
+            "states_reset_by_relaunch": self._states_reset,
+            "separate_passes_walked": self._passes_walked,
             "screens_revisited": self._revisited,
             "revisits": self.revisits,
             "selectors_walked": self._selectors_walked,

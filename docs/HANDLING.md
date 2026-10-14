@@ -149,6 +149,16 @@ language needs them in the profile.
   uses the system Back, which closes the camera from a mode screen.
 * **A press that clears things before showing them** (Filters clears the top
   bar, then slides its carousel in) is read again a moment later.
+* **Separate passes** (agreed, the front camera): after the main walk, each
+  `walk_separately` control visible on the launch screen opens a pass. The
+  app is relaunched, the control pressed, and everything walked again under
+  a depth-2 node named after it (`Switch to front camera` > PORTRAIT / PHOTO
+  / VIDEO / MORE at depth 3). The mode strip is forgotten first so the new
+  state's strip is entered again. A screen in the pass that has left the
+  pass's state -- the starting control is visible again, or it and its
+  parent are the main walk's very screens (FOOD, PANORAMA switch to the rear
+  camera) -- is a leaf with a note. Settings follows `--revisits`. The app is
+  relaunched at the end, which with the usual reset restores the rear camera.
 * **A tap lands on what is seen.** A control is tapped in the middle of the
   part of it that shows: clipped to its list's viewport, clear of the status
   and navigation bars, and clear of a band pinned over the list (a toolbar).
