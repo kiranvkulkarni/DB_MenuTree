@@ -314,7 +314,11 @@ class RecursiveWalker(ElementTreeWalker):
             path=list(path),
             path_selectors=list(path_selectors),
             interactive=element.interactive,
-            blocked=self.guard.blocks("text", element.label) if element.interactive else None,
+            # Only what the walk actually refused. Recording the strict check
+            # for every row wrote "blocked by action guard, NOT explored" on
+            # Photo format and Video format -- rows the walk had opened.
+            blocked=(note.split(":", 1)[1].strip()
+                     if note.startswith("action guard:") else None),
             selector_kind=element.selector_kind,
             selector_value=element.selector_value,
             note=note,
@@ -2157,8 +2161,13 @@ class RecursiveWalker(ElementTreeWalker):
                         self._return_to(node)
                     continue
 
-                flipped = self._relabelled(target, views, after_views)
-                if flipped is None and screen_similarity(standing, after) >= self.similarity_threshold:
+                # Only on a screen that stayed put. A new screen puts its rows
+                # where the old one's were, with the same ids: Video format's
+                # "High bitrate videos" was taken for a relabelled control and
+                # "put back" -- by pressing Video format again.
+                stayed = screen_similarity(standing, after) >= self.similarity_threshold
+                flipped = self._relabelled(target, views, after_views) if stayed else None
+                if flipped is None and stayed:
                     # A toggle can show a toast first and relabel a moment
                     # later: Quick controls' stabilisation chip was read in
                     # between, and stabilisation was left on.
