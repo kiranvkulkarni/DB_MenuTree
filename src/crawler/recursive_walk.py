@@ -43,6 +43,7 @@ from .element_tree import ElementTreeWalker, TreeNode
 from .device_driver import DriverError
 from .elements import Element, _pressable_via, label_set, screen_similarity
 from .elements import CHROME_PACKAGES
+from .hierarchy import parse_hierarchy
 from .hierarchy import box_of, center_of, looks_like_dialog, scrollable_container
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,8 @@ class RecursiveWalker(ElementTreeWalker):
         self._returned_by: Dict[str, int] = {}
         self._options_listed = 0
         self._panels_listed = 0
+        self._popup_presses = 0
+        self._main_labels = set()   # the app's main screen, from the first launch
         self._states_reset = 0
         self._titles_not_pressed = 0
         self._selectors_walked = 0
@@ -174,6 +177,15 @@ class RecursiveWalker(ElementTreeWalker):
         self.walk_separately = {str(x).strip().lower()
                                 for x in config.get("walk_separately", [])}
         self._separate_labels = [str(x).strip() for x in config.get("walk_separately", [])]
+        # From the profile. first_launches: how many launches after clearing
+        # the app show first-run pop-ups (the camera asks about Location tags
+        # on the third); recorded with every answer branch. launch_answers:
+        # the answers that set the state the main walk runs in (agreed:
+        # Location granted). suggestions: hints the app shows by conditions
+        # ("Use Night mode" in dim light) -- listed, never pressed.
+        self.first_launches = int(config.get("first_launches", 0) or 0)
+        self.launch_answers = [str(x) for x in config.get("launch_answers", [])]
+        self.suggestions = {str(x).strip().lower() for x in config.get("suggestions", [])}
         # From the profile: rows that lead out of the app to somewhere that is
         # not part of its menu tree (a store). Listed, not opened.
         self.leaves_app = {str(x).strip().lower()
@@ -248,6 +260,8 @@ class RecursiveWalker(ElementTreeWalker):
             return "listed, not pressed (profile: walked as its own pass)"
         if element.label.strip().lower() in self.leaves_app:
             return "listed, not opened (profile: leads out of the app)"
+        if element.label.strip().lower() in self.suggestions:
+            return "suggestion shown by conditions -- listed, not pressed (profile)"
         from .element_tree import KEYPAD_KEY
         if element.role == "option":
             return "option -- listed, not selected"
@@ -647,7 +661,15 @@ class RecursiveWalker(ElementTreeWalker):
                     if (views[j].get("class") == view.get("class")
                         and views[j].get("clickable") and not views[j].get("children"))]
             labels = {self._label_of(views[j]) for j in sibs}
-            if len(sibs) >= 2 and len(labels) == len(sibs) and all(labels):
+            # Only when the row reads as a choice: named by descriptions
+            # alone (Alignment Left / Center / Right are icons), or exactly
+            # one of them marked selected (Natural / Warm). A pop-up's
+            # Cancel / Turn on are text buttons with nothing selected --
+            # taken for options, the first-launch dialog was never answered.
+            by_desc = all(not (views[j].get("text") or "").strip() for j in sibs)
+            one_selected = sum(1 for j in sibs if views[j].get("selected")) == 1
+            if (len(sibs) >= 2 and len(labels) == len(sibs) and all(labels)
+                    and (by_desc or one_selected)):
                 return "option", row, None
         # A selection group: clickable siblings of one class and id, exactly
         # one of them `selected` -- Flash Off / Auto / On, the timers, the
@@ -2532,6 +2554,11 @@ class RecursiveWalker(ElementTreeWalker):
                                           clear=self.clear_between_paths)
             except DriverError:
                 return False
+            if self.clear_between_paths and self.first_launches:
+                # A wiped app is a first launch again: bring it to the state
+                # the walk runs in (agreed: Location granted), or the
+                # location prompt and tips come back mid-walk.
+                self._prime(wipe=False)
         _, views, _ = self._await_stable()
         if not views:
             return False
@@ -2799,12 +2826,222 @@ class RecursiveWalker(ElementTreeWalker):
         if not root_key:
             return self.rows
         self._root_key = root_key
+        if self.first_launches:
+            self._walk_first_launches()
+            self._prime(wipe=True)
         self._visit(2, [], [], [])
         self._reopen_leftovers()
         self._walk_passes()
         self._release()
         logger.info("Walk finished: %s", self.stats())
         return self.rows
+
+    # -- first launches ---------------------------------------------------
+    def _launch(self, wipe=False, wait=4.0):
+        """One launch of the app (cleared first if `wipe`); the screen after."""
+        try:
+            self.driver.launch_clean(self.package, clear=wipe)
+        except DriverError:
+            return []
+        time.sleep(wait)
+        _, views, _ = self._await_stable()
+        return views or []
+
+    def _press_exact(self, label, wait=3.0):
+        """Press the control with exactly this label, on whatever is in front."""
+        _, views, _ = self._await_stable()
+        hit = next((e for e in self._elements(views or []) if e.label == label), None)
+        if hit is None or not self._click(hit, views):
+            return False
+        time.sleep(wait)
+        return True
+
+    def _reach(self, answers):
+        """Clear the app, launch it `first_launches` times, give `answers`."""
+        views = self._launch(wipe=True)
+        for _ in range(self.first_launches - 1):
+            views = self._launch()
+        for label in answers:
+            if not self._press_exact(label):
+                return False
+        return True
+
+    def _prime(self, wipe):
+        """Bring a cleared app to the agreed state: the remaining first
+        launches, then the profile's answers -- each one if it is asked."""
+        if wipe:
+            self._launch(wipe=True)
+        for _ in range(self.first_launches - 1):
+            self._launch()
+        for label in self.launch_answers:
+            self._press_exact(label)
+        self._await_stable()
+
+    def _dialog_in_front(self, views, package):
+        """A pop-up is in front -- not the app's own main screen.
+
+        Against the main screen recorded on the first launch when there is
+        one: "Location tags and sharing" fills the window, so the dialog test
+        alone took it for the app, and Learn more was written as closing.
+        """
+        if not views:
+            return False
+        if package and package != self.package:
+            return True
+        if self._main_labels:
+            here = {e.label for e in self._elements(views)}
+            return len(here & self._main_labels) < 0.5 * len(self._main_labels)
+        return looks_like_dialog(views, self.package)
+
+    def _read_dialog(self, views):
+        """(title, texts, options, buttons) of the pop-up on screen."""
+        els = self._dedupe_controls(self._elements(views))
+        texts = [e for e in els if not e.interactive]
+        options = [e for e in els if e.interactive and e.role == "option"]
+        title = texts[0].label if texts else (els[0].label if els else "")
+        buttons = [e for e in els if e.interactive and e.role != "option"
+                   and e.label != title]            # a tappable title is not an answer
+        if not texts and buttons and buttons[0].label == title:
+            buttons = buttons[1:]
+        return title, texts, options, buttons
+
+    def _walk_first_launches(self):
+        """Agreed: the pop-ups of the first launches after clearing the app,
+        with every answer branch, under "First launches" before the modes.
+
+        Explored level by level -- every answer to a pop-up tried before any
+        answer deeper down -- so that an answer that changes the PHONE (Google
+        Play services' Location Accuracy "Turn on", pressed as agreed) comes
+        last of all, and a pop-up met twice is recorded once. Rows are then
+        written in the sheet's order.
+        """
+        from .hierarchy import DECLINE_LABELS
+        root = Element(label="First launches (app data cleared)", kind="title",
+                       interactive=False, view_index=-1)
+        self._emit(root, 2, [], [], note="pop-ups after clearing the app (profile: first_launches)")
+        launches = []                              # per launch: (tips, dialog_title)
+        dialogs = {}                               # title -> record
+        start = None                               # (launch number, title)
+        def launch_now(wipe):
+            # Read straight away, not after the screen settles: the first
+            # launch's tip is gone within a few seconds.
+            try:
+                self.driver.launch_clean(self.package, clear=wipe)
+            except DriverError:
+                return []
+            time.sleep(1.5)
+            try:
+                return parse_hierarchy(self.driver.dump_hierarchy())
+            except Exception:
+                return []
+
+        views = launch_now(True)
+        for n in range(1, self.first_launches + 1):
+            if n > 1:
+                views = launch_now(False)
+            early = {e.label for e in self._elements(views) if not e.interactive}
+            time.sleep(5)
+            _, later, package = self._await_stable()
+            later = later or []
+            tips = [e for e in self._elements(views)
+                    if not e.interactive and e.label in early
+                    and e.label not in {x.label for x in self._elements(later)}
+                    and len(e.label) > 15]
+            if n == 1 and not self._main_labels:
+                self._main_labels = {e.label for e in self._elements(later)
+                                     if e.interactive}
+            title = None
+            if self._dialog_in_front(later, package):
+                title = self._read_dialog(later)[0]
+                if start is None:
+                    start = (n, title)
+            launches.append((tips, title))
+            if title:
+                break                              # the chain starts here
+
+        if start is not None:
+            queue = [[]]
+            while queue and self._budget_left():
+                answers = queue.pop(0)
+                if not self._reach(answers):
+                    continue
+                _, views, package = self._await_stable()
+                if not self._dialog_in_front(views or [], package):
+                    continue
+                title, texts, options, buttons = self._read_dialog(views)
+                if title in dialogs and dialogs[title].get("buttons") is not None:
+                    continue
+                order = sorted(buttons, key=lambda b: b.label.strip().lower()
+                               not in DECLINE_LABELS)
+                record = {"texts": texts, "options": options, "buttons": [],
+                          "package": package, "path": list(answers)}
+                dialogs[title] = record
+                for b in order:
+                    if not self._reach(answers) or not self._press_exact(b.label):
+                        record["buttons"].append((b, ("unreached",)))
+                        continue
+                    time.sleep(1.0)
+                    _, after, pkg = self._await_stable()
+                    if self._dialog_in_front(after or [], pkg):
+                        nxt = self._read_dialog(after)[0]
+                        above = [title] + [d for d, r in dialogs.items()
+                                           if r.get("path") is not None
+                                           and r["path"] == answers[:len(r["path"])]]
+                        if nxt == title or nxt in above:
+                            record["buttons"].append((b, ("returns", nxt)))
+                        elif nxt in dialogs:
+                            record["buttons"].append((b, ("same", nxt)))
+                        else:
+                            dialogs.setdefault(nxt, {"buttons": None})
+                            record["buttons"].append((b, ("dialog", nxt)))
+                            queue.append(answers + [b.label])
+                    else:
+                        record["buttons"].append((b, ("closes",)))
+                    self._popup_presses += 1
+
+        # Written in the sheet's order.
+        written = set()
+
+        def write_dialog(title, depth, path):
+            record = dialogs.get(title) or {}
+            self._emit(Element(label=title, kind="title", interactive=False, view_index=-1),
+                       depth, path, [], note=(f"in {record.get('package')}"
+                                              if record.get("package") and
+                                              record.get("package") != self.package else ""))
+            if title in written:
+                self._emit_note_last("same pop-up as above -- not repeated")
+                return
+            written.add(title)
+            for e in record.get("texts", [])[1:]:
+                self._emit(e, depth + 1, path + [title], [])
+            for e in record.get("options", []):
+                self._emit(e, depth + 1, path + [title], [],
+                           note="option -- listed, not selected")
+            for b, result in record.get("buttons", []) or []:
+                note = {"closes": "closes the pop-up -- back to the app",
+                        "unreached": "could not be reached again"}.get(result[0], "")
+                if result[0] == "returns":
+                    note = f"returns to '{result[1]}'"
+                elif result[0] == "same":
+                    note = f"opens '{result[1]}' -- the same pop-up as above"
+                self._emit(b, depth + 1, path + [title], [], note=note)
+                if result[0] == "dialog":
+                    write_dialog(result[1], depth + 2, path + [title, b.label])
+
+        for n, (tips, title) in enumerate(launches, start=1):
+            self._emit(Element(label=f"Launch {n}", kind="text", interactive=False,
+                               view_index=-1), 3, [root.label], [])
+            for t in tips:
+                self._emit(Element(label=t.label, kind="title", interactive=False,
+                                   view_index=-1), 4, [root.label, f"Launch {n}"], [],
+                           note="shown on this launch, then closed by itself")
+            if title:
+                write_dialog(title, 4, [root.label, f"Launch {n}"])
+
+    def _emit_note_last(self, note):
+        if self.rows:
+            row = self.rows[-1]
+            row.note = (row.note + "; " if row.note else "") + note
 
     def _walk_passes(self):
         """Walk the app again in each state a `walk_separately` control opens.
@@ -2870,6 +3107,7 @@ class RecursiveWalker(ElementTreeWalker):
             "returned_by": self._returned_by,
             "options_listed_not_pressed": self._options_listed,
             "panels_listed": self._panels_listed,
+            "first_launch_answers_pressed": self._popup_presses,
             "states_reset_by_relaunch": self._states_reset,
             "separate_passes_walked": self._passes_walked,
             "screens_revisited": self._revisited,

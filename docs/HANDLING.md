@@ -159,6 +159,22 @@ language needs them in the profile.
   parent are the main walk's very screens (FOOD, PANORAMA switch to the rear
   camera) -- is a leaf with a note. Settings follows `--revisits`. The app is
   relaunched at the end, which with the usual reset restores the rear camera.
+* **First launches** (agreed, step 7): `first_launches` in the profile (3 for
+  the camera). The app is cleared and launched that many times; each launch's
+  self-closing tips and pop-ups are written under "First launches (app data
+  cleared)" > "Launch n", before the modes. Every answer to every pop-up is
+  followed (clear, launch, answer again each time), explored level by level so
+  that an answer that changes the PHONE comes last (Google Play services'
+  Location Accuracy "Turn on", pressed as agreed -- it stays on until switched
+  off by hand). A pop-up met again is written once ("the same pop-up as
+  above"), going back to one above is "returns to". The main walk then runs in
+  the state `launch_answers` sets (agreed: Turn on, While using the app, No
+  thanks), and every wiped relaunch is brought back to it.
+* **Suggestions** the app shows by conditions (`suggestions` in the profile:
+  "Use Night mode", the Quick controls tip) are listed, never pressed.
+* **A row of buttons is a choice only when it reads as one**: named by
+  descriptions alone (alignment icons) or with exactly one selected
+  (Natural / Warm). A pop-up's Cancel / Turn on are answers.
 * **A tap lands on what is seen.** A control is tapped in the middle of the
   part of it that shows: clipped to its list's viewport, clear of the status
   and navigation bars, and clear of a band pinned over the list (a toolbar).

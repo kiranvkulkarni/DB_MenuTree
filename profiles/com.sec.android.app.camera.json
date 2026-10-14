@@ -12,6 +12,7 @@
   "there and left the phone on it.",
   "leaves_app: rows that open somewhere outside the app's menu tree (agreed: Download filters opens the Galaxy Store). Listed, not opened.",
   "list_only: rows opened to list what they show, nothing pressed there, left by Back (agreed: MORE > Edit, where pressing could rearrange the mode bar).",
+  "first_launches: after clearing the app, the camera asks about Location tags on the third launch; the first three launches are recorded with every answer branch (agreed). launch_answers: the state the main walk runs in (agreed: Location granted -- Turn on, While using the app, No thanks). suggestions: hints shown by conditions, listed, never pressed (agreed).",
   "open_guarded_rows: open rows like 'Reset settings' to list their confirmation dialog; the dialog's Reset button is still refused and the walk leaves by Cancel."
  ],
  "do_not_press": [
@@ -31,5 +32,15 @@
  ],
  "list_only": [
   "Edit"
+ ],
+ "first_launches": 3,
+ "launch_answers": [
+  "Turn on",
+  "While using the app",
+  "No thanks"
+ ],
+ "suggestions": [
+  "Use Night mode",
+  "Tap the Quick controls button to control the flash, timer, resolution, and more."
  ]
 }
