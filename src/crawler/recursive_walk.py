@@ -1052,8 +1052,14 @@ class RecursiveWalker(ElementTreeWalker):
                 olds.append((e.view_index == target.view_index, v.get("resource_id"),
                              box_of(v), e.label))
         olds.sort(key=lambda o: not o[0])          # the pressed control first
+        carousel = self._selector_in(after_views)
         for e in self._elements(after_views):
             if not e.interactive or e.label in before_labels:
+                continue
+            # Options are not a relabelled control: Resolution's choices take
+            # the top bar's place, with the chips' own id, and were "put
+            # back" until PHOTO lost its way. Nor is a carousel's item.
+            if e.role == "option" or (carousel and e.group == carousel[1]):
                 continue
             v = after_views[e.view_index]
             box = box_of(v)
