@@ -270,3 +270,30 @@ Go to Settings`:
 `Shot suggestions` and `Watermark` look the same in the dump and behave
 differently. That is why switch rows are detected by observation rather than
 by a rule written in advance.
+
+## First review (2026-10-15) -- rules applied across the whole tree
+
+The sheet's author reviewed run 2026-10-15 05:07 in sheet `MenuTree_To_Be`,
+column R "Review Comments"; each comment is a rule for every screen.
+
+* **A widget sits beside its item**, on the same row in the next column: a
+  radio or checkbox beside its option ("Balanced | radio (On/Off)"), a
+  switch beside the last line of its row ("Automatically adjust ... |
+  switch_widget (On/Off)", "Scan text | switch_widget (On/Off)").
+* **A row's current value goes directly under its item**, on its own row,
+  before the options pressing it brings ("Scan resolution / Default / High").
+* **A switch whose Off / On rows were written** is not repeated by its own
+  text and widget ("On", "On (On/Off)").
+* **A control named by its description** whose text is its state is written
+  "name | state" ("Resolution | BACK_CAMERA_PRO_PICTURE_SIZE_NORMAL"); a new
+  state after pressing is a row of its own beneath it. Options keep their
+  own labels.
+* **Only what is new**: under any screen or panel opened from another, the
+  controls still visible from the screen behind are not repeated (PRO >
+  Exposure monitor, Quick controls). Back controls stay on every screen.
+* **Live readings** (values that change while nothing is pressed) belong to
+  the screen that first showed them.
+* **PRO dials** list their controls and the scale values seen (agreed); the
+  autofocus modes are pressed, recorded and put back (agreed).
+* A guarded row is opened only from a list (Settings' Reset settings); a
+  panel's Reset is never pressed.

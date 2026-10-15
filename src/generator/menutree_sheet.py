@@ -29,7 +29,8 @@ def write_csv(
     if not rows:
         raise ValueError("refusing to write an empty MenuTree sheet")
 
-    depth = max_depth or max(int(r.get("depth", 1)) for r in rows)
+    depth = max_depth or max(int(r.get("depth", 1)) + (1 if r.get("widget") else 0)
+                             for r in rows)
     header = ["Test Result", "Defect ID", "Comments"]
     header += [f"{i} Depth" for i in range(1, depth + 1)]
 
@@ -41,6 +42,8 @@ def write_csv(
             cells = [""] * depth
             index = max(1, min(int(row.get("depth", 1)), depth)) - 1
             cells[index] = row.get("label", "")
+            if row.get("widget") and index + 1 < depth:
+                cells[index + 1] = row["widget"]
 
             comment = row.get("note", "") or ""
             if row.get("blocked"):

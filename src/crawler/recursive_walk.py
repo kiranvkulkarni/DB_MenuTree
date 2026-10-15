@@ -200,6 +200,7 @@ class RecursiveWalker(ElementTreeWalker):
             raise ValueError(f"revisits must be full, top or note, not {self.revisits!r}")
         self.revisit_similarity = float(config.get("revisit_similarity", 0.9))
         self._walked = []           # (path, signature) of every screen walked
+        self._live_slots = {}       # (resource id, bounds) -> path that owns it
         self._pass_marker = None    # the control that started the current pass
         self._same_as_main = set()  # pass paths whose screen is the main walk's
         self._passes_walked = 0
@@ -275,7 +276,10 @@ class RecursiveWalker(ElementTreeWalker):
             blocked = self.guard.blocks("text", element.label)
         else:
             blocked = self.guard.blocks_row("text", element.label)
-            if blocked and self.open_guarded_rows and element.role == "title":
+            # Only a ROW of a list (Settings' "Reset settings"): PRO's own
+            # Reset in its focus panel was pressed three times.
+            if (blocked and self.open_guarded_rows and element.role == "title"
+                    and getattr(element, "group", "")):
                 # Opted into by the app's profile: open the row to document
                 # the confirmation it raises. Inside that dialog the strict
                 # check above refuses the destructive button, and the walk
@@ -306,9 +310,11 @@ class RecursiveWalker(ElementTreeWalker):
 
     def _emit_one(self, element: Element, depth: int, path: List[str],
                   path_selectors: List[tuple], note: str = "") -> TreeNode:
+        named = getattr(element, "name", "")
         row = TreeNode(
-            label=element.annotated(),
+            label=named or element.annotated(),
             raw_label=element.label,
+            widget=getattr(element, "state", "") if named else "",
             kind=element.kind,
             depth=depth,
             path=list(path),
@@ -323,6 +329,11 @@ class RecursiveWalker(ElementTreeWalker):
             selector_value=element.selector_value,
             note=note,
         )
+        row.role = getattr(element, "role", "")
+        row.context = getattr(element, "context", "")
+        row.unlabelled_widget = (element.kind in ("toggle", "radio")
+                                 and element.selector_kind == "id"
+                                 and element.label == (element.selector_value or "").split("/")[-1])
         self.rows.append(row)
         if len(self.rows) % self.checkpoint_every == 0:
             self._checkpoint()
@@ -542,6 +553,9 @@ class RecursiveWalker(ElementTreeWalker):
         controls panel both hold a `Flash` chip with one shared id. As one
         identity the panel's chip was lost, and with it the panel's order.
         """
+        if getattr(element, "name", ""):
+            return (element.name, element.kind, "name", element.name,
+                    getattr(element, "context", ""), getattr(element, "group", ""))
         return (element.annotated(), element.kind, element.selector_kind,
                 element.selector_value, getattr(element, "context", ""),
                 getattr(element, "group", ""))
@@ -582,6 +596,15 @@ class RecursiveWalker(ElementTreeWalker):
                 if named:
                     continue
             out.append(e)
+        # A label inside a clickable container that carries the same label
+        # is that container, not a second control: PRO's dial "ISO" (a
+        # clickable layout) holds a text "ISO", and each dial was walked twice.
+        by_view = {e.view_index: e.label for e in out}
+        out = [e for e in out
+               if not (0 <= e.view_index < len(views)
+                       and not views[e.view_index].get("clickable")
+                       and by_view.get(_pressable_via(views, e.view_index)) == e.label
+                       and _pressable_via(views, e.view_index) != e.view_index)]
         for e in out:
             role, row, check = self._row_role(e, views)
             e.role = role
@@ -595,6 +618,23 @@ class RecursiveWalker(ElementTreeWalker):
             if check is not None and 0 <= check < len(views):
                 cv = views[check]
                 e.switch_key = f"{cv.get('resource_id')}@{cv.get('bounds')}"
+            view = views[e.view_index] if 0 <= e.view_index < len(views) else {}
+            e.slot = (view.get("resource_id") or "", view.get("bounds") or "")
+            # A control whose description NAMES it and whose text is its
+            # STATE (review, R1740): PRO's chip reads "BACK_CAMERA_PRO_
+            # PICTURE_SIZE_NORMAL", described "Resolution". Written as
+            # "Resolution | BACK_CAMERA_PRO_PICTURE_SIZE_NORMAL", and known
+            # by its name, so a change of state is the same control.
+            text = (view.get("text") or "").strip()
+            desc = (view.get("content_description") or "").strip()
+            e.name = e.state = ""
+            # Not an option: Metering modes' three choices each carry the
+            # group's description -- they are choices, written as themselves.
+            if (e.interactive and role != "option" and text and desc
+                    and e.label == text
+                    and text.lower() not in desc.lower()
+                    and desc.lower() not in text.lower()):
+                e.name, e.state = desc, text
         return out
 
     # -- roles (docs/HANDLING.md) ----------------------------------------
@@ -813,7 +853,16 @@ class RecursiveWalker(ElementTreeWalker):
         if not self._is_node(node.elements, self._elements(now or []), node.own):
             self._return_to(node)
         self._restore_switch(sw_id, was_on, switch_index, tap_index, target)
-        return governed
+        return governed | self._switch_own_rows(governed, views, tap_index)
+
+    def _switch_own_rows(self, governed, views, tap_index):
+        """When a switch's Off / On rows were written, its own text and widget
+        ("On", "On (On/Off)") are the same thing again (review, R54/R55)."""
+        if not governed:
+            return set()
+        mine = set(self._descendants(views, tap_index)) | {tap_index}
+        return {self._fingerprint(e) for e in self._elements(views)
+                if e.view_index in mine}
 
     def _operate_switch_on(self, target, views, tap_index, switch_index, depth,
                            path, path_selectors, node, ancestors, sw_id):
@@ -860,7 +909,7 @@ class RecursiveWalker(ElementTreeWalker):
             self._switch_steps[tuple(path + ["On"])] = (target, sw_id, True)
             self._visit(depth + 1, path + ["On"], path_selectors, ancestors,
                         skip_tabs=True, entering=None, parent=node, only=governed)
-        return governed
+        return governed | self._switch_own_rows(governed, views, tap_index)
 
     def _list_panel(self, fresh, target, depth, child_path, child_selectors,
                     node, elements, handled, before=frozenset(),
@@ -1112,8 +1161,12 @@ class RecursiveWalker(ElementTreeWalker):
         """Record the state the press switched to, then put it back -- by
         pressing what was pressed again, until the old label shows."""
         was = getattr(flipped, "was_label", "") or target.label
-        self._emit(flipped, depth + 1, path, selectors,
-                   note="state after pressing -- put back")
+        # The new STATE, under the control's name row (review, R1741):
+        # "BACK_CAMERA_PRO_PICTURE_SIZE_HIGH", not "Resolution | ..._HIGH".
+        state = getattr(flipped, "state", "") or flipped.label
+        self._emit(Element(label=state, kind=flipped.kind, interactive=False,
+                           view_index=flipped.view_index),
+                   depth + 1, path, selectors, note="state after pressing -- put back")
         for _ in range(2):
             _, views, _ = self._await_stable()
             views = views or []
@@ -1136,6 +1189,52 @@ class RecursiveWalker(ElementTreeWalker):
             if row.depth == depth and row.raw_label == element.label:
                 row.note = (row.note + "; " if row.note else "") + note
                 return
+
+    def _live_slots_of(self, views):
+        """Places on screen whose label changes while nothing is pressed."""
+        time.sleep(0.8)
+        try:
+            again = parse_hierarchy(self.driver.dump_hierarchy())
+        except Exception:
+            return set()
+        first = {(v.get("resource_id") or "", v.get("bounds") or ""):
+                 (v.get("text") or v.get("content_description") or "")
+                 for v in views if v.get("resource_id")}
+        live = set()
+        for v in again:
+            slot = (v.get("resource_id") or "", v.get("bounds") or "")
+            label = v.get("text") or v.get("content_description") or ""
+            if slot in first and first[slot] and label and first[slot] != label:
+                live.add(slot)
+        return live
+
+    def _merge_widgets(self, rows):
+        """Agreed in review: a radio, switch or checkbox goes in the cell
+        beside its item, on the item's row -- a radio or checkbox beside its
+        option (it comes before it), a switch beside the last line of its
+        row (it comes after: "Automatically adjust... | switch_widget")."""
+        out = []
+        i = 0
+        while i < len(rows):
+            row = rows[i]
+            if getattr(row, "unlabelled_widget", False) and not row.widget:
+                ctx = getattr(row, "context", "")
+                nxt = rows[i + 1] if i + 1 < len(rows) else None
+                prev = out[-1] if out else None
+                if (nxt is not None and nxt.depth == row.depth and ctx
+                        and nxt.raw_label == ctx and not nxt.widget):
+                    nxt.widget = row.label
+                    i += 1
+                    continue
+                if (prev is not None and prev.depth == row.depth and not prev.widget
+                        and (prev.raw_label == ctx
+                             or getattr(prev, "context", "") == ctx or not ctx)):
+                    prev.widget = row.label
+                    i += 1
+                    continue
+            out.append(row)
+            i += 1
+        return out
 
     def _selector_in(self, views):
         """(index, group, announcement) of a carousel that selects, or None.
@@ -1926,6 +2025,31 @@ class RecursiveWalker(ElementTreeWalker):
         # sheet lists the panel's, in the panel's order.
         inherited = set().union(*ancestors) if ancestors else set()
         node.inherited = inherited
+        # Agreed in review: under a screen opened from another, list only
+        # what the opening ADDED -- not the controls still visible from the
+        # screen behind (PRO > Exposure monitor re-listed PRO's whole top
+        # bar; Quick controls re-listed the shutter and the gallery). Back
+        # controls stay: Navigate up is listed on every screen (agreed).
+        # Not when listing what a switch governs (`only`): those rows are on
+        # the very screen behind, by definition -- Document scan's Scan
+        # resolution vanished from under its On.
+        behind = {self._fingerprint(e) for e in elements
+                  if only is None and self._fingerprint(e) in inherited
+                  and not self._is_back(e) and not is_tab(e)}
+        # And readings that change on their own -- shutter speed, focus
+        # distance, white balance -- belong to the screen that first showed
+        # them; on a later screen they are not new controls (R1769 "5000K").
+        live_here = self._live_slots_of(views) if only is None else set()
+        for e in elements if only is None else []:
+            slot = getattr(e, "slot", None)
+            if not slot or not slot[0]:
+                continue
+            owner = self._live_slots.get(slot)
+            if owner is None and slot in live_here:
+                self._live_slots[slot] = tuple(path)
+            elif owner is not None and owner != tuple(path):
+                behind.add(self._fingerprint(e))
+        handled |= behind
         node.own = {self._fingerprint(e) for e in elements
                     if self._fingerprint(e) not in inherited and not is_tab(e)
                     and not self._is_back(e)} if inherited else set()
@@ -2074,6 +2198,17 @@ class RecursiveWalker(ElementTreeWalker):
                          "checkbox": "checkbox -- listed, not ticked"}
                 self._emit(element, depth, path, path_selectors,
                            note=notes.get(role, ""))
+                if role == "title":
+                    # Agreed in review (R48): the row's current value sits
+                    # directly under the item, before anything pressing it
+                    # brings up ("Scan resolution / Default / High ...").
+                    for other in to_walk:
+                        ofp = self._fingerprint(other)
+                        if (other.role == "summary" and ofp not in handled
+                                and getattr(other, "context", "") == element.label):
+                            self._emit(other, depth, path, path_selectors,
+                                       note="summary -- listed, not pressed")
+                            handled.add(ofp)
                 if role in notes:
                     continue
                 if role in ("switch", "switch_row"):
@@ -2882,6 +3017,7 @@ class RecursiveWalker(ElementTreeWalker):
         self._reopen_leftovers()
         self._walk_passes()
         self._release()
+        self.rows[:] = self._merge_widgets(self.rows)
         logger.info("Walk finished: %s", self.stats())
         return self.rows
 

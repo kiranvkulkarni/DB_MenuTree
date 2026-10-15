@@ -158,6 +158,11 @@ class TreeNode:
     # Which screen listed this row. The sheet's shape is derived from the
     # screen graph after the walk, so a row has to know its own node.
     screen_key: str = ""
+    # Written in the cell right after the label, on the same row (agreed in
+    # review): the row's radio / switch / checkbox ("Balanced | radio
+    # (On/Off)"), or a control's current state when its label names it
+    # ("Resolution | BACK_CAMERA_PRO_PICTURE_SIZE_NORMAL").
+    widget: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -173,6 +178,7 @@ class TreeNode:
             "descended": self.descended,
             "blocked": self.blocked,
             "note": self.note,
+            "widget": self.widget,
         }
 
 

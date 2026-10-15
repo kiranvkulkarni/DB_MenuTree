@@ -111,7 +111,7 @@ def main() -> int:
             walker._release()
 
     stats = walker.stats()
-    rows = [r.to_dict() for r in walker.rows if r.depth > 1]
+    rows = [r.to_dict() for r in walker._merge_widgets(walker.rows) if r.depth > 1]
     out.mkdir(parents=True, exist_ok=True)
     (out / "branch.json").write_text(
         json.dumps({"path": path, "stats": stats, "rows": rows,
@@ -124,7 +124,8 @@ def main() -> int:
     for row in rows:
         indent = "  " * (row["depth"] - base)
         note = f"   [{row['note']}]" if row.get("note") else ""
-        print(f"  d{row['depth']:<2}{indent}{row['label'][:50]}{note[:46]}")
+        side = f" | {row['widget']}" if row.get("widget") else ""
+        print(f"  d{row['depth']:<2}{indent}{(row['label'] + side)[:70]}{note[:46]}")
     print()
     for key in ("clicks", "scrolls", "nodes_visited", "returns_ok", "returns_failed",
                 "step_backs_recovered_by_replay", "toggles_listed_not_switched",

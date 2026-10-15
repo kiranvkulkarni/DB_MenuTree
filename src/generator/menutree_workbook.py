@@ -97,7 +97,8 @@ def write_workbook(
     if not rows:
         raise ValueError("refusing to write an empty MenuTree workbook")
 
-    depth = max_depth or max(int(r.get("depth", 1)) for r in rows)
+    depth = max_depth or max(int(r.get("depth", 1)) + (1 if r.get("widget") else 0)
+                             for r in rows)
     uvta_by_row = uvta_by_row or {}
 
     book = Workbook()
@@ -183,6 +184,9 @@ def write_workbook(
         column = 4 + max(1, min(int(row.get("depth", 1)), depth))
         label_cell = sheet.cell(row=excel_row, column=column, value=row.get("label", ""))
         label_cell.alignment = top
+        if row.get("widget") and column + 1 <= 4 + depth:
+            sheet.cell(row=excel_row, column=column + 1,
+                       value=row["widget"]).alignment = top
 
         sheet.cell(row=excel_row, column=4 + depth + 1, value=row.get("kind", ""))
 
