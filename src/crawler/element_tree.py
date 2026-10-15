@@ -181,6 +181,19 @@ class TreeNode:
             "widget": self.widget,
         }
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "TreeNode":
+        """A row read back from menutree_rows.json."""
+        return cls(
+            label=d["label"], kind=d.get("kind", ""), depth=d["depth"],
+            path=list(d.get("path") or []),
+            path_selectors=[tuple(s) for s in d.get("path_selectors") or []],
+            raw_label=d.get("raw_label", ""), interactive=d.get("interactive", False),
+            descended=d.get("descended", False), blocked=d.get("blocked"),
+            note=d.get("note", ""), selector_kind=d.get("selector_kind"),
+            selector_value=d.get("selector_value"), widget=d.get("widget", ""),
+        )
+
 
 def navigation_plan(
     here_path: Sequence[str], target_path: Sequence[str]

@@ -334,6 +334,9 @@ class RecursiveWalker(ElementTreeWalker):
         row.unlabelled_widget = (element.kind in ("toggle", "radio")
                                  and element.selector_kind == "id"
                                  and element.label == (element.selector_value or "").split("/")[-1])
+        # A switch found by its description still has an id ("switch_widget"),
+        # written beside its item the same way as an unlabelled one.
+        row.widget_id = (getattr(element, "slot", ("",))[0] or "").split("/")[-1]
         self.rows.append(row)
         if len(self.rows) % self.checkpoint_every == 0:
             self._checkpoint()
@@ -1208,7 +1211,8 @@ class RecursiveWalker(ElementTreeWalker):
                 live.add(slot)
         return live
 
-    def _merge_widgets(self, rows):
+    @staticmethod
+    def merge_widgets(rows):
         """Agreed in review: a radio, switch or checkbox goes in the cell
         beside its item, on the item's row -- a radio or checkbox beside its
         option (it comes before it), a switch beside the last line of its
@@ -1217,6 +1221,17 @@ class RecursiveWalker(ElementTreeWalker):
         i = 0
         while i < len(rows):
             row = rows[i]
+            twin = RecursiveWalker._twin_of(row, out)
+            if twin is not None:
+                # A switch NAMED like an item on the same screen is that
+                # item's switch: a row that opens a screen of its own and
+                # also has a switch ("Document scan", "Watermark"). It is
+                # written after the item's whole subtree, so it was left on
+                # a row of its own (review, L54-L56).
+                kind = {"toggle": "switch"}.get(row.kind, row.kind)
+                twin.widget = f"{getattr(row, 'widget_id', '') or kind} (On/Off)"
+                i += 1
+                continue
             if getattr(row, "unlabelled_widget", False) and not row.widget:
                 ctx = getattr(row, "context", "")
                 nxt = rows[i + 1] if i + 1 < len(rows) else None
@@ -1235,6 +1250,37 @@ class RecursiveWalker(ElementTreeWalker):
             out.append(row)
             i += 1
         return out
+
+    _merge_widgets = merge_widgets
+
+    @staticmethod
+    def _twin_of(row, out):
+        """The row a labelled switch belongs to -- the last line of the item
+        with its name, at its depth on its screen -- or None."""
+        if (row.kind not in ("toggle", "radio", "checkbox") or row.widget
+                or getattr(row, "unlabelled_widget", False) or not row.raw_label
+                or (row.note or "").startswith(("option", "checkbox", "switch state"))):
+            return None
+        for j in range(len(out) - 1, -1, -1):
+            other = out[j]
+            if other.depth < row.depth:
+                return None
+            if (other.depth != row.depth or other.path != row.path
+                    or other.raw_label != row.raw_label
+                    or other.kind in ("toggle", "radio", "checkbox")):
+                continue
+            # The item's current value is written straight under it
+            # (review, R48); the switch goes beside that last line.
+            last = j
+            while (last + 1 < len(out) and out[last + 1].depth == row.depth
+                   and out[last + 1].path == row.path
+                   and (out[last + 1].note or "").startswith("summary")):
+                last += 1
+            for k in (last, j):
+                if not out[k].widget:
+                    return out[k]
+            return None
+        return None
 
     def _selector_in(self, views):
         """(index, group, announcement) of a carousel that selects, or None.

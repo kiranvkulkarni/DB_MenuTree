@@ -280,6 +280,12 @@ column R "Review Comments"; each comment is a rule for every screen.
   radio or checkbox beside its option ("Balanced | radio (On/Off)"), a
   switch beside the last line of its row ("Automatically adjust ... |
   switch_widget (On/Off)", "Scan text | switch_widget (On/Off)").
+  A switch found by its description ("Document scan", "Watermark") is
+  written after its item's whole subtree; it is matched back to the item
+  with the same name at the same depth on the same screen and goes beside
+  that item's last line. `build_menutree.py --skip-walk` re-applies these
+  layout rules to an existing walk (the walked rows are kept as
+  `menutree_rows.walked.json`).
 * **A row's current value goes directly under its item**, on its own row,
   before the options pressing it brings ("Scan resolution / Default / High").
 * **A switch whose Off / On rows were written** is not repeated by its own

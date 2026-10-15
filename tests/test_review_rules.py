@@ -44,6 +44,40 @@ def main() -> int:
                 out.get("Scan text") == "switch_widget (On/Off)")
     ok &= check("no widget is left on a row of its own",
                 "radio (On/Off)" not in out and "switch_widget (On/Off)" not in out)
+
+    # A switch NAMED like its item (found by its description) comes after
+    # the item's whole subtree; it still goes beside the item (L54-L56).
+    def at(label, depth, path, kind="text", note=""):
+        r = row(label, depth)
+        r.kind, r.path, r.note = kind, path, note
+        return r
+    here, sub = ["Settings"], ["Settings", "Log"]
+    named = at("Log (On/Off)", 6, here, kind="toggle")
+    named.raw_label, named.widget_id = "Log", "switch_widget"
+    rows = [at("Log", 6, here),
+            at("Pro video mode only", 6, here, note="summary -- listed, not pressed"),
+            at("Log [Title]", 7, sub),
+            at("Off", 7, sub, kind="option", note="switch state"),
+            at("Video and Pro video modes", 8, sub + ["On"]),
+            named,
+            at("Off", 7, ["Settings", "Watermark"]),
+            at("Off (On/Off)", 7, ["Settings", "Watermark"], kind="toggle"),
+            at("Default (On/Off)", 8, sub, kind="toggle", note="option -- listed, not selected")]
+    rows[-2].raw_label = "Off"
+    merged = w._merge_widgets(rows)
+    out = {(r.label, tuple(r.path)): r.widget for r in merged}
+    ok &= check("a named switch goes beside the last line of its item",
+                out.get(("Pro video mode only", tuple(here))) == "switch_widget (On/Off)"
+                and ("Log (On/Off)", tuple(here)) not in out)
+    ok &= check("without an id it is called a switch",
+                out.get(("Off", ("Settings", "Watermark"))) == "switch (On/Off)")
+    ok &= check("an option is never taken for a switch",
+                ("Default (On/Off)", tuple(sub)) in out)
+
+    # Re-exporting an existing walk applies the same rules to its rows.
+    again = [TreeNode.from_dict(r.to_dict()) for r in rows[:6]]
+    ok &= check("a row read back from the rows file is the same row",
+                [r.to_dict() for r in again] == [r.to_dict() for r in rows[:6]])
     print()
     print("ALL PASS" if ok else "FAILURES PRESENT")
     return 0 if ok else 1

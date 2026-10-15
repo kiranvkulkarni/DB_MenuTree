@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.crawler.action_guard import DEFAULT_PRESETS, GUARD_PRESETS  # noqa: E402
-from src.crawler.element_tree import ElementTreeWalker  # noqa: E402
+from src.crawler.element_tree import ElementTreeWalker, TreeNode  # noqa: E402
 from src.crawler.recursive_walk import RecursiveWalker  # noqa: E402
 from src.profile import load_profile  # noqa: E402
 from src.generator import tree_uvta  # noqa: E402
@@ -197,6 +197,20 @@ def main() -> int:
     if not rows:
         logger.error("No rows discovered.")
         return 1
+    if args.skip_walk:
+        # The layout rules agreed in review only rearrange rows the walk
+        # found; re-applying them lets an existing walk be re-exported after
+        # a rule changes. The walk's own rows are kept beside it, once.
+        merged = [r.to_dict() for r in RecursiveWalker.merge_widgets(
+            [TreeNode.from_dict(r) for r in rows])]
+        if merged != rows:
+            walked = output_dir / "menutree_rows.walked.json"
+            if not walked.exists():
+                walked.write_text(rows_file.read_text(encoding="utf-8"), encoding="utf-8")
+            logger.info("Review rules re-applied: %d row(s) -> %d", len(rows), len(merged))
+            rows = data["rows"] = merged
+            rows_file.write_text(json.dumps(data, indent=2),
+                                 encoding="utf-8")
 
     print(summarise(rows))
     stats = data.get("stats", {})
