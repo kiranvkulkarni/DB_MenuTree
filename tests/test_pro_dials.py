@@ -59,6 +59,22 @@ def main() -> int:
     ok &= check("the Auto button beside it is not",
                 not any(e.on_slider for e in on_panel.values() if e.label.startswith("Auto")))
 
+    print("the Auto button is pressed, to record manual mode (agreed)")
+    auto = next((e for e in on_panel.values() if e.label == "Auto ISO"), None)
+    ok &= check("Auto ISO is a control, not one of a choice with Close",
+                auto is not None and auto.role == "title", str(auto and auto.role))
+    ok &= check("and nothing refuses it",
+                auto is not None and w._worth_pressing(auto) is None,
+                str(auto and w._worth_pressing(auto)))
+
+    print("FOCUS's areas are a choice, and their names are not labels to press")
+    areas = parse_hierarchy((FIXTURES / "pro_focus_areas.xml").read_text(encoding="utf-8"))
+    found = [(e.label, e.role) for e in w._elements(areas)
+             if e.label in ("CENTER", "MULTI", "MANUAL")]
+    ok &= check("each area once, as an option",
+                sorted(found) == [("CENTER", "option"), ("MANUAL", "option"), ("MULTI", "option")],
+                str(found))
+
     pro = parse_hierarchy((FIXTURES / "pro_screen.xml").read_text(encoding="utf-8"))
     ok &= check("the mode strip's own tabs are not taken for dial labels",
                 not any(e.on_slider for e in w._elements(pro)))

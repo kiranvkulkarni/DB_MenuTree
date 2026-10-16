@@ -325,6 +325,24 @@ column R "Review Comments"; each comment is a rule for every screen.
   list's width (Settings' Reset settings). A chip in a strip is not a row:
   PRO's bar of dials scrolls sideways, and its "Reset" (shown once any dial
   is manual; it resets them all) is listed, never pressed.
+* **PRO manual mode is recorded** (agreed 2026-10-16). A dial's Auto button
+  is pressed, the state it switches to is written under it with what came
+  with it, and it is pressed back:
+  `Auto ISO / Manual ISO (state after pressing -- put back) / Reset (refused)`.
+  SPEED's manual mode also turns the flash off (`BACK_FLASH_OFF`). FOCUS's
+  "Auto Focus" opens the focus areas, CENTER / MULTI / MANUAL, listed as
+  options (not pressed). EV has no Auto button.
+* **Auto framing is a toggle with a caption** (agreed 2026-10-16), like
+  Night shot: its message ("Auto framing On / The zoom will automatically
+  change...") is written as a caption, and it is pressed again. Controls the
+  press only redraws (same id, same name) are not something it brought.
+* **A label drawn on a control with the same label is that control**, even
+  when it is a sibling and not a child: the focus areas' names sit inside
+  their buttons' boxes, and pressing the name pressed the button.
+* **A state change is put back only when its new label has gone**, not
+  merely when the old label is visible somewhere. Super steady's Quick
+  controls chip keeps reading _OFF while its top-bar copy flips. The pressed
+  control's own new label is taken before any other control's.
 * **A control's text that is dynamic stays as the phone shows it**: the
   Watermark text field is "Customize text | Edit" (confirmed in the second
   review, 2026-10-16).

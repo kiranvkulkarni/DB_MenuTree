@@ -69,18 +69,15 @@ All of these are in HANDLING.md with their reasons. The short list:
    GitHub support can purge them if needed.
 2. *(Settled 2026-10-16.)* `feat/utg-derived-menutree` was merged into
    `main`. Both are on GitHub.
-3. **Manual-mode PRO controls.** The walk no longer turns a dial, because
-   that changes a setting. So the controls that exist only in manual mode are
-   no longer recorded: the focus areas CENTER / MULTI / MANUAL, "Manual ISO",
-   the bar's Reset chip and the manual white-balance controls. The user
-   earlier agreed to "press and record" the focus areas. Seeing them needs the
-   dial's Auto button pressed (it switches to manual) and pressed back. Ask
-   whether to do that.
+3. *(Settled and implemented 2026-10-16.)* PRO manual mode is recorded:
+   each dial's Auto button is pressed, the manual state and what it brings
+   are listed, and it is pressed back. Checked on PRO and in regression
+   walks; the next full run will show it in all four PRO passes.
 4. **Labels that come and go on their own.** "Bar" (a divider in PRO VIDEO's
    top bar) and "F 1.7" (the aperture readout, shown for a moment after a
    change) are listed as `[Title]` or "could not be located". Proposed rule:
-   ignore a label that appears and disappears with nothing pressed. Not
-   agreed yet.
+   ignore a label that appears and disappears with nothing pressed. The user
+   did not take this up (2026-10-16); leave them listed unless asked.
 5. **"Turn on Improve location accuracy?"** (Not now / Turn on) appeared once
    while probing, outside the first-launch chain. "Not now" was pressed by
    hand. If it appears in a walk, its answer should be agreed and added to
@@ -124,11 +121,9 @@ In order:
    level) changes between being listed and being pressed, giving "could not
    be located". Idea: find it again by its resource id and place when the
    label has moved.
-6. **VIDEO > Quick controls > Auto framing** switches Auto framing on, and the
-   walk took the result for a screen; getting back needed relaunches. Proposed
-   (not agreed): treat it as a state toggle with a caption, like Night shot.
-   Since the stricter return check (commit 7fee317), a panel whose controls
-   stay after the toggle reads as "not back yet"; watch the relaunch count.
+6. *(Done 2026-10-16.)* VIDEO > Quick controls > Auto framing is recorded as
+   a toggle with a caption (agreed), and Super steady is truly put back.
+   Not yet seen in a full run.
 7. Compare against the device team's real MenuTree at the company with
    `tools/compare_tobe.py` (it reads `profiles/<package>.json` aliases).
    Here only a reconstruction was available.

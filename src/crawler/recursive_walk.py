@@ -380,11 +380,12 @@ class RecursiveWalker(ElementTreeWalker):
             # this screen's controls are visible: a dial panel adds four
             # controls to PRO's thirty, so with ISO's panel still open the
             # screen "was" PRO -- and SPEED, EV, FOCUS and WB were pressed
-            # on top of it. Most, not all: a reading may settle on a value
-            # the screen also shows.
+            # on top of it. Counted over the CONTROLS it opened, and back
+            # only when fewer than half remain: FOCUS's focus areas leave
+            # "About selected setting" showing, and one of two is not back.
             if gone:
                 still = gone & {self._fingerprint(e) for e in here}
-                if 2 * len(still) > len(gone):
+                if 2 * len(still) >= len(gone):
                     return False
             return self._is_node(node.elements, here, node.own)
 
@@ -626,6 +627,21 @@ class RecursiveWalker(ElementTreeWalker):
                        and not views[e.view_index].get("clickable")
                        and by_view.get(_pressable_via(views, e.view_index)) == e.label
                        and _pressable_via(views, e.view_index) != e.view_index)]
+        # Or DRAWN on it, as a sibling: PRO's focus areas are icon buttons
+        # (CENTER, MULTI, MANUAL) with their names in a text below the icon,
+        # inside the button's box. The text was pressed as a label of its
+        # own -- which tapped the button and changed the focus area.
+        boxes = [(e.label, box_of(views[e.view_index])) for e in out
+                 if 0 <= e.view_index < len(views) and views[e.view_index].get("clickable")]
+        def drawn_on(e):
+            if not 0 <= e.view_index < len(views) or views[e.view_index].get("clickable"):
+                return False
+            mine = box_of(views[e.view_index])
+            return bool(mine) and any(
+                label == e.label and box and box[0] <= mine[0] and box[1] <= mine[1]
+                and mine[2] <= box[2] and mine[3] <= box[3]
+                for label, box in boxes)
+        out = [e for e in out if not drawn_on(e)]
         sliders = [b for b in (box_of(v) for v in views if is_slider(v)) if b]
         for e in out:
             role, row, check = self._row_role(e, views)
@@ -726,9 +742,13 @@ class RecursiveWalker(ElementTreeWalker):
         # views and must still be pressed.
         parent = view.get("parent")
         if view.get("clickable") and not view.get("children") and parent is not None:
+            # Never with a way out: PRO's "Auto ISO" sits beside the panel's
+            # "Close", both icon buttons -- read as a choice of two, the Auto
+            # button was never pressed, and manual mode went unrecorded.
             sibs = [j for j in views[parent].get("children", [])
                     if (views[j].get("class") == view.get("class")
-                        and views[j].get("clickable") and not views[j].get("children"))]
+                        and views[j].get("clickable") and not views[j].get("children")
+                        and self._label_of(views[j]).strip().lower() not in BACK_LABELS)]
             labels = {self._label_of(views[j]) for j in sibs}
             # Only when the row reads as a choice: named by descriptions
             # alone (Alignment Left / Center / Right are icons), or exactly
@@ -1161,6 +1181,7 @@ class RecursiveWalker(ElementTreeWalker):
                              box_of(v), e.label))
         olds.sort(key=lambda o: not o[0])          # the pressed control first
         carousel = self._selector_in(after_views)
+        news = []
         for e in self._elements(after_views):
             if not e.interactive or e.label in before_labels:
                 continue
@@ -1171,10 +1192,15 @@ class RecursiveWalker(ElementTreeWalker):
                 continue
             v = after_views[e.view_index]
             box = box_of(v)
-            if not box:
-                continue
-            for _, rid, old_box, old_label in olds:
-                if (v.get("resource_id") == rid and old_label != e.label
+            if box:
+                news.append((e, v.get("resource_id"), box))
+        # The pressed control's own new label before any other's: manual
+        # shutter speed relabels its button AND turns Flash to _OFF; taking
+        # Flash for the state, the walk "put it back" by pressing Flash, and
+        # shutter speed stayed manual.
+        for _, rid, old_box, old_label in olds:
+            for e, new_rid, box in news:
+                if (new_rid == rid and old_label != e.label
                         and self._overlap(old_box, box) >= 0.5):
                     e.was_label = old_label         # what it showed before
                     return e
@@ -1190,9 +1216,10 @@ class RecursiveWalker(ElementTreeWalker):
         small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
         return (w * h) / max(1, small)
 
-    def _undo_relabel(self, target, flipped, depth, path, selectors):
-        """Record the state the press switched to, then put it back -- by
-        pressing what was pressed again, until the old label shows."""
+    def _undo_relabel(self, target, flipped, depth, path, selectors, also=()):
+        """Record the state the press switched to, and what came with it,
+        then put it back -- by pressing what was pressed again, until the
+        old label shows and the new one has gone."""
         was = getattr(flipped, "was_label", "") or target.label
         # The new STATE, under the control's name row (review, R1741):
         # "BACK_CAMERA_PRO_PICTURE_SIZE_HIGH", not "Resolution | ..._HIGH".
@@ -1200,6 +1227,9 @@ class RecursiveWalker(ElementTreeWalker):
         self._emit(Element(label=state, kind=flipped.kind, interactive=False,
                            view_index=flipped.view_index),
                    depth + 1, path, selectors, note="state after pressing -- put back")
+        for e in also:
+            self._emit(e, depth + 2, path + [state], selectors,
+                       note=self._worth_pressing(e) or "shown in this state -- listed, not pressed")
         for _ in range(2):
             _, views, _ = self._await_stable()
             views = views or []
@@ -1210,7 +1240,13 @@ class RecursiveWalker(ElementTreeWalker):
                 break
             self._after_press(label_set(self._elements(views)), timeout=1.5)
             _, views, _ = self._await_stable()
-            if any(e.label == was for e in self._elements(views or [])):
+            # Back only when the NEW label has gone as well. Quick controls'
+            # Super steady chip keeps reading _OFF while its top-bar copy
+            # flips to _ON, so "the old label is on screen" was always true:
+            # Super steady was left on, and Ratio then listed its
+            # Super-steady ratios.
+            shown = {e.label for e in self._elements(views or [])}
+            if was in shown and flipped.label not in shown:
                 self._switches_restored += 1
                 return
         logger.warning("could not put %r back", target.label)
@@ -2510,8 +2546,22 @@ class RecursiveWalker(ElementTreeWalker):
                         if flipped is not None:
                             after_views, after = later, self._elements(later)
                 if flipped is not None:
+                    # What the new state brought with it, listed under it:
+                    # Manual ISO brings the bar's Reset; manual shutter speed
+                    # turns the flash off (agreed: record PRO's manual mode).
+                    moved_on = self._readings_moved(after, after_views, before, target)
+                    shown = {(getattr(e, "slot", ("",))[0], e.label)
+                             for e in standing if e.interactive}
+                    listed = {self._fingerprint(x) for x in elements}
+                    also = [e for e in after
+                            if self._fingerprint(e) not in before
+                            and self._fingerprint(e) not in listed
+                            and self._fingerprint(e) not in moved_on
+                            and self._fingerprint(e) not in inherited
+                            and e.label != flipped.label
+                            and (getattr(e, "slot", ("",))[0], e.label) not in shown]
                     self._undo_relabel(target, flipped, depth, child_path,
-                                       child_selectors)
+                                       child_selectors, also=self._dedupe(also))
                     handled.add(self._fingerprint(flipped))
                     continue
 
@@ -2547,6 +2597,23 @@ class RecursiveWalker(ElementTreeWalker):
                 # the top bar; the rest of the camera screen returning with
                 # them is the camera screen, not Flash's children.
                 fresh = [e for e in appeared if self._fingerprint(e) not in inherited]
+                # A control that was already on screen -- same id, same name --
+                # and was only redrawn by the press is not something the press
+                # brought. Turning Auto framing on blanks the text of both
+                # Video size chips; read as new controls, they made the press
+                # look like it opened a screen, and the walk went "into" Auto
+                # framing instead of recording its message and pressing it
+                # back (agreed: a toggle with a caption, like Night shot).
+                shown = {(getattr(e, "slot", ("",))[0], e.label)
+                         for e in standing if e.interactive}
+                redrawn = [e for e in fresh
+                           if e.interactive
+                           and (getattr(e, "slot", ("",))[0], e.label) in shown
+                           and self._fingerprint(e) != self._fingerprint(target)]
+                if redrawn:
+                    logger.info("already on screen, redrawn by pressing %r: %s",
+                                target.label, sorted({e.label for e in redrawn}))
+                    fresh = [e for e in fresh if e not in redrawn]
                 back_above = any(
                     len(self._signature(after) & seen) / max(1, len(after)) >= self.node_containment
                     for seen in ancestors)
@@ -2716,7 +2783,7 @@ class RecursiveWalker(ElementTreeWalker):
                 self._visit(depth + 1, child_path, child_selectors,
                             ancestors + [signature], entering=target, parent=node)
                 opened = frozenset(self._fingerprint(e) for e in fresh
-                                   if not self._is_back(e))
+                                   if e.interactive and not self._is_back(e))
                 if not self._return_to(node, gone=opened):
                     # One lost step back used to end this node AND, through
                     # the same check in each caller, every node above it.
