@@ -212,7 +212,19 @@ def interactive_views(
 _DIALOG_CLASS_HINTS = ("alertdialog", "dialog", "popupwindow", "bottomsheet")
 
 
-def scrollable_container(views: Sequence[Dict]) -> Optional[Dict]:
+SLIDER_CLASSES = ("seekbar", "slider", "ratingbar")
+
+
+def is_slider(view: Dict) -> bool:
+    """A control that holds a VALUE and scrolls to change it. Swiping one is
+    not scrolling: PRO's dial panels expose the dial as a scrollable SeekBar,
+    and every sweep for rows below the fold turned the dial -- ISO went
+    manual, SPEED to 30 s, and a "Reset" appeared that was not there."""
+    cls = (view.get("class") or "").split(".")[-1].lower()
+    return cls.endswith(SLIDER_CLASSES)
+
+
+def scrollable_container(views: Sequence[Dict], sliders: bool = False) -> Optional[Dict]:
     """The view that actually scrolls the content, or None.
 
     The INNERMOST scrollable, not the tallest. A settings page wraps its list
@@ -230,8 +242,12 @@ def scrollable_container(views: Sequence[Dict]) -> Optional[Dict]:
 
     A nested scrollable only displaces its parent when it is a real share of
     it (40%), so a small spinner inside a long page does not win.
+
+    A slider is never the content (see is_slider) unless `sliders` is asked
+    for -- reading a mode strip that happens to be a SeekBar.
     """
-    boxed = [(view, box_of(view)) for view in views if view.get("scrollable")]
+    boxed = [(view, box_of(view)) for view in views if view.get("scrollable")
+             and (sliders or not is_slider(view))]
     boxed = [(view, box) for view, box in boxed if box]
     if not boxed:
         return None

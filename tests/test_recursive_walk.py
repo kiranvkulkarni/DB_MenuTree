@@ -147,8 +147,13 @@ def main() -> int:
                 "self._visit(depth + 1, child_path, child_selectors" in visit)
     descend = visit.index("self._visit(depth + 1, child_path, child_selectors")
     ok &= check("a subtree is walked, then the walk steps back one level",
-                "if not self._return_to(node):" in visit[descend:descend + 400],
+                "if not self._return_to(node, gone=opened):" in visit[descend:descend + 500],
                 "descend, exhaust, come back one -- exactly the sheet's order")
+    ok &= check("back means what the press opened has gone again",
+                "gone & {self._fingerprint(e) for e in here}"
+                in inspect.getsource(RecursiveWalker._return_to),
+                "ISO's dial panel over PRO still 'was' PRO, and four more dials "
+                "were pressed on top of it")
 
     print()
     print("a menu never contains itself")

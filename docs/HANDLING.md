@@ -298,8 +298,33 @@ column R "Review Comments"; each comment is a rule for every screen.
   controls still visible from the screen behind are not repeated (PRO >
   Exposure monitor, Quick controls). Back controls stay on every screen.
 * **Live readings** (values that change while nothing is pressed) belong to
-  the screen that first showed them.
+  the screen that first showed them. While the screen behind is still
+  showing, a view of it that READS differently is still its own: a value
+  inside a control carried over unchanged (ISO's "800" inside the ISO dial),
+  or a view in the same place with the same id and description (Flash
+  reading "BACK_FLASH_OFF"). The light changes between two screens, so PRO's
+  bar read "3200", "1/90s", "3200K" over its dials (second review).
 * **PRO dials** list their controls and the scale values seen (agreed); the
-  autofocus modes are pressed, recorded and put back (agreed).
-* A guarded row is opened only from a list (Settings' Reset settings); a
-  panel's Reset is never pressed.
+  autofocus modes are pressed, recorded and put back (agreed). On the phone
+  a dial in Auto exposes no scale marks: its panel adds About selected
+  setting, the Auto button, the dial's level and Close -- written as
+  `ISO / 800 (summary) / About selected setting / Auto ISO (option) /
+  800 (on a slider) / Close`.
+* **A slider is never swiped or tapped.** It is a value, not a list: the
+  sweep for rows below the fold picks a scrollable container, and on a
+  dial panel the only one is the dial (a SeekBar) -- 74 sweeps turned ISO
+  manual and SPEED to 30 s. A label drawn on a slider with nothing
+  pressable around it (the dial's level) is listed `on a slider -- listed,
+  not pressed`: tapping it set the value (focus went to MF).
+* **A row that names itself by its description holds its value as text**:
+  SPEED's "1/30s" is its summary, not its title, and is not pressed.
+* **Back from a screen means what the press opened has gone again**, not only
+  that the screen's own controls are visible -- a panel adds a few controls
+  to a screen that is still fully showing.
+* A guarded row is opened only from a ROW of a list -- one that fills its
+  list's width (Settings' Reset settings). A chip in a strip is not a row:
+  PRO's bar of dials scrolls sideways, and its "Reset" (shown once any dial
+  is manual; it resets them all) is listed, never pressed.
+* **A control's text that is dynamic stays as the phone shows it**: the
+  Watermark text field is "Customize text | Edit" (confirmed in the second
+  review, 2026-10-16).

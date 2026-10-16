@@ -44,7 +44,7 @@ from .device_driver import DriverError
 from .elements import Element, _pressable_via, label_set, screen_similarity
 from .elements import CHROME_PACKAGES
 from .hierarchy import parse_hierarchy
-from .hierarchy import box_of, center_of, looks_like_dialog, scrollable_container
+from .hierarchy import box_of, center_of, is_slider, looks_like_dialog, scrollable_container
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +266,8 @@ class RecursiveWalker(ElementTreeWalker):
         from .element_tree import KEYPAD_KEY
         if element.role == "option":
             return "option -- listed, not selected"
+        if getattr(element, "on_slider", False):
+            return "on a slider -- listed, not pressed"
         if KEYPAD_KEY.fullmatch(element.label.strip()):
             self._keypad_skipped += 1
             return "keypad key -- recorded, not pressed"
@@ -277,9 +279,12 @@ class RecursiveWalker(ElementTreeWalker):
         else:
             blocked = self.guard.blocks_row("text", element.label)
             # Only a ROW of a list (Settings' "Reset settings"): PRO's own
-            # Reset in its focus panel was pressed three times.
+            # Reset in its focus panel was pressed three times, and the
+            # Reset chip in PRO's bar of dials 21 times -- the bar scrolls,
+            # so it is a list, but a chip in it is not a row of it.
             if (blocked and self.open_guarded_rows and element.role == "title"
-                    and getattr(element, "group", "")):
+                    and getattr(element, "group", "")
+                    and getattr(element, "full_row", False)):
                 # Opted into by the app's profile: open the row to document
                 # the confirmation it raises. Inside that dialog the strict
                 # check above refuses the destructive button, and the walk
@@ -343,7 +348,7 @@ class RecursiveWalker(ElementTreeWalker):
         return row
 
     # -- getting back ----------------------------------------------------
-    def _return_to(self, node: "Node") -> bool:
+    def _return_to(self, node: "Node", gone=frozenset()) -> bool:
         """Get back to `node`, using the tree rather than guesswork.
 
         Ordered by how safe each move is, not by how obvious:
@@ -368,7 +373,18 @@ class RecursiveWalker(ElementTreeWalker):
             _, views, package = self._await_stable()
             if not views or (package and package != self.package):
                 return False
-            return self._is_node(node.elements, self._elements(views), node.own)
+            here = self._elements(views)
+            # Back means what the press OPENED has gone again, not only that
+            # this screen's controls are visible: a dial panel adds four
+            # controls to PRO's thirty, so with ISO's panel still open the
+            # screen "was" PRO -- and SPEED, EV, FOCUS and WB were pressed
+            # on top of it. Most, not all: a reading may settle on a value
+            # the screen also shows.
+            if gone:
+                still = gone & {self._fingerprint(e) for e in here}
+                if 2 * len(still) > len(gone):
+                    return False
+            return self._is_node(node.elements, here, node.own)
 
         def press(element: Element, views, how: str) -> bool:
             if self.guard.blocks("text", element.label):
@@ -608,10 +624,13 @@ class RecursiveWalker(ElementTreeWalker):
                        and not views[e.view_index].get("clickable")
                        and by_view.get(_pressable_via(views, e.view_index)) == e.label
                        and _pressable_via(views, e.view_index) != e.view_index)]
+        sliders = [b for b in (box_of(v) for v in views if is_slider(v)) if b]
         for e in out:
             role, row, check = self._row_role(e, views)
             e.role = role
+            e.on_slider = self._on_slider(views, e.view_index, sliders)
             e.group = self._list_of(views, e.view_index)
+            e.full_row = self._fills_list(views, row if row is not None else e.view_index)
             if row is not None and 0 <= row < len(views):
                 titles = [self._label_of(views[j])
                           for j in [row] + self._descendants(views, row)
@@ -630,6 +649,7 @@ class RecursiveWalker(ElementTreeWalker):
             # by its name, so a change of state is the same control.
             text = (view.get("text") or "").strip()
             desc = (view.get("content_description") or "").strip()
+            e.desc = desc
             e.name = e.state = ""
             # Not an option: Metering modes' three choices each carry the
             # group's description -- they are choices, written as themselves.
@@ -732,7 +752,15 @@ class RecursiveWalker(ElementTreeWalker):
             return "plain", None, None
         inside = self._descendants(views, row)
         labelled = [j for j in inside if self._label_of(views[j])]
-        if i != row and labelled and i != labelled[0]:
+        # A row that names ITSELF by its description holds its value as text:
+        # PRO's SPEED dial is described "SPEED" and shows "1/30s". The value
+        # is not the row's title -- pressed, it opened SPEED again, and by
+        # then the light had moved it ("could not locate '1/10s'"). Not when
+        # the description repeats the text ("Watermark, Off" over Watermark).
+        named = (views[row].get("content_description") or "").strip().lower()
+        mine = self._label_of(view).strip().lower()
+        named_row = bool(named and mine and named not in mine and mine not in named)
+        if i != row and labelled and (i != labelled[0] or named_row):
             # A switch row's state readout -- the "Off" beside the switch,
             # the same text the switch itself shows -- is the switch saying
             # its state, already written as the Off / On rows.
@@ -1665,6 +1693,108 @@ class RecursiveWalker(ElementTreeWalker):
             i = v.get("parent")
         return ""
 
+    def _readings_moved(self, after, after_views, before, target):
+        """What a press seemed to bring, but is a reading that moved.
+
+        A value inside a control that is still on screen unchanged belongs to
+        that control: pressing Histogram "showed" "3700K" because the white
+        balance had moved meanwhile. The pressed control's own values stay --
+        they are what the press did.
+        """
+        kept = {e.view_index for e in after if self._fingerprint(e) in before}
+        pressed = {e.view_index for e in after
+                   if self._fingerprint(e) == self._fingerprint(target)}
+        out = set()
+        for e in after:
+            if not 0 <= e.view_index < len(after_views or []):
+                continue
+            if after_views[e.view_index].get("clickable"):
+                continue
+            via = _pressable_via(after_views, e.view_index)
+            if via in kept and via not in pressed:
+                out.add(self._fingerprint(e))
+        return out
+
+    def _still_behind(self, elements, views, parent, behind):
+        """Views of the screen behind that READ differently now.
+
+        PRO's dial panels re-listed the bar of dials under every dial --
+        "3200", "1/90s", "3200K" -- because the light had changed since PRO
+        was listed, and a reading is known by what it reads (R1769 "5000K").
+        Two things make a view the screen behind's own, whatever it reads:
+
+          * it is a value INSIDE a control carried over unchanged: ISO's
+            "800" is part of the ISO dial;
+          * it sits in the same place, with the same id AND description, as
+            a view of the screen behind: Flash read "BACK_FLASH_OFF" over the
+            SPEED dial -- or with the same id and text, taken for a title
+            ("F 1.7").
+
+        Only while that screen is still showing (three of its controls on
+        this one unchanged) -- a mode switch fills the same places with other
+        controls, and a settings screen replaces its list outright.
+        """
+        if parent is None or len(behind) < 3:
+            return set()
+        kept = {e.view_index for e in elements if self._fingerprint(e) in behind}
+        was = {(getattr(pe, "slot", None), getattr(pe, "desc", ""))
+               for pe in parent.elements if getattr(pe, "desc", "")}
+        # Same place, same id, same TEXT is the same view even when it is
+        # read differently: the aperture's "F 1.7" was text on PRO and the
+        # first label -- a [Title] -- over each dial.
+        shown = {(getattr(pe, "slot", None), pe.label) for pe in parent.elements
+                 if getattr(pe, "slot", ("",))[0]}
+        out = set()
+        for e in elements:
+            if self._is_back(e) or not 0 <= e.view_index < len(views):
+                continue
+            inside = (not views[e.view_index].get("clickable")
+                      and _pressable_via(views, e.view_index) in kept)
+            same = bool(getattr(e, "desc", "")) and (getattr(e, "slot", None), e.desc) in was
+            again = (getattr(e, "slot", None), e.label) in shown
+            if inside or same or again:
+                out.add(self._fingerprint(e))
+        if out - behind:
+            logger.info("still the screen behind, reading differently: %s",
+                        sorted({e.label for e in elements
+                                if self._fingerprint(e) in out - behind}))
+        return out
+
+    @staticmethod
+    def _on_slider(views, index, sliders) -> bool:
+        """A label drawn ON a slider, with nothing pressable around it: the
+        dial's level in PRO ("2500", "1/15", "Center AF", "3400K"). A tap
+        there lands on the slider and sets it -- ISO went manual, focus to
+        MF, white balance opened its manual controls."""
+        if not sliders or not 0 <= index < len(views):
+            return False
+        view = views[index]
+        if view.get("clickable") or _pressable_via(views, index) is not None:
+            return False
+        box = box_of(view)
+        if not box:
+            return False
+        x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        return any(s[0] <= x <= s[2] and s[1] <= y <= s[3] for s in sliders)
+
+    @staticmethod
+    def _fills_list(views, index) -> bool:
+        """Whether the view at `index` spans the width of its list: a ROW of
+        a list (Settings' "Reset settings"), not a chip in a strip that
+        scrolls sideways (PRO's bar of dials, whose "Reset" resets them all)."""
+        if index is None or not 0 <= index < len(views):
+            return False
+        box = box_of(views[index])
+        i = views[index].get("parent")
+        while i is not None and 0 <= i < len(views):
+            v = views[i]
+            if v.get("scrollable") or (v.get("class") or "").endswith(("RecyclerView", "ListView")):
+                outer = box_of(v)
+                return bool(box and outer
+                            and box[2] - box[0] >= 0.8 * (outer[2] - outer[0]))
+            i = v.get("parent")
+        return False
+
     def _headers_of(self, node, governed):
         """Section headers that belong to what a switch governs.
 
@@ -2095,6 +2225,7 @@ class RecursiveWalker(ElementTreeWalker):
                 self._live_slots[slot] = tuple(path)
             elif owner is not None and owner != tuple(path):
                 behind.add(self._fingerprint(e))
+        behind |= self._still_behind(elements, views, parent, behind) if only is None else set()
         handled |= behind
         node.own = {self._fingerprint(e) for e in elements
                     if self._fingerprint(e) not in inherited and not is_tab(e)
@@ -2387,6 +2518,8 @@ class RecursiveWalker(ElementTreeWalker):
                 # A caption arrives because of the press, exactly as a button
                 # does, and belongs to the same node.
                 appeared = [e for e in after if self._fingerprint(e) not in before]
+                moved_on = self._readings_moved(after, after_views, before, target)
+                appeared = [e for e in appeared if self._fingerprint(e) not in moved_on]
                 revealed = [e for e in appeared if e.interactive]
                 # What is genuinely NEW: not on this screen, and not on a
                 # screen above it coming back into view. Flash and Timer in
@@ -2470,7 +2603,10 @@ class RecursiveWalker(ElementTreeWalker):
                             "appeared=%d fresh=%d", target.label, moved,
                             back_above, in_place, len(appeared), len(fresh))
                 if fresh and in_place:
-                    if not moved and not any(e.interactive for e in fresh):
+                    # A dial's level is not a caption: EV's panel brings only
+                    # "0.0", drawn on its slider -- a panel, listed as one.
+                    if (not moved and not any(e.interactive for e in fresh)
+                            and not any(getattr(e, "on_slider", False) for e in fresh)):
                         # Only a caption came up: Lighting, Night shot.
                         self._list_captions(fresh, target, depth, path,
                                             path_selectors, handled)
@@ -2559,7 +2695,9 @@ class RecursiveWalker(ElementTreeWalker):
 
                 self._visit(depth + 1, child_path, child_selectors,
                             ancestors + [signature], entering=target, parent=node)
-                if not self._return_to(node):
+                opened = frozenset(self._fingerprint(e) for e in fresh
+                                   if not self._is_back(e))
+                if not self._return_to(node, gone=opened):
                     # One lost step back used to end this node AND, through
                     # the same check in each caller, every node above it.
                     # A single toggle on the Settings screen took out depth
@@ -2981,7 +3119,7 @@ class RecursiveWalker(ElementTreeWalker):
                 if views[i].get("scrollable"):
                     break
                 i = views[i].get("parent")
-        strip = scrollable_container(views)
+        strip = scrollable_container(views, sliders=True)
         said = ((strip or {}).get("content_description") or "").lower()
         return (label.strip().lower() in said) if said else True
 
