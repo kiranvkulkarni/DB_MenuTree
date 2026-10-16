@@ -1,11 +1,15 @@
+# Pinned to the versions the walker was last run and tested with
+# (2026-10-16, Python 3.11.9, Windows 11, Galaxy S25 Ultra).
+
 # Device automation. The MenuTree tools talk to the phone through
-# uiautomator2, falling back to plain adb where the agent will not run.
-uiautomator2==3.2.5
+# uiautomator2 (which brings adbutils, lxml and requests), falling back to
+# plain adb where the agent will not run.
+uiautomator2==3.7.0
 
 # The deliverable: the MenuTree workbook, and reading a hand-authored one.
 openpyxl==3.1.5
 
 # Reconstructing a workbook from photographs (tools/build_spec_xlsx.py only).
 # Not needed to run a crawl or a verification.
-pypdf==5.1.0
-pillow==11.0.0
+pypdf==6.16.2
+pillow==12.3.0

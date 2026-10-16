@@ -1,3 +1,6 @@
+> **History (August 2026).** For the current state, open decisions and next
+> steps, read [HANDOFF.md](HANDOFF.md) and [../CLAUDE.md](../CLAUDE.md).
+
 # MenuTree — where this stands
 
 Honest status, not a pitch. Written against the Realme (RMX3950, Android 16)

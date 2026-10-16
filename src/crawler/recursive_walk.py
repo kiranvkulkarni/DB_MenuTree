@@ -35,8 +35,10 @@ Three rules were confirmed against the hand-authored S25 Ultra MenuTree:
   dump marks the current one `selected`, which is how the parent is found.
 """
 import logging
+import os
 import re
 import time
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set
 
 from .element_tree import ElementTreeWalker, TreeNode
@@ -1693,6 +1695,20 @@ class RecursiveWalker(ElementTreeWalker):
             i = v.get("parent")
         return ""
 
+    def _save_dump(self, path):
+        """Development aid: with MENUTREE_SAVE_DUMPS=<folder>, keep the dump
+        each screen was listed from, to see afterwards what the walk saw."""
+        folder = os.environ.get("MENUTREE_SAVE_DUMPS")
+        if not folder:
+            return
+        try:
+            name = re.sub(r"[^A-Za-z0-9]+", "_", " > ".join(path))[:120] or "root"
+            target = Path(folder) / f"{len(self.rows):05d}_{name}.xml"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(self.driver.dump_hierarchy(), encoding="utf-8")
+        except Exception as exc:
+            logger.debug("could not save the dump: %s", exc)
+
     def _readings_moved(self, after, after_views, before, target):
         """What a press seemed to bring, but is a reading that moved.
 
@@ -2062,6 +2078,7 @@ class RecursiveWalker(ElementTreeWalker):
         _, views, _ = self._await_stable()
         if not views:
             return
+        self._save_dump(path)
         enabled = {}
         elements = self._enumerate_scrolled(views, enabled)
         if not elements:
@@ -2223,7 +2240,10 @@ class RecursiveWalker(ElementTreeWalker):
             owner = self._live_slots.get(slot)
             if owner is None and slot in live_here:
                 self._live_slots[slot] = tuple(path)
+                logger.info("live reading here: %r", e.label)
             elif owner is not None and owner != tuple(path):
+                logger.info("live reading of %s, not repeated: %r",
+                            " > ".join(owner) or "the root", e.label)
                 behind.add(self._fingerprint(e))
         behind |= self._still_behind(elements, views, parent, behind) if only is None else set()
         handled |= behind
