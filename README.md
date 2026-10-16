@@ -1,24 +1,29 @@
 # MenuTree AutoQA Agent
 
-Tooling for the **MenuTree** release gate: an element-by-element,
-depth-ordered inventory of an Android app, exported as the expected workbook
-with a UVTA test case per row.
-
-Two tools, answering different questions:
+Tooling for the **MenuTree** release gate. A MenuTree is an element-by-element,
+depth-ordered inventory of an Android app. It is exported as the expected
+workbook, with a UVTA test case per row.
 
 ```bash
-# THE GATE — walk the hand-authored sheet, assert every row is present
-python tools/verify_menutree.py --spec MenuTree.xlsx --package <pkg> --serial <serial>
+# DISCOVERY -- walk the app on the phone and write its MenuTree (the main tool)
+python tools/build_menutree.py --package <pkg> --serial <serial> --revisits top --time-budget 28800
 
-# DISCOVERY — find UI the sheet does not have yet
-python tools/build_menutree.py --package <pkg> --serial <serial> --time-budget 1500
+# VERIFICATION -- walk a hand-authored sheet and assert every row is present
+python tools/verify_menutree.py --spec MenuTree.xlsx --package <pkg> --serial <serial>
 ```
 
-Verification is what can gate a release: the same rows are walked every run,
-the denominator is fixed by the sheet, and a row that cannot be reached is a
-named Fail rather than silently missing coverage. Discovery is not
-reproducible run to run and should not be used as a gate — see
-[docs/STATE_OF_PLAY.md](docs/STATE_OF_PLAY.md) §3.
+Discovery is the tool in daily use. It walks the app screen by screen from a
+cleared start, pressing what is safe to press and putting back anything it
+changes. The workbook it writes is reviewed by the sheet's owner, and the
+review comments become rules for the whole tree. On the Samsung camera (Galaxy
+S25 Ultra) a full run takes about 2 hours and gives about 3,700 rows, with no
+failed returns and no setting left changed.
+
+Verification walks the rows of an existing sheet instead. Its denominator is
+fixed by the sheet, so it suits a pass/fail gate.
+
+**Continuing this work? Start with [CLAUDE.md](CLAUDE.md) and
+[docs/HANDOFF.md](docs/HANDOFF.md).**
 
 ---
 
@@ -26,23 +31,14 @@ reproducible run to run and should not be used as a gate — see
 
 | Document | Read it when |
 |---|---|
-| **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Before changing anything. Explains *why* the system is shaped this way, what was tried and rejected, and the traps that are easy to fall back into. |
-| **[docs/STATE_OF_PLAY.md](docs/STATE_OF_PLAY.md)** | **Read this first.** Honest status: what works, what does not, the unsolved reproducibility problem, hard platform limits, and the existing tools worth evaluating before investing further. |
-| **[docs/TOOL_EVALUATION.md](docs/TOOL_EVALUATION.md)** | Why Google App Crawler (discontinued) and Firebase Robo (cloud-only, APK-upload) cannot serve this deliverable — and why verifying a known tree beats discovering one. |
-| **[docs/METHOD.md](docs/METHOD.md)** | **How this was built and how to extend it.** The method, the mistakes and what each guardrail is scar tissue from. Read before changing matching, thresholds, or anything that turns a Fail into an NA. |
-| **[docs/MODULES.md](docs/MODULES.md)** | "Where do I go to change X?" Code map, the shared layers, device lifecycle rules, common tasks. |
-| This file | Setup, running, reading the report. |
-
-Two entry points, sharing everything except how they choose what to visit:
-
-| | tool | question |
-|---|---|---|
-| Discovery | `tools/build_menutree.py` | what is in this build? |
-| **Verification** | `tools/verify_menutree.py` | **does this build match the sheet?** |
-
-Verification is the gate. Discovery finds UI the sheet does not have yet.
-
----
+| **[CLAUDE.md](CLAUDE.md)** | First. The rules that are not negotiable (app-agnostic, cleared start, never change a setting, no company material in git), how the work is done (screen by screen, reviews), and the commands. Claude Code reads it automatically. |
+| **[docs/HANDOFF.md](docs/HANDOFF.md)** | Second. Where things stand, the decisions agreed with the sheet's owner, open items, known gaps, and the latest full run. |
+| **[docs/HANDLING.md](docs/HANDLING.md)** | Before changing how any element is treated. The agreed policy for every kind of element: switches, options, panels, dials, captions, pop-ups, the review rules. |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Before changing the structure. Why the system is shaped this way and the traps it avoids. |
+| [docs/METHOD.md](docs/METHOD.md) | How this was built; what each guardrail is scar tissue from. |
+| [docs/MODULES.md](docs/MODULES.md) | "Where do I go to change X?" |
+| [docs/STATE_OF_PLAY.md](docs/STATE_OF_PLAY.md), [docs/TOOL_EVALUATION.md](docs/TOOL_EVALUATION.md) | History (August 2026): the earlier worklist walker, and why existing crawlers could not serve this deliverable. |
+| This file | Setup, running, reading the output. |
 
 ## 1. Design principle: nothing infers the structure
 
@@ -80,8 +76,9 @@ per row from enumeration through to the `.uvta`.
 
 ## 3. Setup
 
-Requirements: Python 3.10+, Android SDK with `platform-tools` on PATH, and a
-device with USB debugging enabled.
+Requirements: Python 3.11 (tested; 3.10+ should work), Android SDK
+`platform-tools` (adb) on PATH, and a phone with USB debugging enabled,
+unlocked, ideally with "Stay awake" on while charging.
 
 ```bash
 python -m venv .venv
@@ -92,14 +89,47 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-That is the whole setup. Four packages, no APK handling, no patching, no
-external crawler.
+That is the whole setup. The packages are pinned to the versions last
+tested. There is no APK handling, no patching, and no external crawler. The
+first uiautomator2 call installs its agent on the phone.
 
 Find your device with `adb devices` and pass it as `--serial`.
 
 ## 4. Running
 
-### The MenuTree tools (back-ends C and D)
+### Discovery (the MenuTree of an app)
+
+```bash
+# Full run: about 2 h on the camera. Writes output/<package>_<YYYYMMDD_HHMMSS_mmm>/
+python tools/build_menutree.py --package com.sec.android.app.camera \
+    --serial <serial> --revisits top --time-budget 28800
+
+# One screen: what is on it and how the walk would treat each element
+python tools/inspect_screen.py --package <pkg> --serial <serial> \
+    --path "PORTRAIT,Quick controls,Go to Settings" [--probe] [--no-reset]
+
+# One branch (minutes): the way every fix is developed and checked
+python tools/walk_branch.py --package <pkg> --serial <serial> \
+    --path "MORE,PRO" [--only "A,B"] [--skip "Quick controls"]
+
+# Re-apply the layout rules to an existing run, without walking again
+python tools/build_menutree.py --package <pkg> --skip-walk --output-dir output/<run>
+```
+
+- **Start state.** Every walk starts by clearing the app's data and cache,
+  so first-launch and permission pop-ups are recorded. `--no-reset` skips it.
+- **`--revisits`.** This sets how a screen reached again by another route is
+  treated (Settings, from every camera mode). `top` lists its rows but opens
+  only rows not seen before; `full` walks it every time; `note` writes one
+  row saying where it was listed.
+- **App-specific decisions** live in `profiles/<package>.json`: what not to
+  press, what to walk as a separate pass (the front camera), first-launch
+  answers, and sheet aliases. An app without a profile is walked on
+  structure alone.
+- **Diagnosis.** `MENUTREE_SAVE_DUMPS=<folder>` saves the screen dump each
+  screen was listed from.
+
+### Verification (against a hand-authored sheet)
 
 ```bash
 # Check the sheet parses correctly first. No device needed.
@@ -107,20 +137,16 @@ python tools/verify_menutree.py --spec MenuTree.xlsx --package <pkg> --dry-run
 
 # Then the real run. Writes a COPY of the workbook; the original is untouched.
 python tools/verify_menutree.py --spec MenuTree.xlsx --package <pkg> --serial <serial>
-
-# Discovery, to find UI the sheet does not have.
-python tools/build_menutree.py --package <pkg> --serial <serial> \
-    --time-budget 1500 --max-depth 12
 ```
 
-Both write to a per-run folder `output/<package>_<YYYYMMDD_HHMMSS_mmm>/`, so
-no run ever overwrites another. `verify_menutree.py` exits 2 if any row fails.
+`verify_menutree.py` exits 2 if any row fails.
 
-Both take a **run lock** on the device: a second run against the same serial
-is refused, naming the PID that holds it. `--force-lock` overrides. Both
-release the device on exit — dropping the stay-awake hold, force-stopping the
-app and going Home — from a `finally`, so an interrupted run still hands the
-handset back.
+Both tools write to a per-run folder under `output/`, so no run ever
+overwrites another. Both take a **run lock** on the device: a second run
+against the same serial is refused, naming the PID that holds it
+(`--force-lock` overrides). Both release the device on exit, from a
+`finally`: they drop the stay-awake hold, force-stop the app and go Home, so
+an interrupted run still hands the handset back.
 
 > **Safety on a personal device.** The action guard is on by default and
 > refuses destructive, outbound, account and commerce controls; keypad keys
@@ -129,14 +155,26 @@ handset back.
 
 ## 5. Reading the results
 
-**Discovery** reports `done / (done + pending + unreachable)`. `actionable`
-excludes what was never meant to be pressed — static text, back buttons,
-keypad keys, guard-blocked controls — so the figure is not inflated by rows
-that were never work.
+**Discovery** writes `<package>_menutree.xlsx` (sheet `MenuTree`), the same
+rows as `menutree.csv` and `menutree_rows.json`, the UVTA suite, and the log.
+In the workbook:
 
-Runs end on the clock, not on exhausting the app: a run with
-`still pending > 0` ran out of time, so a cheaper action is directly more
-coverage. Read `phase_seconds` before optimising anything.
+- **Depth columns.** Each row's label sits in the column for its depth. The
+  cell right after the label holds the item's widget or state, for example
+  `Balanced | radio (On/Off)` or `Resolution | BACK_CAMERA_PRO_PICTURE_SIZE_NORMAL`.
+- **Comments column.** It says what the walk did with the row, for example
+  `option -- listed, not selected`, `state after pressing -- put back`,
+  `on a slider -- listed, not pressed`, `listed; opened under ...`, or
+  `blocked by action guard`. [docs/HANDLING.md](docs/HANDLING.md) explains
+  each one.
+
+The run summary is the first thing to read. A good run has
+`returns_failed: 0` and `switches_not_restored: 0`, and no
+`could not put ... back` warnings in the log.
+
+**Reviews.** The sheet's owner copies `MenuTree` to a sheet named
+`MenuTree_To_Be` and writes comments in column R, "Review Comments". Each
+comment is applied as a rule across the whole tree.
 
 **Verification** reports Pass / Fail / NA and, above the pass rate, **how
 many rows were actually judged**. Read that first. A percentage over a small
@@ -189,40 +227,46 @@ never a false Pass.
 
 ## 6. Known gaps
 
-1. **Discovery is not reproducible.** Identical code, device and app produced
-   465, 291 and 90 rows. This is why verification, not discovery, is the gate.
-2. **Screen identity is the limiter.** Navigation shortcuts land where
-   expected about 10% of the time, because the same-looking menu appears under
-   many parents with identical element sets. See METHOD.md §6.
-3. **Permission branches cannot be replayed.** `pm clear` does not revoke a
-   preinstalled app's permissions, and `pm revoke` fails for shell. Once
-   Android records a decision, the other branches are never offered again.
-4. **Specification knowledge is unreachable by crawling.** Rows like
-   `on 3rd entry of camera` encode preconditions no crawler can observe.
-5. **Text input is not driven.** Fields are enumerated, never typed into.
+The current list, with what is being done about each, is in
+[docs/HANDOFF.md](docs/HANDOFF.md) §3 and §5. In short:
+
+1. **Labels that come and go by themselves** are listed as rows. Examples are
+   a top-bar divider ("Bar") in video modes, and the aperture readout
+   ("F 1.7") for a moment after a change.
+2. **Live values** (a dial's level, NIGHT's shutter time) can change between
+   being listed and being pressed ("could not be located"). They are listed
+   but never pressed.
+3. **Text input is not driven.** Fields are enumerated, never typed into.
+4. **Permissions.** `pm clear` does not revoke a preinstalled app's
+   permissions. The first-launch chain is recorded after a clear, but a
+   permission Android already holds is not asked again.
 
 ---
 
 ## 7. Development
 
-Everything runs without a device, in seconds. Run it before any device work:
+Everything below runs without a device, in seconds. Run it before any device
+work and before every commit:
 
 ```bash
-python tests/test_hierarchy.py     # XML parsing, state keys, selector priority
-python tests/test_matching.py      # sheet wording vs screen text, both directions
-python tests/test_navigation.py    # the rise-then-descend plan
-python tests/test_run_lock.py      # one run per device
-python tests/test_traversal.py     # visit order, cycle guards, one control one row
-python tests/test_tree_shape.py    # shortest-route depth and pre-order rows
-python tests/test_dialogs.py       # getting out of a modal that is in the way
-python tests/make_spec_fixture.py  # a workbook shaped like the real deliverable
+for t in tests/test_*.py; do python -B $t >/dev/null || echo FAIL $t; done
+python tests/make_spec_fixture.py   # a workbook shaped like the real deliverable (generic labels)
+python tools/verify_menutree.py --spec tests/spec_fixture.xlsx --package com.example --dry-run
 ```
 
-Then, still with no device:
+`tests/fixtures/*.xml` are real screen dumps. A new handling gets a test
+against the dump of the screen it was found on.
 
-```bash
-python tools/verify_menutree.py --spec tests/spec_fixture.xlsx     --package com.example --dry-run
-```
+The working method:
+1. Inspect the screen on the phone.
+2. Probe what each element does.
+3. Agree the handling with the sheet's owner.
+4. Implement it, with a test.
+5. Re-walk only that branch, and compare it with the last full run.
+
+Never test a fix with a full run. Company material, such as the device
+team's MenuTree or anything transcribed from it, stays out of git; see
+`.gitignore`.
 
 > **Safety:** an exhaustive crawler presses every button it finds. On the
 > Phone app it dialled numbers. The action guard is on by default and refuses
@@ -281,5 +325,16 @@ Read `blocking_dialogs_cleared`, `blocked_recoveries` and `elements_requeued`
 before believing a low coverage figure. They are what tells an app that is
 small apart from an app that was behind a pop-up.
 
-**Low coverage** — read `phase_seconds` in `menutree_rows.json`. Runs end on
-the time budget, so the largest phase is the biggest coverage lever.
+**A full run stops early** — the default `--time-budget` is 3600 s. A full
+camera run needs about 2 h, so pass `--time-budget 28800`.
+
+**The phone dozed or disconnected mid-run** — reconnect it and unlock it. The
+walker holds the screen awake while it runs. If a run was interrupted, its
+rows so far are in `menutree_rows.json` in the run folder.
+
+**A row is missing that is on the screen** — re-walk that branch with
+`MENUTREE_SAVE_DUMPS=<folder>` and compare the saved dump with what was listed.
+
+**Low coverage (worklist walker only)** — read `phase_seconds` in
+`menutree_rows.json`. Runs end on the time budget, so the largest phase is the
+biggest coverage lever.
