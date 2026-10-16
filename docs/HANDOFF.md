@@ -60,15 +60,15 @@ All of these are in HANDLING.md with their reasons. The short list:
 
 ## 3. Open decisions (the user's, not the code's)
 
-1. **`S25U_MenuTree.xlsx` and `tests/spec_fixture.xlsx` are in git and on
-   GitHub** (branch `feat/utg-derived-menutree`). The first is a
-   reconstruction of the device team's MenuTree, typed from photographs, so it
-   is company material. Options: stop tracking it from now on
-   (`git rm --cached`), and/or remove it from history and force-push. Also
-   check whether the GitHub repo is private.
-2. **The work is on branch `feat/utg-derived-menutree`, not `main`.** It was
-   pushed to GitHub on 2026-10-16. Whether and when to merge it into `main`
-   is the user's call.
+1. *(Settled 2026-10-16.)* The company-derived files `S25U_MenuTree.xlsx`
+   and `tools/menutree_ocr/{modes,settings}_rows.py`, and the generated
+   `tests/spec_fixture.xlsx`, were removed from all git history and are
+   gitignored. `tests/make_spec_fixture.py` now uses generic labels. The
+   pre-purge history is kept only in a local backup bundle on the old
+   machine. GitHub may keep unreferenced old commits cached for a while;
+   GitHub support can purge them if needed.
+2. *(Settled 2026-10-16.)* `feat/utg-derived-menutree` was merged into
+   `main`. Both are on GitHub.
 3. **Manual-mode PRO controls.** The walk no longer turns a dial, because
    that changes a setting. So the controls that exist only in manual mode are
    no longer recorded: the focus areas CENTER / MULTI / MANUAL, "Manual ISO",
@@ -138,7 +138,7 @@ In order:
 ## 6. Moving this to another machine
 
 - **Code:**
-  `git clone -b feat/utg-derived-menutree https://github.com/kiranvkulkarni/DB_MenuTree.git`.
+  `git clone https://github.com/kiranvkulkarni/DB_MenuTree.git` (`main`).
   If GitHub is not reachable, `git bundle create DB_MenuTree.bundle --all` on
   the old machine makes a single file you can clone from in the same way.
 - **Setup:** Python 3.11, `pip install -r requirements.txt` (versions pinned

@@ -29,9 +29,10 @@ agreement, and record every agreed rule there.
   action guard refuses destructive, outbound and commerce controls. Keypad keys
   are never pressed.
 - **Company material is never committed.** That covers `S25_Ultra_MenuTree/`,
-  any `*_MenuTree/` folder and `MenuTree*.xlsx`; all are gitignored. The user
-  cannot share company workbooks off company machines. See HANDOFF.md, "Open
-  decisions", about `S25U_MenuTree.xlsx`.
+  any `*_MenuTree/` folder, `*MenuTree*.xlsx`, and the transcribed rows in
+  `tools/menutree_ocr/*_rows.py`; all are gitignored. They were removed from
+  git history on 2026-10-16. The user cannot share company workbooks off
+  company machines, and test fixtures use generic labels.
 - **Selector priority:** text, then description, then resource id, then xpath.
 
 ## How to work with this user
