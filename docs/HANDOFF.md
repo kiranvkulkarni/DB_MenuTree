@@ -1,4 +1,4 @@
-# Handoff — state on 2026-10-16
+# Handoff — state on 2026-10-20
 
 Written for whoever continues this work, a person or Claude. Read
 [../CLAUDE.md](../CLAUDE.md) for the rules and commands, then this file.
@@ -22,9 +22,13 @@ part was built screen by screen with the user and checked on the phone:
 | 7 | First-launch pop-up chain, after clearing the app | Done |
 | Review 1 | 14 comments on run 2026-10-15 05:07, applied tree-wide | Done (HANDLING.md, "First review") |
 | Review 2 | Run 2026-10-16 00:33 reviewed; PRO dial panels fixed | Done (commit 7fee317) |
+| Internet | Samsung Internet (`com.sec.android.app.sbrowser`) profiled and walked | First full run 2026-10-19 (§4); waiting for the user's review |
+| Long press | Every app: long-clickable controls walked like any press | Done (HANDLING.md, "Samsung Internet and long press") |
+| Output | Unique file names per run, MenuTree layout, object repository | Done 2026-10-20 (§4a) |
 
-The latest full run is in §4. Its workbook is the one handed over for the
-next review.
+The latest full runs are in §4. Their workbooks are with the user for
+review; the user runs the current code at the company and brings back
+comments.
 
 ## 2. Decisions agreed with the user
 
@@ -97,10 +101,48 @@ Its `REVIEW_GUIDE.md` lists the known gaps the user was given.
 The previous run, `..._20261016_003319_417`, was reviewed by the user
 ("worked on and is how I expected").
 
+### Samsung Internet
+
+`output/com.sec.android.app.sbrowser_20261019_161011_504/` (not in git; the
+user has the workbook and REVIEW_GUIDE.md):
+- 2,097 rows, 1,951 UVTA cases, 1 h 54 min
+- first launches (4 welcome pages, default-browser prompt), main toolbar with
+  long presses, Bookmarks, Tabs, all of Tools with Settings, Secret mode as
+  its own pass
+- known gaps in its guide: bookmark entries opened (fixed after the run),
+  Settings twice (also under "Tools (long press)"), 10 Internet-app switches
+  not put back (ad blockers download on switching), 17 failed returns
+
+Why the Internet app needed a profile: after clearing, it shows full-screen
+welcome pages, and the walk took the first one for the app. Agreed handling
+is in `profiles/com.sec.android.app.sbrowser.json` (`_about` explains each
+key) and HANDLING.md.
+
+## 4a. Output of a run (2026-10-20)
+
+One folder per run, every file prefixed with the folder's name
+(`src/run_files.py`; older folders still read):
+`<run>_menutree.xlsx` (sheets MenuTree and ObjectRepository), `_menutree.csv`,
+`_rows.json` (rows with all locators), `_suite.uvta`,
+`_object_repository.json`, `_page_objects.py`, `<run>.log`.
+
+- **Layout** (agreed): columns A-D width 8, E-R 16, S-V 4; every cell wraps.
+- **Object repository** (agreed): every UI element under a stable name
+  (`PORTRAIT.QuickControls.Flash`), all its locators (text, content-desc,
+  resource-id, class, xpath, UiAutomator) and the preferred one. The
+  MenuTree has an "Object" column (last, so review columns do not move);
+  UVTA cases keep their literal selectors, each preceded by
+  `# object: <name>`. Page objects: one class per screen.
+  Built by `src/generator/object_repository.py`. Older runs have no
+  locators, so no repository.
+
 ## 5. Known gaps and next steps
 
 In order:
 
+0. **Waiting for the user** (2026-10-20): they pull at the company, run
+   camera and Internet, review, and bring back comments. Apply each comment
+   tree-wide; re-walk the branches it touches.
 1. Review the latest workbook with the user (sheet `MenuTree_To_Be`,
    column R), apply the comments tree-wide, and re-walk the branches they touch.
 2. Settle the open decisions in §3. Items 3 and 4 are code once agreed;
@@ -129,6 +171,16 @@ In order:
    Here only a reconstruction was available.
 8. Other apps: the walker is app-agnostic, so any package can be walked; add
    a `profiles/<package>.json` only for app-specific decisions.
+9. **Internet app gaps** (from its first run): Settings walked twice
+   (repeat detection matches screens by name; "Tools (long press)" opens
+   Settings under another name); switches that cannot be put back (ad
+   blockers download, Site permissions, Block backward redirections);
+   returns that needed relaunches in Secret mode and after long presses;
+   "could not enter the tab 'Select' / 'Save'" (a row of buttons in selection
+   mode read as a tab strip).
+10. **Camera: in-place options are now closed after listing** (2026-10-20,
+   the company phone kept PORTRAIT's Flash options open and they were listed
+   again under Quick controls). Confirm on the company phone's next run.
 
 ## 6. Moving this to another machine
 
@@ -158,6 +210,9 @@ commit message says what was observed on the phone and what changed. From
 step 1 to now:
 
 ```
+c2cb975 Unique run file names, MenuTree layout, object repository, Flash fix
+d41d24f Content rule before panels: a bookmark that loads its page is not walked
+1a39b69 Samsung Internet: profile, long press, and the structural fixes it needed
 7fee317 PRO dials: never swipe or tap a slider; readings are not new rows
 cb16f4a A switch named like its item goes beside that item
 2e24554 First review: widgets beside items, values under items, only what is new

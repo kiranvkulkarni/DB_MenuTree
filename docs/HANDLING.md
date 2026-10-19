@@ -378,3 +378,16 @@ column R "Review Comments"; each comment is a rule for every screen.
   new face, not a new screen.
 * **Edit / Move / Create folder in a bookmark's selection mode** are pressed
   through (agreed); the app is cleared at the start of every run.
+
+## Output and in-place options (2026-10-20)
+
+* **Options a chip opens in place are closed after listing** -- the chip is
+  pressed again, only while they still show. One phone kept PORTRAIT's Flash
+  options open, and Quick controls (pressed next) listed them as its own.
+* **Every file of a run is named after the run** (`<run>_menutree.xlsx`, ...),
+  so two MenuTrees can be open in Excel together.
+* **MenuTree layout**: A-D width 8, E-R 16, S-V 4, all cells wrap.
+* **Object repository**: every element a row names, with all its locators,
+  in `<run>_object_repository.json`, the ObjectRepository sheet and
+  `<run>_page_objects.py`. Rows name it in the last column, "Object"; UVTA
+  cases keep literal selectors and are preceded by `# object: <name>`.

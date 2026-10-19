@@ -1,9 +1,11 @@
 # MenuTree generator — instructions for Claude
 
 This repo walks an Android app's UI on a connected phone and writes an Excel
-**MenuTree** (one row per menu item, depth columns, pre-order) plus a UVTA test
-suite. The reference app is the Samsung camera (`com.sec.android.app.camera`)
-on a Galaxy S25 Ultra; the target is the device team's hand-authored MenuTree.
+**MenuTree** (one row per menu item, depth columns, pre-order), a UVTA test
+suite and an object repository (every element's locators). Profiled apps on a
+Galaxy S25 Ultra: the Samsung camera (`com.sec.android.app.camera`) and
+Samsung Internet (`com.sec.android.app.sbrowser`); the target is the device
+team's hand-authored MenuTree.
 The tool is release-gating.
 
 **Read [docs/HANDOFF.md](docs/HANDOFF.md) first.** It has the current state,
@@ -99,7 +101,9 @@ MENUTREE_SAVE_DUMPS=<folder> .venv/Scripts/python.exe -B tools/walk_branch.py ..
 | `src/crawler/element_tree.py` | Base walker: sweeping a screen (scrolling), tapping, `TreeNode` (a sheet row), writing the rows json |
 | `src/crawler/elements.py`, `hierarchy.py` | Elements from the XML dump; dialogs, scroll containers, sliders, bounds |
 | `src/generator/` | Workbook, csv and UVTA writers |
-| `profiles/<package>.json` | Per-app data: do_not_press, walk_separately, leaves_app, list_only, first_launches, launch_answers, suggestions, aliases |
+| `profiles/<package>.json` | Per-app data: do_not_press, walk_separately, leaves_app, list_only, first_launches, launch_answers, suggestions, option_words, aliases |
+| `src/generator/object_repository.py` | The object repository: JSON, workbook sheet, page objects |
+| `src/run_files.py` | Names of every file a run writes (`<run>_...`) |
 | `tools/` | build_menutree, walk_branch, inspect_screen, compare_tobe, verify_menutree |
 | `tests/` | Offline suites; `tests/fixtures/*.xml` are real screen dumps |
 | `docs/` | HANDOFF (start here), HANDLING (policy), ARCHITECTURE, METHOD; STATE_OF_PLAY is August history |

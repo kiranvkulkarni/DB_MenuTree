@@ -15,9 +15,16 @@ python tools/verify_menutree.py --spec MenuTree.xlsx --package <pkg> --serial <s
 Discovery is the tool in daily use. It walks the app screen by screen from a
 cleared start, pressing what is safe to press and putting back anything it
 changes. The workbook it writes is reviewed by the sheet's owner, and the
-review comments become rules for the whole tree. On the Samsung camera (Galaxy
-S25 Ultra) a full run takes about 2 hours and gives about 3,700 rows, with no
-failed returns and no setting left changed.
+review comments become rules for the whole tree. On the Galaxy S25 Ultra:
+
+| App | Package | Full run | Rows |
+|---|---|---|---|
+| Samsung camera | `com.sec.android.app.camera` | about 2 h | about 3,700 |
+| Samsung Internet | `com.sec.android.app.sbrowser` | about 2 h | about 2,100 |
+
+Each run also writes an **object repository**: every UI element with all its
+locators, as JSON, a workbook sheet and Python page objects (§5). Long press
+is walked too, wherever a control takes one.
 
 Verification walks the rows of an existing sheet instead. Its denominator is
 fixed by the sheet, so it suits a pass/fail gate.
@@ -123,9 +130,15 @@ python tools/build_menutree.py --package <pkg> --skip-walk --output-dir output/<
   only rows not seen before; `full` walks it every time; `note` writes one
   row saying where it was listed.
 - **App-specific decisions** live in `profiles/<package>.json`: what not to
-  press, what to walk as a separate pass (the front camera), first-launch
-  answers, and sheet aliases. An app without a profile is walked on
-  structure alone.
+  press, what to walk as a separate pass (the front camera, Secret mode),
+  first-launch answers (including full-screen welcome pages), what to open
+  but only list (`list_only`, by label, resource id or "X (long press)"),
+  words that mark a choice (`option_words`), and sheet aliases. An app
+  without a profile is walked on structure alone. Each profile's `_about`
+  says why every entry is there.
+- **Long press**: every control the phone marks `long-clickable` also gets a
+  "<control> (long press)" row, walked like any press (in a list, the first
+  item only).
 - **Diagnosis.** `MENUTREE_SAVE_DUMPS=<folder>` saves the screen dump each
   screen was listed from.
 
@@ -270,6 +283,10 @@ python tools/verify_menutree.py --spec tests/spec_fixture.xlsx --package com.exa
 
 `tests/fixtures/*.xml` are real screen dumps. A new handling gets a test
 against the dump of the screen it was found on.
+
+The MenuTree sheet's layout: columns A-D width 8, depth 1-14 (E-R) width 16,
+depth 15-18 (S-V) width 4, every cell wrapped; the last column, "Object",
+names each row's element in the ObjectRepository sheet.
 
 The working method:
 1. Inspect the screen on the phone.
