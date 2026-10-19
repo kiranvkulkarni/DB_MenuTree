@@ -88,8 +88,9 @@ def write_workbook(
     uvta_by_row: Optional[Dict[int, str]] = None,
     result_default: str = RESULT_NOT_TESTED,
     stats: Optional[Dict] = None,
+    repository: Optional[Dict] = None,
 ) -> Path:
-    """Write a single-sheet MenuTree workbook."""
+    """Write the MenuTree workbook (and its ObjectRepository sheet)."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.worksheet.datavalidation import DataValidation
@@ -143,7 +144,7 @@ def write_workbook(
     header_row = 5
     header = ["Test Result", "Defect ID", "Comments", "Needs Manual Test"]
     header += [f"{i} Depth" for i in range(1, depth + 1)]
-    header += ["Kind", "UVTA Test Case"]
+    header += ["Kind", "UVTA Test Case", "Object"]
 
     for index, title in enumerate(header, start=1):
         cell = sheet.cell(row=header_row, column=index, value=title)
@@ -152,7 +153,8 @@ def write_workbook(
         cell.alignment = Alignment(vertical="center", wrap_text=True)
 
     # -- data ------------------------------------------------------------
-    uvta_column = len(header)
+    uvta_column = len(header) - 1
+    object_column = len(header)
     for offset, row in enumerate(rows):
         excel_row = header_row + 1 + offset
 
@@ -194,6 +196,8 @@ def write_workbook(
         uvta_cell = sheet.cell(row=excel_row, column=uvta_column, value=uvta)
         uvta_cell.alignment = top
         uvta_cell.font = Font(name="Consolas", size=9)
+        if row.get("object"):
+            sheet.cell(row=excel_row, column=object_column, value=row["object"])
 
     # A dropdown makes the sheet usable as a test record straight away.
     validation = DataValidation(
@@ -205,12 +209,33 @@ def write_workbook(
     sheet.freeze_panes = sheet.cell(row=header_row + 1, column=5)
     sheet.auto_filter.ref = (
         f"A{header_row}:"
-        f"{sheet.cell(row=header_row, column=uvta_column).coordinate}"
+        f"{sheet.cell(row=header_row, column=object_column).coordinate}"
     )
     _autosize(sheet)
     sheet.column_dimensions[
         sheet.cell(row=header_row, column=uvta_column).column_letter
     ].width = 60
+    from openpyxl.utils import get_column_letter
+    # Agreed layout (2026-10-20): A-D narrow, depth 1-14 (E-R) readable,
+    # depth 15-18 (S-V) narrow; every cell wraps.
+    for letter, width in (("A", 8), ("B", 8), ("C", 8), ("D", 8)):
+        sheet.column_dimensions[letter].width = width
+    for column in range(5, 19):                     # E..R
+        sheet.column_dimensions[get_column_letter(column)].width = 16
+    for column in range(19, 23):                    # S..V
+        sheet.column_dimensions[get_column_letter(column)].width = 4
+    for line in sheet.iter_rows():
+        for cell in line:
+            a = cell.alignment
+            cell.alignment = Alignment(horizontal=a.horizontal, vertical=a.vertical or "top",
+                                       wrap_text=True)
+
+    sheet.column_dimensions[
+        sheet.cell(row=header_row, column=object_column).column_letter
+    ].width = 36
+    if repository:
+        from .object_repository import add_sheet
+        add_sheet(book, repository)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     book.save(path)

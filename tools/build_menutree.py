@@ -25,6 +25,7 @@ from src.generator.menutree_workbook import write_workbook  # noqa: E402
 from src.generator.uvta_writer import SuiteValidationError, UVTAWriter  # noqa: E402
 from src.logging_setup import setup_logging  # noqa: E402
 from src.run_lock import DeviceBusy, RunLock  # noqa: E402
+from src.run_files import find, run_file  # noqa: E402
 
 logger = logging.getLogger("build_menutree")
 
@@ -125,7 +126,10 @@ def main() -> int:
     run_id = output_dir.name
     setup_logging(log_dir=str(output_dir), level="INFO", run_id=run_id)
     logger.info("Run folder: %s", output_dir.resolve())
-    rows_file = output_dir / "menutree_rows.json"
+    # Every file named after its run folder, so two runs' workbooks can be
+    # open side by side; an older folder is read under its old names.
+    rows_file = (find(output_dir, "rows") or run_file(output_dir, "rows")
+                 if args.skip_walk else run_file(output_dir, "rows"))
 
     lock = None
     walk_failed = None
@@ -204,7 +208,7 @@ def main() -> int:
         merged = [r.to_dict() for r in RecursiveWalker.merge_widgets(
             [TreeNode.from_dict(r) for r in rows])]
         if merged != rows:
-            walked = output_dir / "menutree_rows.walked.json"
+            walked = run_file(output_dir, "walked")
             if not walked.exists():
                 walked.write_text(rows_file.read_text(encoding="utf-8"), encoding="utf-8")
             logger.info("Review rules re-applied: %d row(s) -> %d", len(rows), len(merged))
@@ -236,7 +240,18 @@ def main() -> int:
                   f"{len(guard.get('blocked_controls', []))} control(s)")
         print("=" * 60)
 
-    write_csv(rows, output_dir / "menutree.csv", max_depth=args.max_depth)
+    # The object repository (agreed 2026-10-20): every element with all its
+    # locators, by a stable name the rows and the UVTA cases refer to.
+    from src.generator import object_repository
+    repository, names = object_repository.build(rows)
+    for row, name in zip(rows, names):
+        row["object"] = name
+    object_repository.write_json(repository, run_file(output_dir, "repository"), args.package)
+    object_repository.write_page_objects(repository, run_file(output_dir, "pages"), args.package)
+    print(f"  Object repository: {len(repository)} element(s) -> "
+          f"{run_file(output_dir, 'repository').name}, {run_file(output_dir, 'pages').name}")
+
+    write_csv(rows, run_file(output_dir, "csv"), max_depth=args.max_depth)
 
     cases, uvta_by_row = ([], {})
     if not args.no_uvta:
@@ -245,19 +260,20 @@ def main() -> int:
     if not args.no_xlsx:
         write_workbook(
             rows,
-            output_dir / f"{args.package}_menutree.xlsx",
+            run_file(output_dir, "xlsx"),
             package=args.package,
             max_depth=args.max_depth,
             uvta_by_row=uvta_by_row,
             stats=stats,
+            repository=repository,
         )
         print(f"  Workbook        : "
-              f"{(output_dir / f'{args.package}_menutree.xlsx').resolve()}")
+              f"{run_file(output_dir, 'xlsx').resolve()}")
 
     if not args.no_uvta:
         if cases:
             uvta_path = Path(
-                args.uvta_output or (output_dir / f"{args.package}_suite.uvta")
+                args.uvta_output or run_file(output_dir, "uvta")
             )
             try:
                 UVTAWriter({"uvta_output": str(uvta_path)}).write_suite(

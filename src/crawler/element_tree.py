@@ -164,6 +164,9 @@ class TreeNode:
     # (On/Off)"), or a control's current state when its label names it
     # ("Resolution | BACK_CAMERA_PRO_PICTURE_SIZE_NORMAL").
     widget: str = ""
+    # Every way to find this element, for the object repository: text,
+    # content_desc, resource_id, class, package, xpath.
+    locators: Dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -180,6 +183,7 @@ class TreeNode:
             "blocked": self.blocked,
             "note": self.note,
             "widget": self.widget,
+            "locators": self.locators,
         }
 
     @classmethod
@@ -193,6 +197,7 @@ class TreeNode:
             descended=d.get("descended", False), blocked=d.get("blocked"),
             note=d.get("note", ""), selector_kind=d.get("selector_kind"),
             selector_value=d.get("selector_value"), widget=d.get("widget", ""),
+            locators=dict(d.get("locators") or {}),
         )
 
 
@@ -2208,7 +2213,8 @@ class ElementTreeWalker:
             logger.warning("Checkpoint failed: %s", exc)
 
     def write(self, path: Optional[Path] = None) -> Path:
-        target = path or (self.output_dir / "menutree_rows.json")
+        from ..run_files import run_file
+        target = path or run_file(self.output_dir, "rows")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
             json.dumps(

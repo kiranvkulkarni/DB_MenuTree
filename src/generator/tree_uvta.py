@@ -147,6 +147,7 @@ def emit_indexed(
             target_state="",
             target_activity=package,
             depth=int(row.get("depth", 1)),
+            note=row.get("object", "") or "",
         )
         cases.append(case)
         by_row[row_index] = case.render()

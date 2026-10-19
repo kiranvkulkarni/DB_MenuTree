@@ -12,6 +12,10 @@ Reads `menutree_rows.json` from each run folder. Runs still in flight are
 skipped: a mid-run checkpoint looks like a finished result and has already
 caused one false "the fix works" here.
 """
+import sys as _sys
+from pathlib import Path as _P
+_sys.path.insert(0, str(_P(__file__).resolve().parent.parent))
+from src.run_files import find  # noqa: E402
 import argparse
 import json
 import sys
@@ -53,13 +57,13 @@ def find_runs(root: Path, package: str, count: int) -> list:
     """Most recent finished runs, newest last."""
     candidates = []
     for folder in root.glob("*/"):
-        rows = folder / "menutree_rows.json"
+        rows = find(folder, "rows") or folder / "menutree_rows.json"
         if not rows.exists():
             continue
         if package and not folder.name.startswith(package):
             continue
         candidates.append(folder)
-    candidates.sort(key=lambda f: (f / "menutree_rows.json").stat().st_mtime)
+    candidates.sort(key=lambda f: find(f, "rows").stat().st_mtime)
     return candidates[-count:]
 
 
@@ -79,7 +83,7 @@ def is_live(folder: Path) -> bool:
 
 
 def load(folder: Path) -> dict:
-    data = json.loads((folder / "menutree_rows.json").read_text(encoding="utf-8"))
+    data = json.loads(find(folder, "rows").read_text(encoding="utf-8"))
     stats = dict(data.get("stats", {}))
     stats["_identify_misses"] = len(stats.get("identify_misses") or [])
     return stats
@@ -103,7 +107,7 @@ def main() -> int:
     else:
         folders = find_runs(root, args.package, args.last)
 
-    folders = [f for f in folders if (f / "menutree_rows.json").exists()]
+    folders = [f for f in folders if find(f, "rows") is not None]
     if len(folders) < 1:
         print("No runs with menutree_rows.json found.")
         return 1

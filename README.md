@@ -155,8 +155,22 @@ an interrupted run still hands the handset back.
 
 ## 5. Reading the results
 
-**Discovery** writes `<package>_menutree.xlsx` (sheet `MenuTree`), the same
-rows as `menutree.csv` and `menutree_rows.json`, the UVTA suite, and the log.
+**Discovery** writes one folder per run, `output/<package>_<YYYYMMDD_HHMMSS_mmm>/`,
+and every file in it starts with the folder's name, so workbooks from two runs
+can be open at once:
+
+| File | What |
+|---|---|
+| `<run>_menutree.xlsx` | Sheet `MenuTree` (the deliverable) and sheet `ObjectRepository` |
+| `<run>_menutree.csv` | The same rows, diff-friendly |
+| `<run>_rows.json` | Every row in full detail, with all its locators |
+| `<run>_suite.uvta` | One UVTA case per row; a `# object: <name>` line before each names its element |
+| `<run>_object_repository.json` | The object repository: every UI element under a stable name (`PORTRAIT.QuickControls.Flash`) with all its locators -- text, content-desc, resource-id, class, xpath, UiAutomator -- and the preferred one |
+| `<run>_page_objects.py` | The same as page objects: one class per screen, one `Locator` per element |
+| `<run>.log` | The walk's log |
+
+Folders written before 2026-10-20 use the older names (`menutree_rows.json`
+and so on); the tools still read them.
 In the workbook:
 
 - **Depth columns.** Each row's label sits in the column for its depth. The
@@ -330,11 +344,11 @@ camera run needs about 2 h, so pass `--time-budget 28800`.
 
 **The phone dozed or disconnected mid-run** — reconnect it and unlock it. The
 walker holds the screen awake while it runs. If a run was interrupted, its
-rows so far are in `menutree_rows.json` in the run folder.
+rows so far are in `<run>_rows.json` in the run folder.
 
 **A row is missing that is on the screen** — re-walk that branch with
 `MENUTREE_SAVE_DUMPS=<folder>` and compare the saved dump with what was listed.
 
 **Low coverage (worklist walker only)** — read `phase_seconds` in
-`menutree_rows.json`. Runs end on the time budget, so the largest phase is the
+`<run>_rows.json`. Runs end on the time budget, so the largest phase is the
 biggest coverage lever.

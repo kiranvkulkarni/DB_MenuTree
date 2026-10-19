@@ -129,7 +129,8 @@ def main() -> int:
     stats = walker.stats()
     rows = [r.to_dict() for r in walker._merge_widgets(walker.rows) if r.depth > 1]
     out.mkdir(parents=True, exist_ok=True)
-    (out / "branch.json").write_text(
+    from src.run_files import run_file
+    (run_file(out, "branch")).write_text(
         json.dumps({"path": path, "stats": stats, "rows": rows,
                     "failure": failure}, indent=1),
         encoding="utf-8")
@@ -150,7 +151,7 @@ def main() -> int:
     if failure:
         print(f"\n  !! WALK DID NOT COMPLETE: {failure}")
         print("  !! The rows above are PARTIAL -- do not read them as the branch.")
-    print(f"\n  written to {out / 'branch.json'}")
+    print(f"\n  written to {run_file(out, 'branch')}")
     return 0
 
 

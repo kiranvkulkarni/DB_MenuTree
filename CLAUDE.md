@@ -74,11 +74,12 @@ for t in tests/test_*.py; do .venv/Scripts/python.exe -B $t >/dev/null || echo F
 .venv/Scripts/python.exe -B tools/inspect_screen.py --package com.sec.android.app.camera \
     --serial <serial> --path "PORTRAIT,Quick controls,Go to Settings" [--probe] [--no-reset]
 
-# one branch (minutes): rows printed and saved to output/branch_<stamp>/branch.json
+# one branch (minutes): rows printed and saved to output/branch_<stamp>/branch_<stamp>_branch.json
 .venv/Scripts/python.exe -B tools/walk_branch.py --package com.sec.android.app.camera \
     --serial <serial> --path "MORE,PRO" [--only "A,B"] [--skip "Quick controls"]
 
-# full run (about 2.5 h): output/<package>_<stamp>/ -> xlsx, csv, rows json, uvta, log
+# full run (about 2.5 h): output/<package>_<stamp>/ -> <run>_menutree.xlsx, _menutree.csv,
+#   _rows.json, _suite.uvta, _object_repository.json, _page_objects.py, <run>.log
 .venv/Scripts/python.exe -B tools/build_menutree.py --package com.sec.android.app.camera \
     --serial <serial> --revisits top --time-budget 28800
 

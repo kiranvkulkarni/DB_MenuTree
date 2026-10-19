@@ -213,6 +213,7 @@ class RecursiveWalker(ElementTreeWalker):
         self._walked = []           # (path, signature) of every screen walked
         self._live_slots = {}       # (resource id, bounds) -> path that owns it
         self._long_presses_acting = 0  # long presses that acted at once
+        self._in_place_closed = 0      # in-place options closed by pressing their chip again
         self._pass_marker = None    # the control that started the current pass
         self._same_as_main = set()  # pass paths whose screen is the main walk's
         self._passes_walked = 0
@@ -349,6 +350,7 @@ class RecursiveWalker(ElementTreeWalker):
             selector_value=element.selector_value,
             note=note,
         )
+        row.locators = self._locators_of(element)
         row.role = getattr(element, "role", "")
         row.context = getattr(element, "context", "")
         row.unlabelled_widget = (element.kind in ("toggle", "radio")
@@ -695,6 +697,7 @@ class RecursiveWalker(ElementTreeWalker):
                 e.switch_key = f"{cv.get('resource_id')}@{cv.get('bounds')}"
             view = views[e.view_index] if 0 <= e.view_index < len(views) else {}
             e.slot = (view.get("resource_id") or "", view.get("bounds") or "")
+            e.views_ref = views         # the screen it was read from (locators)
             via = _pressable_via(views, e.view_index) if view else None
             e.long_clickable = bool(view.get("long_clickable") or (
                 via is not None and not view.get("clickable")
@@ -2851,6 +2854,7 @@ class RecursiveWalker(ElementTreeWalker):
                             self._options_listed += 1
                     for option in appeared:
                         handled.add(self._fingerprint(option))
+                    self._close_in_place(target, appeared)
                     continue
 
                 if not moved and not walkable:
@@ -3548,6 +3552,32 @@ class RecursiveWalker(ElementTreeWalker):
         _, _, package = self._await_stable()
         return package in (None, self.package) and self._activity() == self._root_activity
 
+    def _close_in_place(self, target, appeared):
+        """Close options a chip opened in place, if they are still open.
+
+        On one S25 Ultra PORTRAIT's Flash options (Off / Auto / On) stayed
+        open after being listed, and were listed AGAIN under Quick controls,
+        pressed next, as if they were its own. Pressing the chip again closes
+        them -- the same move _list_panel makes. Only while they show: where
+        they close by themselves nothing is pressed. Never for a long press,
+        whose tap would do the chip's ordinary job.
+        """
+        if getattr(target, "long_press", False):
+            return
+        shown = {self._fingerprint(e) for e in appeared}
+        for _ in range(2):
+            _, views, _ = self._await_stable()
+            here = self._elements(views or [])
+            if not shown & {self._fingerprint(e) for e in here}:
+                return
+            again = next((e for e in here
+                          if self._fingerprint(e) == self._fingerprint(target)), None)
+            if again is None or not self._click(again, views):
+                return
+            self._after_press(label_set(here), timeout=1.5)
+            self._in_place_closed += 1
+        logger.info("options opened by %r would not close", target.label)
+
     def _with_long_presses(self, elements, is_tab):
         """The walk list with a long press after each control that takes one.
 
@@ -3588,6 +3618,26 @@ class RecursiveWalker(ElementTreeWalker):
             return (element.label.strip() + LONG_PRESS).lower() in self.list_only
         return (element.label.strip().lower() in self.list_only
                 or bool(rid) and rid in self.list_only)
+
+    def _locators_of(self, element):
+        """Every locator of an element, read from the screen it came from."""
+        views = getattr(element, "views_ref", None)
+        if not views or not 0 <= element.view_index < len(views):
+            return {}
+        view = views[element.view_index]
+        try:
+            from ..parser.selectors import SelectorResolver
+            xpath = SelectorResolver().xpath(view, views)
+        except Exception:
+            xpath = None
+        return {
+            "text": (view.get("text") or "").strip(),
+            "content_desc": (view.get("content_description") or "").strip(),
+            "resource_id": view.get("resource_id") or "",
+            "class": view.get("class") or "",
+            "package": view.get("package") or "",
+            "xpath": xpath.value if xpath else "",
+        }
 
     def _offers_answer(self, views):
         """Whether a control on screen is one of the profile's launch answers."""

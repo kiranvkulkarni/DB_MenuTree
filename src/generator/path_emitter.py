@@ -43,6 +43,7 @@ class TestCase:
     target_state: str = ""
     target_activity: str = ""
     depth: int = 0
+    note: str = ""          # the element's object-repository name, if any
 
     def render(self) -> str:
         return "\n".join([uvta.testcase_header(self.name), *self.steps])

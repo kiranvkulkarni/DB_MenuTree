@@ -148,7 +148,7 @@ def main() -> int:
     if args.dry_run:
         print(health(spec))
         print(diagnostics(inspect_workbook(spec_path, sheets)))
-        preview = output_dir / "spec_parsed.json"
+        preview = output_dir / f"{output_dir.name}_spec_parsed.json"
         preview.write_text(json.dumps(
             [{"sheet": r.sheet, "excel_row": r.excel_row, "depth": r.depth,
               "label": r.label, "selector_text": r.selector_text,
@@ -181,7 +181,7 @@ def main() -> int:
 
     verifier = MenuTreeVerifier(args.package, args.serial, {
         "aliases": aliases,
-        "checkpoint_path": str(output_dir / "verify_results.partial.json"),
+        "checkpoint_path": str(output_dir / f"{output_dir.name}_verify_results.partial.json"),
         "time_budget": args.time_budget,
         "ready_timeout": args.ready_timeout,
         "settle_seconds": args.settle,
@@ -203,7 +203,7 @@ def main() -> int:
         verifier._release()
         lock.release()
 
-    (output_dir / "verify_results.json").write_text(
+    (output_dir / f"{output_dir.name}_verify_results.json").write_text(
         json.dumps({"package": args.package,
                     "stats": report.stats,
                     "results": [r.to_dict() for r in report.results]},
@@ -213,11 +213,11 @@ def main() -> int:
     # the durable answer to hand-written labels: no heuristic should stay
     # permanently responsible for deciding what the sheet's wording meant.
     review = proposed_aliases(verifier.match_log)
-    review_path = output_dir / "alias_review.json"
+    review_path = output_dir / f"{output_dir.name}_alias_review.json"
     review_path.write_text(json.dumps(review, indent=2), encoding="utf-8")
 
     filled = write_results(
-        spec_path, output_dir / f"{spec_path.stem}_verified.xlsx", report.results)
+        spec_path, output_dir / f"{output_dir.name}_{spec_path.stem}_verified.xlsx", report.results)
 
     counts = report.counts()
     print()

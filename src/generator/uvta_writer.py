@@ -27,7 +27,8 @@ class UVTAWriter:
                 "Refusing to write an empty suite -- an empty gate always passes."
             )
 
-        blocks = [case.render() for case in cases]
+        blocks = [(f"# object: {case.note}\n" if case.note else "") + case.render()
+                  for case in cases]
         content = "\n\n".join(blocks) + "\n"
         if header_comment:
             content = header_comment.rstrip() + "\n\n" + content
