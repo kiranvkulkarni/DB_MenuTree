@@ -27,9 +27,17 @@ from typing import Dict, List, Optional, Sequence
 AFFORDANCE_TEXT_DEPTH = 3
 
 _BOOL_ATTRS = (
-    "checkable", "checked", "clickable", "enabled", "focusable",
+    "checkable", "checked", "clickable", "enabled", "focusable", "focused",
     "scrollable", "selected", "password",
 )
+
+TEXT_INPUT_CLASSES = ("EditText", "AutoCompleteTextView")
+
+
+def is_text_input(view: Dict) -> bool:
+    """A field the keyboard types into: EditText and its AutoCompleteTextView
+    kin (a search box). Android framework classes, nothing app-specific."""
+    return (view.get("class") or "").split(".")[-1].endswith(TEXT_INPUT_CLASSES)
 
 STATE_KEY_MODES = ("affordance", "structure", "content")
 

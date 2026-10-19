@@ -46,6 +46,7 @@ from .hierarchy import (
     EMPTY_STATE,
     box_of,
     scrollable_container,
+    is_text_input,
     swipe_span,
     center_of,
     foreground_package,
@@ -871,6 +872,13 @@ class ElementTreeWalker:
                 bottom = min(bottom or y2, b[1])   # a bar over our bottom edge
         y1 = max(y1, top) if top is not None else y1
         y2 = min(y2, bottom) if bottom is not None else y2
+        # Nor on an open keyboard: a control left under it is not tapped
+        # through it -- that typed into Bookmarks > Search.
+        ime = getattr(self, "_ime", "")
+        keys = [b for b in (box_of(v) for v in views
+                            if ime and v.get("package") == ime) if b]
+        if keys:
+            y2 = min(y2, min(b[1] for b in keys))
         if y2 - y1 < 24 or x2 - x1 < 8:
             return None
 
@@ -952,7 +960,12 @@ class ElementTreeWalker:
             # settle=False: every click here is followed by _await_stable,
             # which polls the screen properly. The driver's blind sleep on
             # top of that was 1.00s of dead time per click, measured.
-            self.driver.tap(*centre, settle=False)
+            # A long press when the walk asks for one (agreed 2026-10-19:
+            # long press is walked like any press).
+            if getattr(element, "long_press", False):
+                self.driver.long_tap(*centre, settle=False)
+            else:
+                self.driver.tap(*centre, settle=False)
         except DriverError:
             return False
         self._phase("tap", started)
@@ -1268,6 +1281,12 @@ class ElementTreeWalker:
         container = scrollable_container(views)
         if container is None:
             return None
+        # A screen with a focused text field is about to show the keyboard:
+        # it slides up after the screen is read, and a sweep planned before
+        # it arrived ran across it and typed ("by by by", and long-press
+        # characters in Bookmarks > Search). Such a screen is not swept.
+        if any(v.get("focused") and is_text_input(v) for v in views):
+            return None
         # The size the screen has NOW, from the dump: the device reports its
         # portrait size, and in landscape every swipe was clamped to it.
         boxes = [b for b in (box_of(v) for v in views) if b]
@@ -1280,7 +1299,24 @@ class ElementTreeWalker:
                 return None
         items = [box_of(views[j]) for j in container.get("children", [])
                  if 0 <= j < len(views) and box_of(views[j])]
-        return swipe_span(container, width, height, items)
+        span = swipe_span(container, width, height, items)
+        # Never across an open keyboard: a swipe there TYPES (Samsung's
+        # keyboard swipe-types a word). History > Search filled with
+        # "by by by ..." -- one word per sweep. Stay above it, or not at all.
+        ime = getattr(self, "_ime", "")
+        tops = [box_of(v)[1] for v in views
+                if ime and v.get("package") == ime and box_of(v)]
+        if span is not None and tops:
+            axis, fixed, low, high = span
+            top = min(tops)
+            if axis == "h":
+                return None if fixed >= top - 20 else span
+            high = min(high, top - 40)
+            low = min(low, high)
+            if high - low < 200:
+                return None
+            span = (axis, fixed, low, high)
+        return span
 
     def _scroll_once(self, span, down: bool) -> List[Dict]:
         """One swipe along the container's own axis, then let it settle."""
@@ -1930,6 +1966,7 @@ class ElementTreeWalker:
                 "shows a placeholder instead of the app."
             )
         ime = self.driver.current_ime_package()
+        self._ime = ime or ""
         if ime and ime not in self._exclude:
             self._exclude.append(ime)
             logger.info("Excluding active keyboard package: %s", ime)

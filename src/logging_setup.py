@@ -23,6 +23,12 @@ def setup_logging(log_dir: str = "./logs", level: str = "INFO", run_id: str = "r
 
     formatter = logging.Formatter(_FMT, datefmt=_DATEFMT)
 
+    # A Windows console cannot print every character a screen carries (the
+    # Internet app puts U+200E before each URL); substitute, never fail.
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
     stream = logging.StreamHandler(sys.stdout)
     stream.setFormatter(formatter)
     root.addHandler(stream)

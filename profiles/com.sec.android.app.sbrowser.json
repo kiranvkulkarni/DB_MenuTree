@@ -1,0 +1,54 @@
+{
+ "_about": [
+  "App-specific knowledge for Samsung Internet. The walker reads this;",
+  "it contains nothing browser-specific itself.",
+  "",
+  "first_launches / launch_answers (agreed 2026-10-19): after clearing the app it shows four",
+  "welcome pages (Continue, Next, Next, Start), then 'Make Samsung Browser your default",
+  "browser?'. They are recorded under 'First launches' and passed with these answers.",
+  "do_not_press: 'Set as default' would make it the phone's default browser -- listed, never",
+  "pressed (agreed).",
+  "open_guarded_rows: rows leading to a delete confirmation (Clear browsing data, Delete",
+  "history, Reset settings) are opened to record the pop-up; its delete button is refused",
+  "and the walk leaves by Cancel (agreed).",
+  "Web links (Terms and Conditions, Privacy Notice, help pages) are listed, never opened",
+  "(agreed); add their labels to leaves_app as they are met.",
+  "list_only (agreed 2026-10-19): the address bar is opened and listed, nothing pressed",
+  "inside (search-engine dropdown, Copy, Clear, quick-access tiles, Edit), left by Back.",
+  "Matched by its resource id, because its label is whatever URL is showing.",
+  "Web page content is never recorded -- browser UI only (agreed).",
+  "option_words: choices that state what they are only in their description",
+  "('Not selected, List, Radio button' -- tab layout, search engines) are options:",
+  "listed, never selected.",
+  "'Checked, Google' / 'Not checked, Yahoo!' (the search-engine dropdown) are options too.",
+  "'Home (long press)' opens the same address-bar screen: list only too.",
+  "walk_separately (agreed 2026-10-19): Secret mode switches the whole browser into its own state; listed where it appears (Tabs), walked once as its own pass, like the camera's front camera.",
+  "Bookmark / History / Edit / Move / Create folder: pressed through as everything else (agreed); the app is cleared at the start of every run."
+ ],
+ "first_launches": 1,
+ "launch_answers": [
+  "Continue",
+  "Next",
+  "Next",
+  "Start",
+  "Not now"
+ ],
+ "do_not_press": [
+  "Set as default"
+ ],
+ "open_guarded_rows": true,
+ "leaves_app": [
+  "By continuing, you agree to the Terms and Conditions and Privacy Notice."
+ ],
+ "list_only": [
+  "location_bar_edit_text",
+  "Home (long press)"
+ ],
+ "option_words": [
+  "Radio button",
+  "Checked,"
+ ],
+ "walk_separately": [
+  "Secret mode"
+ ]
+}

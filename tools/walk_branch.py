@@ -53,6 +53,10 @@ def main() -> int:
                    help="comma-separated rows to list but not open -- a branch "
                         "already checked on its own (development aid only)")
     args = p.parse_args()
+    try:
+        sys.stdout.reconfigure(errors="replace")   # URLs carry U+200E
+    except (AttributeError, ValueError):
+        pass
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s | %(levelname)-7s | %(message)s")
@@ -79,6 +83,15 @@ def main() -> int:
             print("could not read the launch screen")
             return 2
         walker._root_key = root_key
+        # A cleared app may greet with first-launch screens (the Internet
+        # app's welcome pages): answer them as the profile says, as a full
+        # run does, before replaying the path.
+        if walker.first_launches and not args.no_reset:
+            if not walker._primed():
+                print("the first-launch answers did not reach the app")
+                walker._release()
+                return 2
+            root_key, views = walker._await_stable()[0], walker._await_stable()[1]
         # The tab strip is learned at the root in a full run; learn it here
         # too, or a mode chip met inside the branch is walked as a menu.
         strip = walker._dedupe(walker._tab_strip(walker._elements(views), views))

@@ -34,6 +34,7 @@ Three rules were confirmed against the hand-authored S25 Ultra MenuTree:
 * **Modes are siblings, not children.** To leave VIDEO you press PHOTO. The
   dump marks the current one `selected`, which is how the parent is found.
 """
+import copy
 import logging
 import os
 import re
@@ -46,9 +47,12 @@ from .device_driver import DriverError
 from .elements import Element, _pressable_via, label_set, screen_similarity
 from .elements import CHROME_PACKAGES
 from .hierarchy import parse_hierarchy
-from .hierarchy import box_of, center_of, is_slider, looks_like_dialog, scrollable_container
+from .hierarchy import box_of, center_of, is_slider, is_text_input, looks_like_dialog, scrollable_container
 
 logger = logging.getLogger(__name__)
+
+
+LONG_PRESS = " (long press)"
 
 
 class Node:
@@ -179,6 +183,10 @@ class RecursiveWalker(ElementTreeWalker):
         self.walk_separately = {str(x).strip().lower()
                                 for x in config.get("walk_separately", [])}
         self._separate_labels = [str(x).strip() for x in config.get("walk_separately", [])]
+        self._separate_seen = {}     # label -> path of the screen it was listed on
+        self._root_elements = None   # the app's main screen, as first walked
+        self._root_activity = None   # ... and the Android activity that shows it
+        self._opens_main = 0         # presses that only brought the main screen back
         # From the profile. first_launches: how many launches after clearing
         # the app show first-run pop-ups (the camera asks about Location tags
         # on the third); recorded with every answer branch. launch_answers:
@@ -188,6 +196,7 @@ class RecursiveWalker(ElementTreeWalker):
         self.first_launches = int(config.get("first_launches", 0) or 0)
         self.launch_answers = [str(x) for x in config.get("launch_answers", [])]
         self.suggestions = {str(x).strip().lower() for x in config.get("suggestions", [])}
+        self.option_words = [str(x).strip().lower() for x in config.get("option_words", []) if str(x).strip()]
         # From the profile: rows that lead out of the app to somewhere that is
         # not part of its menu tree (a store). Listed, not opened.
         self.leaves_app = {str(x).strip().lower()
@@ -203,6 +212,7 @@ class RecursiveWalker(ElementTreeWalker):
         self.revisit_similarity = float(config.get("revisit_similarity", 0.9))
         self._walked = []           # (path, signature) of every screen walked
         self._live_slots = {}       # (resource id, bounds) -> path that owns it
+        self._long_presses_acting = 0  # long presses that acted at once
         self._pass_marker = None    # the control that started the current pass
         self._same_as_main = set()  # pass paths whose screen is the main walk's
         self._passes_walked = 0
@@ -318,8 +328,11 @@ class RecursiveWalker(ElementTreeWalker):
     def _emit_one(self, element: Element, depth: int, path: List[str],
                   path_selectors: List[tuple], note: str = "") -> TreeNode:
         named = getattr(element, "name", "")
+        shown = named or element.annotated()
+        if getattr(element, "long_press", False):
+            shown += LONG_PRESS
         row = TreeNode(
-            label=named or element.annotated(),
+            label=shown,
             raw_label=element.label,
             widget=getattr(element, "state", "") if named else "",
             kind=element.kind,
@@ -519,6 +532,16 @@ class RecursiveWalker(ElementTreeWalker):
                 return (views[element.view_index].get("class") or "").split(".")[-1]
             return ""
 
+        def side_by_side(group) -> bool:
+            boxes = [box_of(views[e.view_index]) for e in group
+                     if 0 <= e.view_index < len(views)]
+            boxes = [b for b in boxes if b]
+            if len(boxes) < 2:
+                return False
+            middles = [(b[1] + b[3]) / 2 for b in boxes]
+            height = min(b[3] - b[1] for b in boxes)
+            return max(middles) - min(middles) <= height / 2
+
         by_id: Dict[str, List[Element]] = {}
         for element in elements:
             if element.interactive and element.resource_id:
@@ -530,6 +553,12 @@ class RecursiveWalker(ElementTreeWalker):
             if len(labels) < 2 or len(labels) != len(group):
                 continue
             if not all(widget_class(e).endswith("Button") for e in group):
+                continue
+            # And a ROW: tabs sit side by side. The Internet app's Tools menu
+            # is fifteen Buttons sharing one id, stacked in a list -- taken
+            # for a tab strip, every item was set aside as chrome and none
+            # was opened.
+            if not side_by_side(group):
                 continue
             if len(group) > len(best):
                 best = group
@@ -575,12 +604,13 @@ class RecursiveWalker(ElementTreeWalker):
         controls panel both hold a `Flash` chip with one shared id. As one
         identity the panel's chip was lost, and with it the panel's order.
         """
+        long = ("long press",) if getattr(element, "long_press", False) else ()
         if getattr(element, "name", ""):
             return (element.name, element.kind, "name", element.name,
-                    getattr(element, "context", ""), getattr(element, "group", ""))
+                    getattr(element, "context", ""), getattr(element, "group", "")) + long
         return (element.annotated(), element.kind, element.selector_kind,
                 element.selector_value, getattr(element, "context", ""),
-                getattr(element, "group", ""))
+                getattr(element, "group", "")) + long
 
     def _elements(self, views):
         """Every element, each carrying its role and switch identity.
@@ -646,6 +676,11 @@ class RecursiveWalker(ElementTreeWalker):
         for e in out:
             role, row, check = self._row_role(e, views)
             e.role = role
+            # The profile's option words (agreed): a choice that says what it
+            # is only in its spoken description -- the Internet app's "Not
+            # selected, List, Radio button" has no checked or selected flag.
+            if self.option_words and any(w in e.label.lower() for w in self.option_words):
+                e.role = "option"
             e.on_slider = self._on_slider(views, e.view_index, sliders)
             e.group = self._list_of(views, e.view_index)
             e.full_row = self._fills_list(views, row if row is not None else e.view_index)
@@ -660,6 +695,11 @@ class RecursiveWalker(ElementTreeWalker):
                 e.switch_key = f"{cv.get('resource_id')}@{cv.get('bounds')}"
             view = views[e.view_index] if 0 <= e.view_index < len(views) else {}
             e.slot = (view.get("resource_id") or "", view.get("bounds") or "")
+            via = _pressable_via(views, e.view_index) if view else None
+            e.long_clickable = bool(view.get("long_clickable") or (
+                via is not None and not view.get("clickable")
+                and views[via].get("long_clickable")))
+            e.is_text_field = is_text_input(view)
             # A control whose description NAMES it and whose text is its
             # STATE (review, R1740): PRO's chip reads "BACK_CAMERA_PRO_
             # PICTURE_SIZE_NORMAL", described "Resolution". Written as
@@ -676,6 +716,15 @@ class RecursiveWalker(ElementTreeWalker):
                     and text.lower() not in desc.lower()
                     and desc.lower() not in text.lower()):
                 e.name, e.state = desc, text
+        # A label inside an option is part of that option: the tab layout's
+        # "Grid" caption sits in the "Selected, Grid, Radio button" choice,
+        # and pressing the caption selects it.
+        option_views = {e.view_index for e in out if e.role == "option"}
+        for e in out:
+            if (e.role != "option" and 0 <= e.view_index < len(views)
+                    and not views[e.view_index].get("clickable")
+                    and _pressable_via(views, e.view_index) in option_views):
+                e.role = "option"
         return out
 
     # -- roles (docs/HANDLING.md) ----------------------------------------
@@ -757,6 +806,14 @@ class RecursiveWalker(ElementTreeWalker):
             # taken for options, the first-launch dialog was never answered.
             by_desc = all(not (views[j].get("text") or "").strip() for j in sibs)
             one_selected = sum(1 for j in sibs if views[j].get("selected")) == 1
+            # Named by descriptions alone is a choice only when the names
+            # share a word -- "Alignment Left / Center / Right". The Internet
+            # app's toolbar (Back, Forward, Home, Bookmarks) is icon buttons
+            # named by description too, and was listed as options: Bookmarks
+            # was never opened.
+            if by_desc and not one_selected:
+                words = [set(re.findall(r"[^\W_]{3,}", label.lower())) for label in labels]
+                by_desc = bool(words) and bool(set.intersection(*words))
             if (len(sibs) >= 2 and len(labels) == len(sibs) and all(labels)
                     and (by_desc or one_selected)):
                 return "option", row, None
@@ -1224,6 +1281,15 @@ class RecursiveWalker(ElementTreeWalker):
         # The new STATE, under the control's name row (review, R1741):
         # "BACK_CAMERA_PRO_PICTURE_SIZE_HIGH", not "Resolution | ..._HIGH".
         state = getattr(flipped, "state", "") or flipped.label
+        if getattr(target, "long_press", False):
+            # A long press is not undone by a tap -- that does the control's
+            # ordinary job (Tabs opened the tab manager). Noted (agreed).
+            self._emit(Element(label=state, kind=flipped.kind, interactive=False,
+                               view_index=flipped.view_index),
+                       depth + 1, path, selectors,
+                       note="after a long press -- acts at once, not undone")
+            self._long_presses_acting += 1
+            return
         self._emit(Element(label=state, kind=flipped.kind, interactive=False,
                            view_index=flipped.view_index),
                    depth + 1, path, selectors, note="state after pressing -- put back")
@@ -1679,13 +1745,22 @@ class RecursiveWalker(ElementTreeWalker):
         switched night shot off -- so the control is pressed once more, which
         puts a toggle back and costs a caption control nothing.
         """
+        long = getattr(target, "long_press", False)
         for e in self._dedupe(appeared):
             caption = Element(label=e.label, kind="title", interactive=False,
                               view_index=e.view_index)
             self._emit(caption, depth, path, path_selectors,
-                       note=f"caption shown on pressing {target.label}")
+                       note=(f"shown after a long press of {target.label} -- acts at once"
+                             if long else f"caption shown on pressing {target.label}"))
             handled.add(self._fingerprint(e))
         self._captions_listed += 1
+        if long:
+            # A tap would do the control's ordinary job (Tabs opens the tab
+            # list), not undo the long press: noted, left as it is (agreed).
+            self._long_presses_acting += 1
+            logger.info("a long press of %r acted at once: %s", target.label,
+                        sorted({e.label for e in appeared})[:6])
+            return
         _, views, _ = self._await_stable()
         views = views or []
         again = self._find_element(target.label, views)
@@ -2182,6 +2257,7 @@ class RecursiveWalker(ElementTreeWalker):
         node = Node(path[-1] if path else self.package, depth, path,
                     path_selectors, elements, signature, entering, parent)
         node.enabled = enabled
+        node_activity = self._activity() if path else None
         node.list_only = bool(path) and path[-1].strip().lower() in self.list_only
         here = node.where
         outer_dialog = self._in_dialog
@@ -2224,6 +2300,9 @@ class RecursiveWalker(ElementTreeWalker):
                            path_selectors, note="--revisits note: listed once")
                 return
         self._walked.append((list(path), signature))
+        if not path and self._root_elements is None:
+            self._root_elements = list(elements)     # the app's main screen
+            self._root_activity = self._activity()
 
         self._nodes_visited += 1
         logger.info("visit  depth %-2d  %-38s  %d element(s)",
@@ -2308,6 +2387,8 @@ class RecursiveWalker(ElementTreeWalker):
         switches_done = set()
         to_walk = ([e for e in elements if self._fingerprint(e) in only]
                    if only is not None else elements)
+        if only is None and not node.list_only:
+            to_walk = self._with_long_presses(to_walk, is_tab)
 
         try:
             # One scroll sweep per screen, then work down what it found.
@@ -2344,6 +2425,10 @@ class RecursiveWalker(ElementTreeWalker):
                     why = f"listed; opened under {seen_under} (--revisits top)"
                 if why is None and node.list_only:
                     why = "listed, not pressed (profile: list only)"
+                if why == "listed, not pressed (profile: walked as its own pass)":
+                    # Where it lives, so its pass can get there: the Internet
+                    # app's Secret mode is under Tabs, not on the first screen.
+                    self._separate_seen.setdefault(element.label.strip().lower(), list(path))
                 if why is not None:
                     self._emit(element, depth, path, path_selectors, note=why)
                     continue
@@ -2412,6 +2497,22 @@ class RecursiveWalker(ElementTreeWalker):
                                 and e.selector_value == element.selector_value])
                     if same:
                         target = same[0]
+                    if getattr(element, "long_press", False):
+                        target = copy.copy(target)
+                        target.long_press = True
+                if target is None:
+                    # Not here because the walk is not here? Then go back to
+                    # this screen and look once more: a long press of Tabs
+                    # left the tab manager open, and Tools -- with Settings
+                    # behind it -- was written "could not be located".
+                    _, now_views, _ = self._await_stable()
+                    if (now_views and not self._is_node(elements, self._elements(now_views))
+                            and self._return_to(node)):
+                        _, views, _ = self._await_stable()
+                        target, views = self._find_element_scrolled(element.label, views or [])
+                        if target is not None and getattr(element, "long_press", False):
+                            target = copy.copy(target)
+                            target.long_press = True
                 if target is None:
                     # Said out loud. A control the walk cannot locate used to
                     # vanish without a trace, which is how a lookup that could
@@ -2483,7 +2584,8 @@ class RecursiveWalker(ElementTreeWalker):
                 if not after_views:
                     continue
                 after = self._elements(after_views)
-                child_path = path + [target.label]
+                child_path = path + [target.label + (
+                    LONG_PRESS if getattr(target, "long_press", False) else "")]
                 child_selectors = list(path_selectors) + [
                     (target.selector_kind, target.selector_value)
                     if target.selector_kind else ("text", target.label)]
@@ -2506,7 +2608,7 @@ class RecursiveWalker(ElementTreeWalker):
                     self._return_to(node)
                     continue
 
-                if target.label.strip().lower() in self.list_only:
+                if self._is_list_only(target):
                     # Agreed (MORE > Edit): list what it shows -- all of it,
                     # even rows that look like the screen below -- press
                     # nothing, step back.
@@ -2670,11 +2772,22 @@ class RecursiveWalker(ElementTreeWalker):
                 # Clickable in its own right: a panel's title ("Video size")
                 # and a live reading ("1/30s") are pressable only through
                 # their container, and are not controls to walk.
+                # Not the pressed control's own new face: Refresh turns into
+                # Stop while the page reloads -- one new control, in Refresh's
+                # place -- and the reload was walked as a new screen, the whole
+                # main screen again beneath Refresh.
+                old_box = (box_of(views[target.view_index])
+                           if 0 <= target.view_index < len(views) else None)
+
+                def in_its_place(e):
+                    box = box_of(after_views[e.view_index])
+                    return bool(old_box and box and self._overlap(old_box, box) >= 0.5)
                 walkable = [e for e in fresh if e.interactive and e.role != "option"
                             and not self._is_back(e) and e.label not in readouts
                             and 0 <= e.view_index < len(after_views)
                             and after_views[e.view_index].get("clickable")
-                            and self._state_of(e, after_views) is None]
+                            and self._state_of(e, after_views) is None
+                            and not in_its_place(e)]
                 # Back on the screen above is a panel whatever came with it:
                 # PRO VIDEO's Video size closes Quick controls, and PRO
                 # VIDEO's own ISO / SPEED / EV -- live values, so "new" --
@@ -2777,6 +2890,29 @@ class RecursiveWalker(ElementTreeWalker):
                        >= self.node_containment
                        for seen in ancestors + [signature]):
                     self._loops_refused += 1
+                    self._return_to(node)
+                    continue
+
+                # Content, not menu: a press that brings back the app's own
+                # main screen -- a bookmark or a History entry loads its web
+                # page in the browser -- is not a new screen (agreed: web
+                # links are listed, never opened). Read once the page has had
+                # a moment: while it loads, the toolbar is half hidden.
+                # Only from a screen of its own -- not one drawn over the main
+                # screen: on a camera the viewfinder is under everything.
+                # Told by the Android activity: Bookmarks and History are
+                # activities of their own, and a bookmark switches back to
+                # the main one with a page loading (half the toolbar hidden,
+                # so the screen alone did not match). A camera is one
+                # activity throughout, so this never fires there. Not inside
+                # a separate pass: Secret mode's Start opens the main screen
+                # in the new state, which is the very thing to walk.
+                in_pass = bool(self._pass_marker) and path[:1] == [self._pass_marker]
+                if (path and not in_pass and self._root_activity and node_activity
+                        and node_activity != self._root_activity
+                        and self._lands_on_main()):
+                    self._opens_main += 1
+                    self._emit_note_last("opens the app's main screen (content) -- not walked")
                     self._return_to(node)
                     continue
 
@@ -3014,6 +3150,9 @@ class RecursiveWalker(ElementTreeWalker):
         if not views:
             return False
         for step, label in enumerate(path):
+            long = label.endswith(LONG_PRESS)
+            if long:
+                label = label[:-len(LONG_PRESS)]
             switch_step = self._switch_steps.get(tuple(path[:step + 1]))
             if switch_step is not None:
                 # `On` is not a control: it is the state of the switch whose
@@ -3075,6 +3214,9 @@ class RecursiveWalker(ElementTreeWalker):
                 element, views = self._settled(label, views)
             if element is not None:
                 before = label_set(self._elements(views))
+            if element is not None and long:
+                element = copy.copy(element)
+                element.long_press = True
             if element is not None:
                 self._replayed_last = element   # how the last screen was entered
             if element is None or not self._click(element, views):
@@ -3382,10 +3524,75 @@ class RecursiveWalker(ElementTreeWalker):
             return False
         if package and package != self.package:
             return True
+        # A screen that offers one of the profile's launch answers is a
+        # first-launch screen, however much of the window it fills: the
+        # Internet app's welcome pages (Continue, Next, Start) are full
+        # screens, and the walk took the first one for the app itself.
+        if self._offers_answer(views):
+            return True
         if self._main_labels:
             here = {e.label for e in self._elements(views)}
             return len(here & self._main_labels) < 0.5 * len(self._main_labels)
         return looks_like_dialog(views, self.package)
+
+    def _activity(self):
+        try:
+            return self.driver.current_activity()
+        except Exception:
+            return None
+
+    def _lands_on_main(self):
+        """Whether the app is showing its main activity again."""
+        _, _, package = self._await_stable()
+        return package in (None, self.package) and self._activity() == self._root_activity
+
+    def _with_long_presses(self, elements, is_tab):
+        """The walk list with a long press after each control that takes one.
+
+        Agreed (2026-10-19): what a long press shows is walked like any
+        press. Read from the `long-clickable` flag, nothing else: the
+        Internet app's Bookmarks (long) offers "Add the current webpage to",
+        Browsing assist (long) a consent pop-up, Tabs (long) a new tab.
+        Not text fields (typing is not driven), not options, not tabs, not
+        what the walk would not press anyway -- and in a list only its first
+        item (agreed: once per list; the rest do the same).
+        """
+        out, lists_done = [], set()
+        for e in elements:
+            out.append(e)
+            if not getattr(e, "long_clickable", False) or not e.interactive:
+                continue
+            if (getattr(e, "is_text_field", False) or e.role == "option"
+                    or is_tab(e) or self._worth_pressing(e) is not None):
+                continue
+            group = getattr(e, "group", "")
+            if group:
+                if group in lists_done:
+                    continue
+                lists_done.add(group)
+            twin = copy.copy(e)
+            twin.long_press = True
+            out.append(twin)
+        return out
+
+    def _is_list_only(self, element):
+        """Whether the profile asks for this row to be opened and listed only
+        -- by its label, or by its resource id when the label is not stable:
+        the Internet app's address bar reads whatever URL is showing."""
+        rid = (getattr(element, "slot", ("",))[0] or "").split("/")[-1].lower()
+        if getattr(element, "long_press", False):
+            # A long press is its own entry: "Home (long press)" opens the
+            # address bar for typing, Home itself loads the home page.
+            return (element.label.strip() + LONG_PRESS).lower() in self.list_only
+        return (element.label.strip().lower() in self.list_only
+                or bool(rid) and rid in self.list_only)
+
+    def _offers_answer(self, views):
+        """Whether a control on screen is one of the profile's launch answers."""
+        answers = {a.strip().lower() for a in self.launch_answers}
+        return bool(answers) and any(
+            e.interactive and e.label.strip().lower() in answers
+            for e in self._elements(views or []))
 
     def _read_dialog(self, views):
         """(title, texts, options, buttons) of the pop-up on screen."""
@@ -3441,7 +3648,7 @@ class RecursiveWalker(ElementTreeWalker):
                     if not e.interactive and e.label in early
                     and e.label not in {x.label for x in self._elements(later)}
                     and len(e.label) > 15]
-            if n == 1 and not self._main_labels:
+            if n == 1 and not self._main_labels and not self._offers_answer(later):
                 self._main_labels = {e.label for e in self._elements(later)
                                      if e.interactive}
             title = None
@@ -3471,6 +3678,11 @@ class RecursiveWalker(ElementTreeWalker):
                           "package": package, "path": list(answers)}
                 dialogs[title] = record
                 for b in order:
+                    # The profile's do_not_press holds here too: the Internet
+                    # app's "Set as default" would change the phone.
+                    if b.label.strip().lower() in self.do_not_press:
+                        record["buttons"].append((b, ("not pressed",)))
+                        continue
                     if not self._reach(answers) or not self._press_exact(b.label):
                         record["buttons"].append((b, ("unreached",)))
                         continue
@@ -3513,7 +3725,8 @@ class RecursiveWalker(ElementTreeWalker):
                            note="option -- listed, not selected")
             for b, result in record.get("buttons", []) or []:
                 note = {"closes": "closes the pop-up -- back to the app",
-                        "unreached": "could not be reached again"}.get(result[0], "")
+                        "unreached": "could not be reached again",
+                        "not pressed": "listed, not pressed (profile: do_not_press)"}.get(result[0], "")
                 if result[0] == "returns":
                     note = f"returns to '{result[1]}'"
                 elif result[0] == "same":
@@ -3556,7 +3769,8 @@ class RecursiveWalker(ElementTreeWalker):
         for label in self._separate_labels:
             if not self._budget_left():
                 return
-            if not self._replay([]):
+            where = self._separate_seen.get(label.lower(), [])
+            if not self._replay(where):
                 continue
             _, views, _ = self._await_stable()
             control = exact(label, views)

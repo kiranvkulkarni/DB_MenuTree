@@ -346,3 +346,35 @@ column R "Review Comments"; each comment is a rule for every screen.
 * **A control's text that is dynamic stays as the phone shows it**: the
   Watermark text field is "Customize text | Edit" (confirmed in the second
   review, 2026-10-16).
+
+## Samsung Internet and long press (agreed 2026-10-19)
+
+* **Long press** is walked like any press, for every app, from the
+  `long-clickable` flag: a "(long press)" row after the control, and what it
+  opens is walked. Not text fields, options, tabs, or what the walk would not
+  press anyway; in a list only the first item. A long press that acts at once
+  (Tabs opens a new tab) is noted "acts at once" and not undone with a tap.
+* **First-launch screens may be full screens**: a screen that offers one of
+  the profile's `launch_answers` is a first-launch screen (the Internet app's
+  welcome pages). `do_not_press` holds in the first-launch recorder too ("Set
+  as default").
+* **A tab strip is a ROW** of Buttons sharing one id; a stacked list (Tools)
+  is a menu.
+* **Icon buttons named by description are a choice only when the names share
+  a word** (Alignment Left / Center / Right), not a toolbar.
+* **Profile `option_words`**: a choice that states itself only in its spoken
+  description ("Not selected, List, Radio button") is an option; a label
+  inside an option is part of it.
+* **Profile `list_only` may name a resource id** (the address bar, whose
+  label is whatever URL shows) or a long press ("Home (long press)").
+* **The keyboard is never typed on**: a screen with a focused text field is
+  not swept, and no tap lands inside the keyboard.
+* **A press that switches to the app's main activity from another** (a
+  bookmark or History entry loading its page) is content: "opens the app's
+  main screen", not walked. Not inside a separate pass.
+* **Separate passes start where their control was listed** (Secret mode is
+  under Tabs).
+* **Refresh -> Stop**: one new control in the pressed control's place is its
+  new face, not a new screen.
+* **Edit / Move / Create folder in a bookmark's selection mode** are pressed
+  through (agreed); the app is cleared at the start of every run.
