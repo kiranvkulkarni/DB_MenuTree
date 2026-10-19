@@ -92,6 +92,9 @@ def main() -> int:
                 walker._release()
                 return 2
             root_key, views = walker._await_stable()[0], walker._await_stable()[1]
+        # The app's main activity, as a full run learns it at the root:
+        # a press that switches back to it from another is content.
+        walker._root_activity = walker._activity()
         # The tab strip is learned at the root in a full run; learn it here
         # too, or a mode chip met inside the branch is walked as a menu.
         strip = walker._dedupe(walker._tab_strip(walker._elements(views), views))

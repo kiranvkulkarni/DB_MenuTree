@@ -2802,6 +2802,24 @@ class RecursiveWalker(ElementTreeWalker):
                 logger.info("press %r: moved=%s back_above=%s in_place=%s "
                             "appeared=%d fresh=%d", target.label, moved,
                             back_above, in_place, len(appeared), len(fresh))
+                # Checked first, before panel or screen is decided -- a bookmark
+                # brings the screen above back, and was listed as a panel. Told
+                # by the Android activity: Bookmarks and History are
+                # activities of their own, and a bookmark switches back to
+                # the main one with a page loading (half the toolbar hidden,
+                # so the screen alone did not match). A camera is one
+                # activity throughout, so this never fires there. Not inside
+                # a separate pass: Secret mode's Start opens the main screen
+                # in the new state, which is the very thing to walk.
+                in_pass = bool(self._pass_marker) and path[:1] == [self._pass_marker]
+                if (path and not in_pass and self._root_activity and node_activity
+                        and node_activity != self._root_activity
+                        and self._lands_on_main()):
+                    self._opens_main += 1
+                    self._emit_note_last("opens the app's main screen (content) -- not walked")
+                    self._return_to(node)
+                    continue
+
                 if fresh and in_place:
                     # A dial's level is not a caption: EV's panel brings only
                     # "0.0", drawn on its slider -- a panel, listed as one.
@@ -2900,22 +2918,6 @@ class RecursiveWalker(ElementTreeWalker):
                 # a moment: while it loads, the toolbar is half hidden.
                 # Only from a screen of its own -- not one drawn over the main
                 # screen: on a camera the viewfinder is under everything.
-                # Told by the Android activity: Bookmarks and History are
-                # activities of their own, and a bookmark switches back to
-                # the main one with a page loading (half the toolbar hidden,
-                # so the screen alone did not match). A camera is one
-                # activity throughout, so this never fires there. Not inside
-                # a separate pass: Secret mode's Start opens the main screen
-                # in the new state, which is the very thing to walk.
-                in_pass = bool(self._pass_marker) and path[:1] == [self._pass_marker]
-                if (path and not in_pass and self._root_activity and node_activity
-                        and node_activity != self._root_activity
-                        and self._lands_on_main()):
-                    self._opens_main += 1
-                    self._emit_note_last("opens the app's main screen (content) -- not walked")
-                    self._return_to(node)
-                    continue
-
                 self._visit(depth + 1, child_path, child_selectors,
                             ancestors + [signature], entering=target, parent=node)
                 opened = frozenset(self._fingerprint(e) for e in fresh
