@@ -404,3 +404,10 @@ column R "Review Comments"; each comment is a rule for every screen.
   before the walk, kept in `<run>_run_info.json`. The app name is the
   profile's `app_name` (the phone gives only a resource number). A
   re-export of an older run reads the phone then and says so on the sheet.
+* **A separate pass starts only from where the main walk lists its control**
+  (2026-10-20). Inside the front-camera pass, "Switch to rear camera" was
+  recorded and its pass then ran inside the front camera; a control seen
+  inside a pass is not recorded.
+* **Camera: "Scan" and "Scan text" are suggestions** (listed, never pressed;
+  2026-10-20). They show only when the camera sees a document; pressing
+  "Scan" opened the document scanner and VIDEO was never walked.

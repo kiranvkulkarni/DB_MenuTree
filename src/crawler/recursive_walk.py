@@ -2428,9 +2428,13 @@ class RecursiveWalker(ElementTreeWalker):
                     why = f"listed; opened under {seen_under} (--revisits top)"
                 if why is None and node.list_only:
                     why = "listed, not pressed (profile: list only)"
-                if why == "listed, not pressed (profile: walked as its own pass)":
+                if (why == "listed, not pressed (profile: walked as its own pass)"
+                        and self._pass_marker is None):
                     # Where it lives, so its pass can get there: the Internet
                     # app's Secret mode is under Tabs, not on the first screen.
+                    # Only as the main walk sees it: inside the front-camera
+                    # pass "Switch to rear camera" was recorded, and its pass
+                    # then started inside the front camera (2026-10-20).
                     self._separate_seen.setdefault(element.label.strip().lower(), list(path))
                 if why is not None:
                     self._emit(element, depth, path, path_selectors, note=why)

@@ -243,6 +243,14 @@ def main() -> int:
                 "does replay, deliberately, to retry what was abandoned")
 
     print()
+    print("separate passes start only from where the main walk lists them")
+    visit_src = inspect.getsource(RecursiveWalker._visit)
+    at = visit_src.index("self._separate_seen.setdefault")
+    ok &= check("a pass control seen inside a pass is not recorded",
+                "self._pass_marker is None" in visit_src[max(0, at - 600):at],
+                "2026-10-20: the rear-camera pass started inside the front camera")
+
+    print()
     print(f"back labels: {', '.join(BACK_LABELS)}")
     print()
     print("ALL PASS" if ok else "FAILURES PRESENT")
