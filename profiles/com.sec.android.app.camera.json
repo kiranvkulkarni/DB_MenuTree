@@ -13,7 +13,8 @@
   "leaves_app: rows that open somewhere outside the app's menu tree (agreed: Download filters opens the Galaxy Store). Listed, not opened.",
   "list_only: rows opened to list what they show, nothing pressed there, left by Back (agreed: MORE > Edit, where pressing could rearrange the mode bar).",
   "first_launches: after clearing the app, the camera asks about Location tags on the third launch; the first three launches are recorded with every answer branch (agreed). launch_answers: the state the main walk runs in (agreed: Location granted -- Turn on, While using the app, No thanks). suggestions: hints shown by conditions, listed, never pressed (agreed).",
-  "open_guarded_rows: open rows like 'Reset settings' to list their confirmation dialog; the dialog's Reset button is still refused and the walk leaves by Cancel."
+  "open_guarded_rows: open rows like 'Reset settings' to list their confirmation dialog; the dialog's Reset button is still refused and the walk leaves by Cancel.",
+  "list_only (2026-10-20): a long press on a MORE tile opens the same edit mode as MORE > Edit (\"Touch and hold to move modes.\", Save) -- listed only, nothing pressed, as agreed for Edit. A full run pressed Save and then the mode tiles inside it."
  ],
  "do_not_press": [
   "Take picture",
@@ -31,7 +32,18 @@
   "Download filters"
  ],
  "list_only": [
-  "Edit"
+  "Edit",
+  "Edit (long press)",
+  "Bixby Vision (long press)",
+  "EXPERT RAW (long press)",
+  "PRO (long press)",
+  "PRO VIDEO (long press)",
+  "NIGHT (long press)",
+  "FOOD (long press)",
+  "PANORAMA (long press)",
+  "SLOW MOTION (long press)",
+  "HYPERLAPSE (long press)",
+  "PORTRAIT VIDEO (long press)"
  ],
  "first_launches": 3,
  "launch_answers": [

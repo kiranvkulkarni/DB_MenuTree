@@ -367,6 +367,10 @@ column R "Review Comments"; each comment is a rule for every screen.
   inside an option is part of it.
 * **Profile `list_only` may name a resource id** (the address bar, whose
   label is whatever URL shows) or a long press ("Home (long press)").
+* **Camera MORE tiles: long press is list-only** (2026-10-20). It opens the
+  same edit mode as MORE > Edit ("Touch and hold to move modes.", Save); a
+  full run pressed Save and the tiles there. Each "<tile> (long press)" is in
+  the camera profile's `list_only`, like Edit.
 * **The keyboard is never typed on**: a screen with a focused text field is
   not swept, and no tap lands inside the keyboard.
 * **A press that switches to the app's main activity from another** (a
