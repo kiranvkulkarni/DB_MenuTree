@@ -127,6 +127,9 @@ One folder per run, every file prefixed with the folder's name
 `_object_repository.json`, `_page_objects.py`, `<run>.log`.
 
 - **Layout** (agreed): columns A-D width 8, E-R 16, S-V 4; every cell wraps.
+- **Summary sheet** (agreed 2026-10-20): first sheet; phone, software, build
+  and hardware versions, app name/version/package, depth and size of the
+  tree, how the walk went. `src/run_info.py`, `<run>_run_info.json`.
 - **Object repository** (agreed): every UI element under a stable name
   (`PORTRAIT.QuickControls.Flash`), all its locators (text, content-desc,
   resource-id, class, xpath, UiAutomator) and the preferred one. The

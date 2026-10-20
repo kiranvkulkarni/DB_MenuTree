@@ -26,6 +26,7 @@ from src.generator.uvta_writer import SuiteValidationError, UVTAWriter  # noqa: 
 from src.logging_setup import setup_logging  # noqa: E402
 from src.run_lock import DeviceBusy, RunLock  # noqa: E402
 from src.run_files import find, run_file  # noqa: E402
+from src import run_info  # noqa: E402
 
 logger = logging.getLogger("build_menutree")
 
@@ -133,6 +134,8 @@ def main() -> int:
 
     lock = None
     walk_failed = None
+    profile = load_profile(args.package)
+    info_file = run_file(output_dir, "info")
     if not args.skip_walk:
         # Refuse to start while another run is already driving this handset.
         try:
@@ -145,9 +148,21 @@ def main() -> int:
             return 1
 
     if not args.skip_walk:
+        # What the tree is generated on (agreed 2026-10-20): read before the
+        # walk, read-only, so the Summary sheet names the phone, its software,
+        # build and hardware, and the app's version.
+        info = run_info.collect(args.package, args.serial, profile.get("app_name", ""))
+        info["run"] = {
+            "folder": output_dir.name,
+            "started": datetime.now().isoformat(timespec="seconds"),
+            "time_budget": args.time_budget,
+            "reset": not args.no_reset,
+            "command": " ".join(["build_menutree.py"] + sys.argv[1:]),
+        }
+        run_info.save(info, info_file)
         build = ElementTreeWalker if args.worklist_walk else RecursiveWalker
         walker = build(args.package, args.serial, {
-            **load_profile(args.package),
+            **profile,
             "output_dir": str(output_dir),
             "time_budget": args.time_budget,
             "max_depth": args.max_depth,
@@ -191,6 +206,24 @@ def main() -> int:
             if lock is not None:
                 lock.release()
         walker.write(rows_file)
+        info["run"]["finished"] = datetime.now().isoformat(timespec="seconds")
+        info["run"]["complete"] = walk_failed is None
+        if walk_failed is not None:
+            info["run"]["ended_early"] = f"{type(walk_failed).__name__}: {walk_failed}"
+        run_info.save(info, info_file)
+    else:
+        # Re-export: the details recorded at walk time. A run from before
+        # 2026-10-20 has none; read them now from the phone, if one answers,
+        # and say so on the sheet.
+        info = run_info.load(find(output_dir, "info"))
+        if not info:
+            info = run_info.collect(args.package, args.serial, profile.get("app_name", ""))
+            info["recorded_after_walk"] = True
+            info["run"] = {"folder": output_dir.name}
+            if info.get("device"):
+                run_info.save(info, info_file)
+        elif profile.get("app_name") and not info.get("app_name"):
+            info["app_name"] = profile["app_name"]
 
     if not rows_file.exists():
         logger.error("No rows file at %s", rows_file)
@@ -266,6 +299,9 @@ def main() -> int:
             uvta_by_row=uvta_by_row,
             stats=stats,
             repository=repository,
+            run_info=info,
+            extra_figures=[("Objects in the object repository", len(repository)),
+                           ("UVTA test cases", len(cases))],
         )
         print(f"  Workbook        : "
               f"{run_file(output_dir, 'xlsx').resolve()}")

@@ -23,8 +23,10 @@
   "'Checked, Google' / 'Not checked, Yahoo!' (the search-engine dropdown) are options too.",
   "'Home (long press)' opens the same address-bar screen: list only too.",
   "walk_separately (agreed 2026-10-19): Secret mode switches the whole browser into its own state; listed where it appears (Tabs), walked once as its own pass, like the camera's front camera.",
-  "Bookmark / History / Edit / Move / Create folder: pressed through as everything else (agreed); the app is cleared at the start of every run."
+  "Bookmark / History / Edit / Move / Create folder: pressed through as everything else (agreed); the app is cleared at the start of every run.",
+  "app_name: the name the app shows under its icon, for the Summary sheet (the phone reports it only as a resource number)."
  ],
+ "app_name": "Internet",
  "first_launches": 1,
  "launch_answers": [
   "Continue",

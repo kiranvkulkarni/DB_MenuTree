@@ -395,3 +395,12 @@ column R "Review Comments"; each comment is a rule for every screen.
   in `<run>_object_repository.json`, the ObjectRepository sheet and
   `<run>_page_objects.py`. Rows name it in the last column, "Object"; UVTA
   cases keep literal selectors and are preceded by `# object: <name>`.
+* **Summary sheet** (first in the workbook): what the tree was generated
+  on -- date, phone (name, model, serial), software (Android, API, One UI,
+  security patch), build (build number, AP, CP, CSC, fingerprint), hardware
+  (revision, SoC, bootloader), the app (name, package, version, code) -- and
+  the tree's size: rows, deepest depth, rows per depth and kind, and how the
+  walk went (duration, returns, switches put back). Read over adb, read-only,
+  before the walk, kept in `<run>_run_info.json`. The app name is the
+  profile's `app_name` (the phone gives only a resource number). A
+  re-export of an older run reads the phone then and says so on the sheet.

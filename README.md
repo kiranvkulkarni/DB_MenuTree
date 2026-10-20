@@ -174,10 +174,11 @@ can be open at once:
 
 | File | What |
 |---|---|
-| `<run>_menutree.xlsx` | Sheet `MenuTree` (the deliverable) and sheet `ObjectRepository` |
+| `<run>_menutree.xlsx` | Sheets `Summary` (phone, software/build/hardware versions, app version, depth and size), `MenuTree` (the deliverable) and `ObjectRepository` |
 | `<run>_menutree.csv` | The same rows, diff-friendly |
 | `<run>_rows.json` | Every row in full detail, with all its locators |
 | `<run>_suite.uvta` | One UVTA case per row; a `# object: <name>` line before each names its element |
+| `<run>_run_info.json` | What the tree was generated on: phone, software, build and hardware versions, app name, version and package; shown as the workbook's first sheet, `Summary`, with the tree's depth and size |
 | `<run>_object_repository.json` | The object repository: every UI element under a stable name (`PORTRAIT.QuickControls.Flash`) with all its locators -- text, content-desc, resource-id, class, xpath, UiAutomator -- and the preferred one |
 | `<run>_page_objects.py` | The same as page objects: one class per screen, one `Locator` per element |
 | `<run>.log` | The walk's log |

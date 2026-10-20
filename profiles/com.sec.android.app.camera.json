@@ -14,8 +14,10 @@
   "list_only: rows opened to list what they show, nothing pressed there, left by Back (agreed: MORE > Edit, where pressing could rearrange the mode bar).",
   "first_launches: after clearing the app, the camera asks about Location tags on the third launch; the first three launches are recorded with every answer branch (agreed). launch_answers: the state the main walk runs in (agreed: Location granted -- Turn on, While using the app, No thanks). suggestions: hints shown by conditions, listed, never pressed (agreed).",
   "open_guarded_rows: open rows like 'Reset settings' to list their confirmation dialog; the dialog's Reset button is still refused and the walk leaves by Cancel.",
-  "list_only (2026-10-20): a long press on a MORE tile opens the same edit mode as MORE > Edit (\"Touch and hold to move modes.\", Save) -- listed only, nothing pressed, as agreed for Edit. A full run pressed Save and then the mode tiles inside it."
+  "list_only (2026-10-20): a long press on a MORE tile opens the same edit mode as MORE > Edit (\"Touch and hold to move modes.\", Save) -- listed only, nothing pressed, as agreed for Edit. A full run pressed Save and then the mode tiles inside it.",
+  "app_name: the name the app shows under its icon, for the Summary sheet (the phone reports it only as a resource number)."
  ],
+ "app_name": "Camera",
  "do_not_press": [
   "Take picture",
   "Start recording",

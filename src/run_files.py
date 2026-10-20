@@ -21,6 +21,7 @@ SUFFIX = {
     "pages": "page_objects.py",
     "branch": "branch.json",
     "guide": "REVIEW_GUIDE.md",
+    "info": "run_info.json",          # phone, software, build, app version
 }
 
 LEGACY = {

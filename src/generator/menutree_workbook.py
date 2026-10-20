@@ -89,6 +89,8 @@ def write_workbook(
     result_default: str = RESULT_NOT_TESTED,
     stats: Optional[Dict] = None,
     repository: Optional[Dict] = None,
+    run_info: Optional[Dict] = None,
+    extra_figures: Sequence = (),
 ) -> Path:
     """Write the MenuTree workbook (and its ObjectRepository sheet)."""
     from openpyxl import Workbook
@@ -236,6 +238,12 @@ def write_workbook(
     if repository:
         from .object_repository import add_sheet
         add_sheet(book, repository)
+    if run_info is not None:
+        # The Summary sheet (agreed 2026-10-20), first: what the tree was
+        # generated on, and its size and depth.
+        from ..run_info import add_sheet as add_summary
+        add_summary(book, run_info, rows, stats,
+                    [("Rows needing a manual test", len(manual_rows))] + list(extra_figures))
 
     path.parent.mkdir(parents=True, exist_ok=True)
     book.save(path)
