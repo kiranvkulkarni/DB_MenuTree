@@ -51,7 +51,9 @@ All of these are in HANDLING.md with their reasons. The short list:
 - **Modes:** each MORE tile is a node. Another app (Gallery, Store, Bixby) is
   listed one level deep, once. Edit is list-only. Settings is walked in full
   once; later modes list it and open only new rows (`--revisits top`, a CLI
-  option).
+  option). A Settings screen counts as seen only when >= 90% the same as one
+  walked before -- rear PHOTO and VIDEO are walked, MORE modes and front
+  PHOTO/VIDEO are listed. Confirmed and kept 2026-10-22 (HANDLING.md).
 - **Front camera:** under its own node, `Switch to front camera`. A mode with
   no front version (FOOD, PANORAMA) is a noted leaf.
 - **First launches:** a node before PORTRAIT. Every answer branch is pressed;

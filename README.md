@@ -126,9 +126,13 @@ python tools/build_menutree.py --package <pkg> --skip-walk --output-dir output/<
 - **Start state.** Every walk starts by clearing the app's data and cache,
   so first-launch and permission pop-ups are recorded. `--no-reset` skips it.
 - **`--revisits`.** This sets how a screen reached again by another route is
-  treated (Settings, from every camera mode). `top` lists its rows but opens
-  only rows not seen before; `full` walks it every time; `note` writes one
-  row saying where it was listed.
+  treated (Settings, from every camera mode). `top` (the agreed default)
+  lists its rows but opens only rows not seen before; `full` walks it every
+  time; `note` writes one row saying where it was listed. A screen counts as
+  seen only when it is at least 90% the same as one walked earlier, so the
+  camera's rear PHOTO and VIDEO Settings (with their own rows) are walked,
+  while the MORE modes' and the front PHOTO and VIDEO Settings are listed
+  with "listed; opened under ...". The same rule holds rear and front.
 - **App-specific decisions** live in `profiles/<package>.json`: what not to
   press, what to walk as a separate pass (the front camera, Secret mode),
   first-launch answers (including full-screen welcome pages), what to open

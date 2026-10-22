@@ -126,6 +126,15 @@ language needs them in the profile.
   already had where it was walked before not reopened. Only a near-identical
   screen (>= 90% the same) counts; Quick controls differ per mode and are
   always walked.
+  Confirmed 2026-10-22, the same for rear and front: rear PORTRAIT's
+  Settings is walked in full; rear PHOTO's and VIDEO's differ by more than
+  10% (their own photo and video rows), so they are walked, but each of
+  their rows already opened elsewhere says "listed; opened under ...". The
+  MORE modes' Settings, and front PHOTO's and VIDEO's (matching front
+  PORTRAIT's and MORE > PORTRAIT VIDEO's), are listed only. A run where a
+  changing row (a "Not available with ..." line) pulls a screen under 90%
+  walks it in full -- the 16-Oct front VIDEO Settings, 250 rows instead of
+  34. Walking Settings in full under every mode was offered and declined.
 * **A control that relabels itself** when pressed (FOOD_BLUR_EFFECT_ON ->
   _OFF, same id and place) is a toggle: the new state recorded, pressed back.
 * **A control named as a screen on the current path** is a title, not
