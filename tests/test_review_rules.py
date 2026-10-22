@@ -127,6 +127,17 @@ def main() -> int:
                 not w._fills_list(views, 2))
     ok &= check("a settings row fills its list (Reset settings)", w._fills_list(views, 11))
 
+    print("suggestions by resource id: a preview button, not a settings row of the same name")
+    from src.crawler.elements import Element
+    sw = RecursiveWalker("x", None, {"output_dir": ".", "suggestions": ["text_scan_button"]})
+    button = Element(label="Scan text", kind="button", interactive=True, view_index=0)
+    button.slot = ("com.example:id/text_scan_button", "")
+    row_ = Element(label="Scan text", kind="title", interactive=True, view_index=0)
+    row_.slot = ("android:id/title", "")
+    ok &= check("the preview button is a suggestion",
+                "suggestion" in (sw._worth_pressing(button) or ""))
+    ok &= check("the settings row is pressed", "suggestion" not in (sw._worth_pressing(row_) or ""))
+
     print()
     print("ALL PASS" if ok else "FAILURES PRESENT")
     return 0 if ok else 1

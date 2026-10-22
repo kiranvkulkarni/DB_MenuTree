@@ -274,7 +274,11 @@ class RecursiveWalker(ElementTreeWalker):
             return "listed, not pressed (profile: walked as its own pass)"
         if element.label.strip().lower() in self.leaves_app:
             return "listed, not opened (profile: leads out of the app)"
-        if element.label.strip().lower() in self.suggestions:
+        rid = (getattr(element, "slot", ("",))[0] or "").split("/")[-1].lower()
+        if element.label.strip().lower() in self.suggestions or (rid and rid in self.suggestions):
+            # By label, or by resource id where the label is also a real row
+            # elsewhere: the camera's "Scan text" preview button and the
+            # "Scan text" switch in Settings > Scanning.
             return "suggestion shown by conditions -- listed, not pressed (profile)"
         from .element_tree import KEYPAD_KEY
         if element.role == "option":

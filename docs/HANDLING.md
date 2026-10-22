@@ -408,9 +408,14 @@ column R "Review Comments"; each comment is a rule for every screen.
   (2026-10-20). Inside the front-camera pass, "Switch to rear camera" was
   recorded and its pass then ran inside the front camera; a control seen
   inside a pass is not recorded.
-* **Camera: "Scan" and "Scan text" are suggestions** (listed, never pressed;
-  2026-10-20). They show only when the camera sees a document; pressing
-  "Scan" opened the document scanner and VIDEO was never walked.
+* **Camera: the preview's "Scan" and "Scan text" buttons are suggestions**
+  (listed, never pressed; 2026-10-20). They show only when the camera sees a
+  document; pressing "Scan" opened the document scanner and VIDEO was never
+  walked. Named by resource id (`scan_layout`, `text_scan_button`):
+  Settings > Scanning has a real "Scan text" switch, which is pressed as
+  before. `suggestions` may name a label or a resource id.
+* **The front camera may open in PORTRAIT** (2026-10-22), with MORE off the
+  edge of its mode strip; the strip read again after VIDEO finds it.
 * **No tap lands on a protected control by accident** (2026-10-20). Runs
   took photos, each during a launch or relaunch: a prompt drawn over the
   shutter was pressed until it went, and a tap read from a dump just before
