@@ -253,6 +253,9 @@ def main() -> int:
                 "read again" in visit_src
                 and 'getattr(t, "group", None) == group' in visit_src,
                 "2026-10-20: front MORE missed when the strip was read mid-draw")
+    ok &= check("a list-only screen shown again is one note",
+                "opens the same screen as" in visit_src and "_list_only_seen" in visit_src,
+                "2026-10-22: 8 long presses listed MORE > Edit's screen 8 times")
 
     print()
     print(f"back labels: {', '.join(BACK_LABELS)}")

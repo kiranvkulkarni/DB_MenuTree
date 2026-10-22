@@ -17,6 +17,7 @@ the walk itself differs from a full run -- same walker, same rules -- so what
 works here works there.
 """
 import argparse
+import copy
 import json
 import logging
 import sys
@@ -114,9 +115,15 @@ def main() -> int:
             wanted = {x.strip() for x in args.only.split(",") if x.strip()}
             if wanted:
                 _, here, _ = walker._await_stable()
-                only = {walker._fingerprint(e)
-                        for e in walker._enumerate_scrolled(here or [])
-                        if e.label in wanted}
+                found = walker._enumerate_scrolled(here or [])
+                only = {walker._fingerprint(e) for e in found if e.label in wanted}
+                # "PRO (long press)" names a long press: the same row with
+                # the long-press flag, as the walk makes it.
+                for e in found:
+                    if e.label + " (long press)" in wanted:
+                        twin = copy.copy(e)
+                        twin.long_press = True
+                        only.add(walker._fingerprint(twin))
             walker._visit(len(path) + 2, path, [], passed, skip_tabs=True,
                           entering=walker._replayed_last, only=only)
         except Exception as exc:              # keep what was collected

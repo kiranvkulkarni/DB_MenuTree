@@ -138,6 +138,21 @@ def main() -> int:
                 "suggestion" in (sw._worth_pressing(button) or ""))
     ok &= check("the settings row is pressed", "suggestion" not in (sw._worth_pressing(row_) or ""))
 
+    print("profile `ignore`: the video top bar's 'Bar' divider is never listed (real dump)")
+    from src.crawler.hierarchy import parse_hierarchy
+    video = parse_hierarchy((Path(__file__).parent / "fixtures" / "video_top_bar.xml")
+                            .read_text(encoding="utf-8"))
+    plain = RecursiveWalker("com.sec.android.app.camera", None, {"output_dir": "."})
+    plain.package = "com.sec.android.app.camera"
+    told = RecursiveWalker("com.sec.android.app.camera", None,
+                           {"output_dir": ".", "ignore": ["Bar"]})
+    told.package = "com.sec.android.app.camera"
+    before = [e.label for e in plain._elements(video)]
+    after = [e.label for e in told._elements(video)]
+    ok &= check("the dump has it", "Bar" in before)
+    ok &= check("ignored when the profile says so", "Bar" not in after)
+    ok &= check("nothing else dropped", sorted(x for x in before if x != "Bar") == sorted(after))
+
     print()
     print("ALL PASS" if ok else "FAILURES PRESENT")
     return 0 if ok else 1

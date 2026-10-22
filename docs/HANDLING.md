@@ -414,6 +414,15 @@ column R "Review Comments"; each comment is a rule for every screen.
   walked. Named by resource id (`scan_layout`, `text_scan_button`):
   Settings > Scanning has a real "Scan text" switch, which is pressed as
   before. `suggestions` may name a label or a resource id.
+* **A list-only screen shown again is one note** (agreed 2026-10-22): a
+  long press on any MORE tile opens the edit screen MORE > Edit already
+  listed, so its row reads "opens the same screen as MORE > Edit -- listed
+  there" instead of 14 rows. Same means at least 75% the same labels (the
+  held tile reads "Pro, Button" while lifted). Applies to every app's
+  list-only screens.
+* **Profile `ignore`** (agreed 2026-10-22): labels or resource ids never
+  listed, as rows or captions. Camera: "Bar", the thin divider in the video
+  top bar that comes and goes by itself.
 * **The front camera may open in PORTRAIT** (2026-10-22), with MORE off the
   edge of its mode strip; the strip read again after VIDEO finds it.
 * **No tap lands on a protected control by accident** (2026-10-20). Runs

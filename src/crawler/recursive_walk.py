@@ -184,6 +184,10 @@ class RecursiveWalker(ElementTreeWalker):
                                 for x in config.get("walk_separately", [])}
         self._separate_labels = [str(x).strip() for x in config.get("walk_separately", [])]
         self._separate_seen = {}     # label -> path of the screen it was listed on
+        self._list_only_seen = []    # (what a list-only screen showed, its path)
+        # Profile `ignore`: labels (or resource ids) never listed -- the
+        # camera's "Bar", a divider that comes and goes (agreed 2026-10-22).
+        self.ignore = {str(x).strip().lower() for x in config.get("ignore", [])}
         self._root_elements = None   # the app's main screen, as first walked
         self._root_activity = None   # ... and the Android activity that shows it
         self._opens_main = 0         # presses that only brought the main screen back
@@ -630,6 +634,10 @@ class RecursiveWalker(ElementTreeWalker):
         out = []
         for e in super()._elements(views):
             view = views[e.view_index] if 0 <= e.view_index < len(views) else {}
+            if self.ignore and (
+                    e.label.strip().lower() in self.ignore
+                    or (view.get("resource_id") or "").split("/")[-1].lower() in self.ignore):
+                continue
             # A clickable container with no text of its own, whose children
             # carry the labels, is named BY those children -- main_switch_
             # layout, spinner_layout, custom_text_layout. Listing it adds a
@@ -2413,6 +2421,12 @@ class RecursiveWalker(ElementTreeWalker):
                    if only is not None else elements)
         if only is None and not node.list_only:
             to_walk = self._with_long_presses(to_walk, is_tab)
+        elif only is not None and any(f[-1:] == ("long press",) for f in only):
+            # walk_branch --only "PRO (long press)": the twins are made from
+            # the whole screen, then chosen like any row. The walk's own
+            # `only` (rows a switch governs) never names a long press.
+            to_walk = [e for e in self._with_long_presses(elements, is_tab)
+                       if self._fingerprint(e) in only]
 
         try:
             # One scroll sweep per screen, then work down what it found.
@@ -2558,8 +2572,8 @@ class RecursiveWalker(ElementTreeWalker):
                          "inline": "switch of the row above",
                          "option": "option -- listed, not selected",
                          "checkbox": "checkbox -- listed, not ticked"}
-                self._emit(element, depth, path, path_selectors,
-                           note=notes.get(role, ""))
+                target_row = self._emit(element, depth, path, path_selectors,
+                                        note=notes.get(role, ""))
                 if role == "title":
                     # Agreed in review (R48): the row's current value sits
                     # directly under the item, before anything pressing it
@@ -2642,9 +2656,25 @@ class RecursiveWalker(ElementTreeWalker):
                     # nothing, step back.
                     time.sleep(0.6)
                     _, there, _ = self._await_stable()
-                    for e in self._dedupe_controls(self._elements(there or [])):
-                        if self._fingerprint(e) in inherited or e.label == target.label:
-                            continue
+                    listed = [e for e in self._dedupe_controls(self._elements(there or []))
+                              if self._fingerprint(e) not in inherited]
+                    shown = [e for e in listed if e.label != target.label]
+                    # The same screen again is one note, not its rows again
+                    # (agreed 2026-10-22): a long press on any MORE tile
+                    # opens the edit screen MORE > Edit already listed.
+                    # Nearly the same: the held tile reads "Pro, Button"
+                    # while it is lifted, so the sets differ by a label or two.
+                    first = next((where for earlier, where in self._list_only_seen
+                                  if screen_similarity(listed, earlier) >= 0.75),
+                                 None) if listed else None
+                    if first is not None:
+                        same = f"opens the same screen as {first} -- listed there"
+                        target_row.note = (f"{target_row.note}; {same}"
+                                           if target_row.note else same)
+                        shown = []
+                    elif listed:
+                        self._list_only_seen.append((listed, " > ".join(child_path)))
+                    for e in shown:
                         self._emit(e, depth + 1, child_path, child_selectors,
                                    note=("back control" if self._is_back(e) else
                                          "listed, not pressed (profile: list only)"
