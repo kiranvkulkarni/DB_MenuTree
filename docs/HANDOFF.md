@@ -184,6 +184,13 @@ In order:
 10. **Camera: in-place options are now closed after listing** (2026-10-20,
    the company phone kept PORTRAIT's Flash options open and they were listed
    again under Quick controls). Confirm on the company phone's next run.
+11. **Latest full camera run: 2026-10-22 12:33** (3,840 rows, 0 failed
+   returns, 107/107 switches put back, no photos). Fixed since 20-Oct:
+   protected-tap check (the walk had taken photos), Scan buttons as
+   suggestions by resource id, no pass inside a pass, tab strip read again
+   (front MORE), package re-check (EXPERT RAW). Remaining: MORE tile long
+   presses list the edit screen 8 times; "Bar" in video modes. Latest
+   Internet run: 2026-10-20 16:17 (2,046 rows); its gaps are in item 9.
 
 ## 6. Moving this to another machine
 
