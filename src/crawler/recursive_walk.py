@@ -909,7 +909,7 @@ class RecursiveWalker(ElementTreeWalker):
             if e.view_index not in own_row:
                 before[self._fingerprint(e)] = bool(views[e.view_index].get("enabled", True))
         centre = self._tap_point(views, tap_index)
-        if centre is None:
+        if centre is None or not self._tap_is_safe(views, tap_index, centre):
             return set()
         self.driver.tap(*centre, settle=False)
         self._clicks += 1
@@ -994,7 +994,7 @@ class RecursiveWalker(ElementTreeWalker):
             if e.view_index not in own_row:
                 before[self._fingerprint(e)] = bool(views[e.view_index].get("enabled", True))
         centre = self._tap_point(views, tap_index)
-        if centre is None:
+        if centre is None or not self._tap_is_safe(views, tap_index, centre):
             return set()
         self.driver.tap(*centre, settle=False)
         self._clicks += 1
@@ -2048,7 +2048,7 @@ class RecursiveWalker(ElementTreeWalker):
                 return True
             tap = j if views[j].get("clickable") else (_pressable_via(views, j) or j)
             centre = self._tap_point(views, tap)
-            if centre is None:
+            if centre is None or not self._tap_is_safe(views, tap, centre):
                 return False
             self.driver.tap(*centre, settle=False)
             self._clicks += 1
@@ -2210,17 +2210,34 @@ class RecursiveWalker(ElementTreeWalker):
                      if t.label.strip().lower() not in self._tab_labels]
             if len(strip) >= 2:
                 self._tab_labels |= {t.label.strip().lower() for t in strip}
-                for tab in strip:
-                    if not self._budget_left():
-                        return
-                    # Each tab, then everything inside it, before the next
-                    # tab. Emitting all four first put PORTRAIT, PHOTO, VIDEO
-                    # and MORE on consecutive rows, with PORTRAIT's contents
-                    # beginning below its own siblings instead of directly
-                    # beneath it.
-                    self._emit(tab, depth, path, path_selectors)
-                    self._enter_tab(tab, depth, path, path_selectors, ancestors,
-                                    parent)
+                logger.info("tab strip at %s: %s", " > ".join(path) or "<root>",
+                            [t.label for t in strip])
+                group = getattr(strip[0], "group", None)
+                while strip:
+                    for tab in strip:
+                        if not self._budget_left():
+                            return
+                        # Each tab, then everything inside it, before the next
+                        # tab. Emitting all four first put PORTRAIT, PHOTO, VIDEO
+                        # and MORE on consecutive rows, with PORTRAIT's contents
+                        # beginning below its own siblings instead of directly
+                        # beneath it.
+                        self._emit(tab, depth, path, path_selectors)
+                        self._enter_tab(tab, depth, path, path_selectors, ancestors,
+                                        parent)
+                    # A strip read while it was still being drawn misses
+                    # tabs: the front-camera pass read PORTRAIT, PHOTO and
+                    # VIDEO just after the switch, and MORE was never walked
+                    # (2026-10-20). Read it again; walk any tab not seen.
+                    _, now, _ = self._await_stable()
+                    now = now or []
+                    strip = [t for t in self._dedupe(self._tab_strip(self._elements(now), now))
+                             if t.label.strip().lower() not in self._tab_labels
+                             and getattr(t, "group", None) == group]
+                    if strip:
+                        logger.info("tab strip at %s, read again: also %s",
+                                    " > ".join(path) or "<root>", [t.label for t in strip])
+                        self._tab_labels |= {t.label.strip().lower() for t in strip}
                 return
 
         main_twin = self._recorded(path[1:]) if self._pass_marker and len(path) > 1 else None
@@ -3898,6 +3915,7 @@ class RecursiveWalker(ElementTreeWalker):
             "replay_retaps": self._replay_retaps,
             "switches_restored": self._switches_restored,
             "switches_not_restored": self._switches_not_restored,
+            "taps_refused_over_protected": getattr(self, "_taps_refused_protected", 0),
             "reopened_on_second_pass": self._reopened,
         })
         return base

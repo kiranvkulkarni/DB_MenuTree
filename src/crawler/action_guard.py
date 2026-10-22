@@ -121,6 +121,16 @@ class ActionGuard:
                 return pattern.pattern
         return None
 
+    def matches(self, value: str) -> bool:
+        """Whether `blocks` would refuse this -- without recording a refusal.
+
+        For checks that are not a press: where a tap lands, not what it is.
+        """
+        if not self.enabled or not value:
+            return False
+        candidates = (value, self._normalise(value))
+        return any(pattern.search(c) for pattern in self.patterns for c in candidates)
+
     def blocks_row(self, strategy: str, value: str, state: str = "") -> Optional[str]:
         """Like `blocks`, for a menu ROW rather than a button.
 

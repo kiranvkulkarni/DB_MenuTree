@@ -426,6 +426,14 @@ class ElementTreeWalker:
             return derived
         started = time.time()
         confirmed = self.driver.current_package() or derived
+        if confirmed != derived:
+            # The dump can be ahead of the activity manager: an app still
+            # starting is already drawn but not yet reported in front. A run
+            # pressed MORE > EXPERT RAW, the Galaxy Store page was on screen,
+            # the call still said camera, and the Store page was lost
+            # (2026-10-20). Asked again once before the dump is overruled.
+            time.sleep(0.5)
+            confirmed = self.driver.current_package() or derived
         self._phase("current_package", started)
         if confirmed != derived:
             self._package_disagreements += 1
@@ -944,6 +952,79 @@ class ElementTreeWalker:
                     return (px, py)
         return None
 
+    @staticmethod
+    def _view_name(view: Dict) -> str:
+        return (view.get("text") or view.get("content_description")
+                or view.get("resource_id") or "").strip()
+
+    def _is_protected_name(self, name: str) -> bool:
+        """A control the walk must never press: the profile's do_not_press
+        (the shutter) or what the action guard refuses."""
+        if not name:
+            return False
+        if name.lower() in getattr(self, "do_not_press", ()):
+            return True
+        return self.guard.matches(name)
+
+    def _tap_is_safe(self, views: Sequence[Dict], index: int, centre) -> bool:
+        """Whether a tap at `centre` meant for view `index` lands only on it.
+
+        Agreed 2026-10-20: the walk took photos. Each fell during a launch
+        or relaunch, where prompts drawn over the shutter are answered and
+        pressed until they go; a tap read from a dump just before the prompt
+        closed lands on whatever was under it -- the shutter. So a tap on a
+        point where a protected control is (or was last seen: a system
+        prompt's dump does not hold the app beneath it) is checked against
+        the screen as it is NOW: the target must still be there, and nothing
+        protected drawn over it. Otherwise it is not tapped.
+        """
+        x, y = centre
+        zones = getattr(self, "_protected_zones", None)
+        if zones is None:
+            zones = self._protected_zones = {}
+        here = []
+        for v in views:
+            name = self._view_name(v)
+            if not self._is_protected_name(name):
+                continue
+            b = box_of(v)
+            if not b:
+                continue
+            if name.lower() in getattr(self, "do_not_press", ()):
+                zones[name.lower()] = b         # the shutter does not move
+            here.append(b)
+        inside = [b for b in here + list(zones.values())
+                  if b[0] <= x < b[2] and b[1] <= y < b[3]]
+        if not inside:
+            return True
+
+        def names_under(vs, j, limit=40):
+            out, stack = set(), [j]
+            while stack and len(out) < limit:
+                k = stack.pop()
+                if 0 <= k < len(vs):
+                    out.add(self._view_name(vs[k]).lower())
+                    stack.extend(vs[k].get("children", []))
+            return out
+
+        target = names_under(views, index) - {""}
+        _, fresh, _ = self._capture(with_package=False)
+        hits = [j for j, v in enumerate(fresh or [])
+                if (b := box_of(v)) and b[0] <= x < b[2] and b[1] <= y < b[3]]
+        same_box = box_of(views[index]) if 0 <= index < len(views) else None
+        same_cls = views[index].get("class") if 0 <= index < len(views) else None
+        own = [j for j in hits if target & (names_under(fresh, j) - {""})
+               or (box_of(fresh[j]) == same_box and fresh[j].get("class") == same_cls)]
+        over = [j for j in hits if self._is_protected_name(self._view_name(fresh[j]))
+                and self._view_name(fresh[j]).lower() not in target]
+        if own and not (over and max(over) > max(own)):
+            return True
+        self._taps_refused_protected = getattr(self, "_taps_refused_protected", 0) + 1
+        logger.warning("tap at %s for %r not made: %s", centre, sorted(target)[:2],
+                       "a protected control is drawn over it" if own
+                       else "it is no longer there, and a protected control is")
+        return False
+
     def _click(self, element: Element, views: Sequence[Dict]) -> bool:
         assert self.driver is not None
         if element.view_index >= len(views):
@@ -959,6 +1040,8 @@ class ElementTreeWalker:
         # finding about this moment, not a reason to stop.
         if centre[0] < 0 or centre[1] < 0 or not self._on_display(centre):
             self._offscreen_taps += 1
+            return False
+        if not self._tap_is_safe(views, element.view_index, centre):
             return False
         started = time.time()
         try:

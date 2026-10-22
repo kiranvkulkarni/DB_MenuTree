@@ -249,6 +249,10 @@ def main() -> int:
     ok &= check("a pass control seen inside a pass is not recorded",
                 "self._pass_marker is None" in visit_src[max(0, at - 600):at],
                 "2026-10-20: the rear-camera pass started inside the front camera")
+    ok &= check("a tab strip is read again after its tabs, same strip only",
+                "read again" in visit_src
+                and 'getattr(t, "group", None) == group' in visit_src,
+                "2026-10-20: front MORE missed when the strip was read mid-draw")
 
     print()
     print(f"back labels: {', '.join(BACK_LABELS)}")

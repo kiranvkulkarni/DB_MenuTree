@@ -411,3 +411,19 @@ column R "Review Comments"; each comment is a rule for every screen.
 * **Camera: "Scan" and "Scan text" are suggestions** (listed, never pressed;
   2026-10-20). They show only when the camera sees a document; pressing
   "Scan" opened the document scanner and VIDEO was never walked.
+* **No tap lands on a protected control by accident** (2026-10-20). Runs
+  took photos, each during a launch or relaunch: a prompt drawn over the
+  shutter was pressed until it went, and a tap read from a dump just before
+  it closed landed on the shutter. A tap on a point where a protected
+  control (do_not_press, action guard) is -- or was last seen, since a
+  system prompt's dump does not hold the app beneath it -- is checked
+  against a fresh dump: the target must still be there with nothing
+  protected drawn over it, or the tap is not made ("tap ... not made" in
+  the log, `taps_refused_over_protected` in the stats).
+* **Another app starting is believed from the dump** (2026-10-20): when the
+  dump shows another app but the system still reports ours, it is asked
+  again after 0.5 s. MORE > EXPERT RAW's Galaxy Store page was lost that way.
+* **A tab strip is read again after its tabs are walked** (2026-10-20); a
+  tab of the same strip not seen the first time is walked too. The front
+  camera's strip was read mid-draw and MORE was never walked. The strip
+  read is logged ("tab strip at ...").
